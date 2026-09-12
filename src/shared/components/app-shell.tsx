@@ -31,6 +31,7 @@ import {
   Menu,
   Package,
   ShoppingBasket,
+  UserRound,
   Users,
   Wallet,
   X,
@@ -38,6 +39,7 @@ import {
 import { auth } from "@/shared/lib/firebase";
 import { useAuth, type PeranPengguna } from "@/shared/lib/auth-context";
 import { useToast } from "@/shared/components/toast";
+import { AutoLogout } from "@/shared/components/auto-logout";
 
 interface NavItem {
   href: string;
@@ -83,6 +85,12 @@ const NAV_ITEMS: NavItem[] = [
     icon: Bell,
     peran: ["superadmin", "finance", "kasir", "purchasing"],
   },
+  {
+    href: "/profil",
+    label: "Profil Akun",
+    icon: UserRound,
+    peran: ["superadmin", "finance", "kasir", "purchasing"],
+  },
 ];
 
 const LABEL_PERAN: Record<PeranPengguna, string> = {
@@ -98,13 +106,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-full flex-1 bg-[var(--color-app-bg)]">
       {/* --- Topbar mobile (hilang di md ke atas) --- */}
-      <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 md:hidden">
+      <header className="aman-notch-atas sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 md:hidden">
         <span className="text-sm font-bold text-emerald-700">SRASA BOOK</span>
         <button
           type="button"
           onClick={() => setDrawerTerbuka(true)}
           aria-label="Buka menu navigasi"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-600 motion-safe:transition hover:bg-slate-100"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-slate-600 motion-safe:transition active:scale-95 hover:bg-slate-100"
         >
           <Menu className="h-5 w-5" aria-hidden="true" />
         </button>
@@ -123,6 +131,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       <Sidebar drawerTerbuka={drawerTerbuka} onTutupDrawer={() => setDrawerTerbuka(false)} />
 
       <div className="flex min-h-full flex-1 flex-col md:pl-64">{children}</div>
+
+      {/* Timer idle 60 menit — dipasang di sini supaya berlaku di SEMUA
+          halaman terautentikasi sekaligus (setiap halaman memakai
+          AppShell), bukan dipasang ulang satu per satu. */}
+      <AutoLogout />
     </div>
   );
 }
@@ -154,6 +167,7 @@ function Sidebar({
   return (
     <aside
       className={[
+        "aman-notch-atas aman-notch-bawah aman-notch-kiri",
         "fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-slate-200 bg-white",
         "motion-safe:transition-transform motion-safe:duration-200",
         drawerTerbuka ? "translate-x-0" : "-translate-x-full",
@@ -167,7 +181,7 @@ function Sidebar({
           type="button"
           onClick={onTutupDrawer}
           aria-label="Tutup menu navigasi"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 motion-safe:transition hover:bg-slate-100 md:hidden"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-slate-500 motion-safe:transition active:scale-95 hover:bg-slate-100 md:hidden"
         >
           <X className="h-4 w-4" aria-hidden="true" />
         </button>

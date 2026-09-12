@@ -16,6 +16,52 @@ sebagai CSS variable di `src/app/globals.css` (`--color-app-bg`,
 mengubah nuansa di seluruh aplikasi. Dashboard (`src/app/dashboard/`) memakai
 [Recharts](https://recharts.org) untuk grafik tren garis & donut.
 
+Efek animasi SENGAJA dibuat sederhana & minimalis (bukan mencolok) —
+utility class `.animasi-masuk` (fade + geser naik tipis) dan
+`.kartu-interaktif` (kartu sedikit terangkat saat disorot) didefinisikan
+di `src/app/globals.css`, dipakai di kartu-kartu Dashboard dan transisi
+daftar↔form di Kelola Produk. Tetap tunduk pada blok
+`prefers-reduced-motion` yang sudah ada di file yang sama, jadi otomatis
+nonaktif untuk pengguna yang mematikan animasi di OS/browser-nya.
+
+**Optimasi gesture touchscreen & ragam ukuran layar mobile:**
+
+- Semua tombol/kontrol yang sering disentuh berulang (qty +/- Penjualan
+  di `/shift`, hapus baris Resep/Packaging di Kelola Produk, tombol
+  hamburger & tutup drawer navigasi, tombol tutup toast) dibesarkan ke
+  target sentuh minimal **44×44px** (standar WCAG), bukan sekadar
+  ukuran ikonnya — lihat `h-11 w-11` di `app-shell.tsx`, `shift/page.tsx`,
+  `kalkulator-hpp/page.tsx`, dan `toast.tsx`.
+- `button, a, [role="button"], input, select, textarea` diberi
+  `touch-action: manipulation` + `-webkit-tap-highlight-color: transparent`
+  (`globals.css`) — menghapus jeda tap ~300ms & kotak highlight biru
+  bawaan browser mobile, diganti feedback `:active` (scale) yang sudah
+  dipakai konsisten di seluruh tombol.
+- `viewport.viewportFit: "cover"` (`layout.tsx`) + class utilitas
+  `.aman-notch-atas/bawah/kiri/kanan` (`globals.css`, pakai
+  `env(safe-area-inset-*)`) dipasang di topbar mobile, drawer navigasi,
+  dan viewport toast — supaya tidak ketiban notch/pill kamera atau
+  home-indicator di HP layar penuh (iPhone dsb). Zoom TIDAK dikunci
+  (tidak ada `maximumScale`/`userScalable:false`) — mengunci pinch-zoom
+  melanggar WCAG untuk pengguna low-vision.
+- Layout sudah mobile-first sejak awal (flex/grid + breakpoint Tailwind,
+  tanpa tabel HTML atau lebar piksel tetap) — diverifikasi ulang di sini:
+  tidak ada `<table>`, tidak ada `grid-cols-3` ke atas tanpa breakpoint,
+  tidak ada `w-[...px]`/`min-w-[...px]` yang bisa memaksa scroll
+  horizontal di layar sempit (~320–375px).
+
+**Loading & notifikasi di setiap proses CRUD** (submit, simpan, hapus,
+ubah status, ekspor) sudah standar di seluruh halaman sejak sesi-sesi
+sebelumnya — pola `sedang<Aksi>` (state boolean/ID) yang men-disable
+tombol + menampilkan `<Loader2 className="animate-spin" />` selama
+proses berjalan (mencegah submit ganda), dipasangkan dengan
+`useToast()` (`src/shared/components/toast.tsx`) yang menampilkan pesan
+sukses/gagal SPESIFIK (bukan generik) setelah proses selesai. Diverifikasi
+ulang lengkap di sesi ini: `/shift`, `/belanja-nota`, `/kalkulator-hpp`
+(Kelola Produk), `/kelola-akun`, `/riwayat`, `/profil`, `/notifikasi`,
+`/login` semuanya sudah memenuhi pola ini untuk setiap operasi
+create/update/delete miliknya.
+
 ## Aturan Struktur Proyek (WAJIB dibaca sebelum menambah halaman)
 
 **Satu route = satu folder**, mengikuti konvensi Next.js App Router secara
@@ -155,12 +201,26 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
     (`src/shared/lib/resep.ts`), tanpa kode terpisah.
 - [x] Dashboard (`/dashboard`) — SEKARANG DIBAGI PER PERAN, bukan cuma satu tampilan:
   - **Owner/Finance**: Dashboard Analitik lama tetap utuh — kartu Omset &
-    **Laba Bersih OTOMATIS** hari ini + ringkasan bulan berjalan + Tren 7
-    Hari, PLUS banner baru "Stok bahan menipis" (dari Batas Minimal Stok).
+    **Laba Bersih OTOMATIS** hari ini + ringkasan bulan berjalan + Analitik
+    Tren, PLUS banner baru "Stok bahan menipis" (dari Batas Minimal Stok).
     Ini "zona privasi otoritas tinggi" atas permintaan pemilik cafe — data
     finansial & Analitik Tren TIDAK PERNAH dirender untuk peran lain,
     percabangannya di komponen paling luar (`DashboardRouter`), bukan
     sekadar disembunyikan lewat CSS.
+  - **Analitik Tren — rentang waktu custom** (`src/shared/lib/tren.ts`):
+    grafik Tren sekarang punya 5 pilihan periode lewat tombol segmen di
+    pojok kanan atas kartunya — **Harian** (14 hari terakhir), **Mingguan**
+    (8 minggu terakhir, dijumlahkan per 7 hari), **Bulanan** (6 bulan
+    terakhir dari `summary_bulanan`), **Custom Tanggal** (pilih tanggal
+    mulai & selesai bebas — kalau rentangnya lebih dari 35 hari otomatis
+    dikelompokkan per minggu supaya grafik tidak penuh sesak), dan
+    **Custom Bulan** (pilih bulan mulai & selesai bebas). Semua tetap
+    membaca dokumen ringkasan teragregasi (`summary_harian`/
+    `summary_bulanan`) pakai query range `documentId()` — bukan hitung
+    ulang transaksi mentah — jadi tidak menambah beban kuota Firestore.
+    Bagian pembangun daftar tanggal/bulannya murni (tanpa Firebase) dan
+    diuji di `src/shared/lib/tren-tanggal.ts` /
+    `src/shared/lib/tren.test.ts`.
   - **Kasir & Purchasing**: Dashboard yang SAMA SEKALI BERBEDA — rincian
     stok bahan baku per kategori + banner stok menipis, TANPA Omset/Laba/
     Tren apa pun. Purchasing membaca `bahan_baku` langsung (sudah py akses
@@ -198,6 +258,34 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
     berlaku begitu foto terunggah) — lihat `bahan_baku/{id}/penyesuaian_stok`.
 - [x] Kelola Akun — buat akun staff (aplikasi Firebase kedua agar sesi Owner tidak ikut ter-log-out) & aktif/nonaktifkan akun (`/kelola-akun`)
 - [x] Riwayat shift (`/riwayat`) — daftar shift, **Tanggungan Kasir** (selisih kas minus belum lunas + tombol Tandai Lunas), dan **Hitung Ulang Laporan Harian** (menghitung ulang omset/kas keluar/selisih kas/HPP/laba suatu tanggal dari data shift aslinya, lalu menimpanya — sekaligus jadi pemulihan bila ringkasan harian meleset) — & Pusat Notifikasi dasar (`/notifikasi`)
+- [x] **Ekspor Laporan Excel & PDF A4 berkop surat** (kartu di `/riwayat`)
+  — pilih rentang tanggal, lalu unduh `.xlsx` atau PDF ukuran A4 yang
+  dicetak dengan KOP SURAT berisi Detail Perusahaan (nama, bidang usaha,
+  alamat, telepon/email/website, NPWP), judul laporan, periode, tabel
+  shift, ringkasan total, dan kaki halaman bernomor. Lihat
+  `src/shared/lib/ekspor.ts` — exceljs & jspdf sengaja di-`import()`
+  dinamis agar tidak membebani halaman yang tidak mengekspor apa pun.
+- [x] **Profil Akun** (`/profil`, semua peran) — biodata diri (nama bisa
+  diperbaiki sendiri), **Ganti Kata Sandi** (wajib kata sandi lama →
+  reautentikasi Firebase), dan **KHUSUS Owner/Finance**: **Detail
+  Perusahaan** di bagian bawah, yang menjadi sumber KOP SURAT semua
+  ekspor di atas.
+- [x] **Auto Logout** — sesi berakhir saat (1) tidak ada aktivitas 60
+  menit, (2) tab browser ditutup, (3) aplikasi browser ditutup, (4)
+  perangkat dimatikan. Poin 2–4 ditangani oleh `browserSessionPersistence`
+  di `src/shared/lib/firebase.ts` (sesi hidup di sessionStorage, yang
+  umurnya terikat tab) — bukan lewat event `beforeunload`, yang tidak
+  pernah bisa diandalkan saat perangkat mati paksa. Poin 1 ditangani
+  `src/shared/components/auto-logout.tsx`, lengkap dengan peringatan
+  hitung mundur 2 menit + tombol "Saya masih di sini".
+- [x] **Auto Draft** — form panjang menulis isinya ke localStorage terus-
+  menerus (`src/shared/lib/draf.ts`, 18 unit test), jadi pekerjaan yang
+  belum sempat disimpan TIDAK hilang saat auto logout/tab tertutup.
+  Terpasang di: Kelola Produk (menu + seluruh baris resep & packaging,
+  dengan banner "Lanjutkan Draf / Buang Draf"), Tutup Shift (hasil
+  hitungan kas fisik), dan Tambah Item Belanja. Draf dikunci per-uid
+  sehingga dua kasir yang memakai satu tablet tidak pernah tertukar, dan
+  otomatis kedaluwarsa setelah 48 jam.
 
 **Perbaikan bug penting (pasca-rilis fitur Resep + Inventaris):**
 
@@ -258,10 +346,7 @@ Inventaris otomatis (baca komentar kepala file terkait untuk detail):**
 
 **Batasan lain yang masih P1/P2 (lihat PRD bagian 13 untuk roadmap lengkap):**
 
-- Dashboard belum punya toggle periode grafik Mingguan/Bulanan/Tahunan
-  (PRD 9.1) — baru tren Harian 7 hari.
-- Riwayat belum ada filter tanggal, laporan bulanan/tahunan, atau Export
-  Excel/PDF (PRD 9.6).
+- Riwayat belum ada filter tanggal, laporan bulanan/tahunan.
 - Notifikasi belum ada badge jumlah belum-dibaca di ikon lonceng Nav.
 - Belanja & Nota belum ada deteksi nota duplikat.
 - Alur "Ajukan Koreksi" (tiket approval, PRD 7.5) untuk data yang sudah

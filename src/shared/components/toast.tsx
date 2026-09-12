@@ -125,7 +125,7 @@ function ToastViewport({
 
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex flex-col items-center gap-2 p-4 sm:items-end"
+      className="aman-notch-bawah aman-notch-kiri aman-notch-kanan pointer-events-none fixed inset-x-0 bottom-0 z-50 flex flex-col items-center gap-2 p-4 sm:items-end"
       aria-live="polite"
     >
       {toasts.map((toast) => (
@@ -175,7 +175,8 @@ function ToastCard({
         onClick={() => onDismiss(toast.id)}
         aria-label="Tutup notifikasi"
         className={[
-          "shrink-0 rounded-md p-1 motion-safe:transition-colors motion-safe:duration-150",
+          "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md -my-2 -mr-2",
+          "motion-safe:transition-colors motion-safe:duration-150 active:scale-90",
           "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2",
           isSuccess
             ? "hover:bg-emerald-100 focus-visible:outline-emerald-600"

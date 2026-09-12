@@ -65,7 +65,15 @@ import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { ambilResepMenu, terapkanPerubahanStok } from "@/shared/lib/resep";
+import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
 import type { ResepItem } from "@/shared/types/inventaris";
+
+/** Isi draf otomatis untuk form Tutup Shift (lihat TutupShiftKartu). */
+interface IsiDrafTutupShift {
+  omsetNonTunai: number;
+  kasFisik: number;
+  keteranganSelisih: string;
+}
 
 interface MenuHarga {
   id: string;
@@ -477,7 +485,7 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
                               onClick={() => ubahQty(item, -1)}
                               disabled={qty <= 0 || !resepSiap}
                               aria-label={`Kurangi ${item.nama}`}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 text-slate-600 motion-safe:transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                              className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 text-slate-600 motion-safe:transition active:scale-95 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Minus className="h-4 w-4" aria-hidden="true" />
                             </button>
@@ -489,7 +497,7 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
                               onClick={() => ubahQty(item, 1)}
                               disabled={!resepSiap}
                               aria-label={`Tambah ${item.nama}`}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white motion-safe:transition hover:bg-emerald-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                              className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-emerald-600 text-white motion-safe:transition hover:bg-emerald-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Plus className="h-4 w-4" aria-hidden="true" />
                             </button>
@@ -667,6 +675,39 @@ function TutupShiftKartu({
   const [keteranganSelisih, setKeteranganSelisih] = useState("");
   const [sedangTutup, setSedangTutup] = useState(false);
 
+  // --- Auto Draft ---
+  // Angka-angka ini hasil MENGHITUNG UANG FISIK di laci. Kalau hilang
+  // karena auto logout atau tab tertutup, Kasir harus menghitung ulang
+  // seluruh laci dari nol — kerugian waktu yang nyata. Drafnya dikunci
+  // per shiftId supaya draf shift kemarin tidak pernah bocor ke shift
+  // hari ini.
+  const kunciDraf = `tutup-shift:${shiftId}`;
+  const isiDraf = useMemo<IsiDrafTutupShift>(
+    () => ({ omsetNonTunai, kasFisik, keteranganSelisih }),
+    [omsetNonTunai, kasFisik, keteranganSelisih],
+  );
+  useDrafOtomatis(
+    user?.uid,
+    kunciDraf,
+    isiDraf,
+    omsetNonTunai > 0 || kasFisik > 0 || keteranganSelisih.trim().length > 0,
+  );
+
+  useEffect(() => {
+    if (!user) return;
+    let dibatalkan = false;
+    ambilDrafAsync<IsiDrafTutupShift>(user.uid, kunciDraf).then((tersimpan) => {
+      if (dibatalkan || !tersimpan?.data) return;
+      setOmsetNonTunai(tersimpan.data.omsetNonTunai ?? 0);
+      setKasFisik(tersimpan.data.kasFisik ?? 0);
+      setKeteranganSelisih(tersimpan.data.keteranganSelisih ?? "");
+      showToast("success", "Hitungan kas yang belum sempat disimpan dipulihkan dari draf.");
+    });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [user, kunciDraf, showToast]);
+
   const omsetTunai = Math.max(totalOmset - omsetNonTunai, 0);
   const kasSeharusnya = modalKasAwal + omsetTunai - totalKasKeluar;
   const selisihKas = kasFisik - kasSeharusnya;
@@ -737,6 +778,8 @@ function TutupShiftKartu({
         });
       }
 
+      // Shift sudah tersimpan — draf hitungan kasnya tidak diperlukan lagi.
+      if (user) hapusDraf(user.uid, kunciDraf);
       showToast("success", "Shift ditutup dan terkunci. Terima kasih!");
     } catch (error) {
       showToast(

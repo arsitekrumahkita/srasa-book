@@ -48,6 +48,51 @@ body {
   font-family: var(--font-sans);
 }
 
+/* ------------------------------------------------------------
+ * Optimasi ragam ukuran layar & gesture touchscreen:
+ * - Safe-area (notch/pill kamera/home-indicator iPhone & Android
+ *   layar penuh) — dipasangkan dengan viewportFit:"cover" di
+ *   layout.tsx. Dipakai lewat class utilitas di bawah, BUKAN
+ *   dipaksakan ke body langsung, supaya hanya elemen yang memang
+ *   menempel ke tepi layar (topbar sticky, drawer, toast) yang
+ *   kena, bukan seluruh konten ikut bergeser.
+ * - -webkit-tap-highlight-color: transparent — highlight biru/abu
+ *   bawaan Safari/Chrome mobile saat tap dimatikan, DIGANTI oleh
+ *   state :active kita sendiri (transform scale, dsb.) supaya
+ *   feedback sentuhannya konsisten dengan yang dirancang di sini,
+ *   bukan kotak highlight browser yang terlihat "nyangkut".
+ * - touch-action: manipulation pada elemen interaktif menghapus
+ *   jeda ~300ms sebelum tap terdaftar di sebagian browser mobile
+ *   lama, dan mencegah double-tap-to-zoom tak sengaja saat pengguna
+ *   menekan cepat berulang (mis. tombol +/- qty di Kasir).
+ * ------------------------------------------------------------ */
+
+button,
+a,
+[role="button"],
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.aman-notch-atas {
+  padding-top: max(env(safe-area-inset-top), 0px);
+}
+
+.aman-notch-bawah {
+  padding-bottom: max(env(safe-area-inset-bottom), 0px);
+}
+
+.aman-notch-kiri {
+  padding-left: max(env(safe-area-inset-left), 0px);
+}
+
+.aman-notch-kanan {
+  padding-right: max(env(safe-area-inset-right), 0px);
+}
+
 body,
 h1,
 h2,
@@ -97,4 +142,53 @@ label {
     opacity: 0;
     transform: translateY(0.5rem);
   }
+}
+
+/* ------------------------------------------------------------
+ * Efek animasi sederhana & minimalis (estetika + pengalaman
+ * pengguna) — SENGAJA dibuat ringan: cuma fade + geser kecil,
+ * bukan animasi mencolok yang mengganggu. Dipakai untuk masuknya
+ * konten halaman/kartu dan perpindahan tampilan (mis. daftar <->
+ * form di Kelola Produk, atau Dashboard Owner <-> Kasir/Purchasing).
+ * Tetap tunduk pada blok prefers-reduced-motion di atas.
+ * ------------------------------------------------------------ */
+@keyframes masuk-fade-naik {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes masuk-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animasi-masuk {
+  animation: masuk-fade-naik 0.35s ease-out both;
+}
+
+.animasi-masuk-halus {
+  animation: masuk-fade 0.25s ease-out both;
+}
+
+/* Kartu ringkasan/daftar: sedikit terangkat saat disorot, transisi
+   halus alih-alih berubah mendadak. */
+.kartu-interaktif {
+  transition:
+    box-shadow 0.2s ease-out,
+    transform 0.2s ease-out;
+}
+
+.kartu-interaktif:hover {
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
 }

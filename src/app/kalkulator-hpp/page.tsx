@@ -40,6 +40,14 @@ import {
 } from "@/shared/lib/hpp-calculator";
 import { formatPersen, formatRupiah, formatRupiahSatuan } from "@/shared/lib/format";
 import { setMirrorStokKasir } from "@/shared/lib/resep";
+import {
+  ambilDrafAsync,
+  hapusDraf,
+  useDrafOtomatis,
+  usiaDraf,
+  type DrafTersimpan,
+} from "@/shared/lib/draf";
+import { useAuth } from "@/shared/lib/auth-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import type { ProfilHppDefault } from "@/shared/types/hpp";
@@ -75,6 +83,26 @@ interface MenuTersimpan {
 
 /** Nilai khusus di dropdown menu = sedang membuat menu baru. */
 const MENU_BARU = "";
+
+/** Kunci draf otomatis untuk form ini (lihat src/shared/lib/draf.ts). */
+const KUNCI_DRAF_MENU = "kelola-produk";
+
+/** Bentuk draf form Kelola Produk. Sengaja menyimpan SELURUH isi form,
+ *  termasuk menuDiedit & resepIdTersimpan, supaya draf yang dipulihkan
+ *  tetap tahu bahwa ia sedang MENGUBAH menu tertentu (bukan membuat
+ *  menu kembar baru) dan tetap tahu baris resep mana yang perlu
+ *  dihapus di Firestore bila Owner sempat membuangnya sebelum logout. */
+interface IsiDrafMenu {
+  menuDiedit: string;
+  namaMenu: string;
+  kategoriMenu: string;
+  hargaJual: number;
+  resepRows: BarisResep[];
+  kemasanRows: BarisResep[];
+  resepIdTersimpan: string[];
+  pakaiOverrideSusut: boolean;
+  overrideSusut: number;
+}
 
 export default function KalkulatorHppPage() {
   return (
@@ -408,6 +436,86 @@ function KalkulatorHppForm() {
   ]);
 
   // ------------------------------------------------------------
+  // SECTION: Auto Draft
+  //
+  // Form ini yang paling panjang di seluruh aplikasi (nama, kategori,
+  // sederet baris resep, sederet baris packaging, harga jual) dan
+  // paling menyakitkan kalau hilang gara-gara auto logout 60 menit
+  // atau tab tidak sengaja tertutup. Isinya terus dicerminkan ke
+  // localStorage; saat dibuka lagi, draf ditawarkan untuk dipulihkan.
+  // ------------------------------------------------------------
+
+  const { user } = useAuth();
+  const isiForm = useMemo<IsiDrafMenu>(
+    () => ({
+      menuDiedit,
+      namaMenu,
+      kategoriMenu,
+      hargaJual,
+      resepRows,
+      kemasanRows,
+      resepIdTersimpan,
+      pakaiOverrideSusut,
+      overrideSusut,
+    }),
+    [
+      menuDiedit,
+      namaMenu,
+      kategoriMenu,
+      hargaJual,
+      resepRows,
+      kemasanRows,
+      resepIdTersimpan,
+      pakaiOverrideSusut,
+      overrideSusut,
+    ],
+  );
+
+  // Form dianggap "sedang dikerjakan" hanya bila sudah ada isinya —
+  // form kosong tidak boleh menulis draf, karena nanti memunculkan
+  // tawaran "pulihkan draf" yang isinya tidak ada apa-apa.
+  const adaIsi =
+    namaMenu.trim().length > 0 || resepRows.length > 0 || kemasanRows.length > 0;
+  useDrafOtomatis(user?.uid, KUNCI_DRAF_MENU, isiForm, tampilan === "form" && adaIsi);
+
+  const [drafTertunda, setDrafTertunda] = useState<DrafTersimpan<IsiDrafMenu> | null>(null);
+  useEffect(() => {
+    if (!user) return;
+    let dibatalkan = false;
+    ambilDrafAsync<IsiDrafMenu>(user.uid, KUNCI_DRAF_MENU).then((tersimpan) => {
+      if (dibatalkan) return;
+      // Tawarkan hanya draf yang benar-benar berisi.
+      if (tersimpan?.data && (tersimpan.data.namaMenu || tersimpan.data.resepRows?.length)) {
+        setDrafTertunda(tersimpan);
+      }
+    });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [user]);
+
+  function pulihkanDraf() {
+    const data = drafTertunda?.data;
+    if (!data) return;
+    setMenuDiedit(data.menuDiedit ?? MENU_BARU);
+    setNamaMenu(data.namaMenu ?? "");
+    setKategoriMenu(data.kategoriMenu ?? "");
+    setHargaJual(data.hargaJual ?? 0);
+    setResepRows(data.resepRows ?? []);
+    setKemasanRows(data.kemasanRows ?? []);
+    setResepIdTersimpan(data.resepIdTersimpan ?? []);
+    setPakaiOverrideSusut(data.pakaiOverrideSusut ?? false);
+    setOverrideSusut(data.overrideSusut ?? PROFIL_AWAL.persenSusut);
+    setDrafTertunda(null);
+    setTampilan("form");
+  }
+
+  function buangDraf() {
+    if (user) hapusDraf(user.uid, KUNCI_DRAF_MENU);
+    setDrafTertunda(null);
+  }
+
+  // ------------------------------------------------------------
   // SECTION: Handler
   // ------------------------------------------------------------
 
@@ -420,6 +528,10 @@ function KalkulatorHppForm() {
     setHargaJual(0);
     setPakaiOverrideSusut(false);
     setOverrideSusut(PROFIL_AWAL.persenSusut);
+    // Draf ikut dibuang begitu form dikosongkan (mis. setelah berhasil
+    // disimpan) — kalau tidak, tawaran "pulihkan draf" akan terus
+    // muncul untuk pekerjaan yang sudah selesai.
+    if (user) hapusDraf(user.uid, KUNCI_DRAF_MENU);
   }
 
   /** Muat menu tersimpan ke dalam form untuk diedit (resep, Packaging
@@ -615,6 +727,9 @@ function KalkulatorHppForm() {
     return (
       <DaftarProdukIsi
         daftarMenu={daftarMenu}
+        draf={drafTertunda}
+        onPulihkanDraf={pulihkanDraf}
+        onBuangDraf={buangDraf}
         onTambahBaru={() => {
           setMenuDiedit(MENU_BARU);
           kosongkanForm();
@@ -629,7 +744,7 @@ function KalkulatorHppForm() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <button
           type="button"
@@ -866,7 +981,7 @@ function KalkulatorHppForm() {
                       type="button"
                       onClick={() => hapusBarisResep(row.bahanId)}
                       aria-label={`Hapus ${row.bahanNama} dari resep`}
-                      className="text-slate-400 hover:text-rose-600"
+                      className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-slate-400 motion-safe:transition active:scale-90 hover:bg-rose-50 hover:text-rose-600"
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
                     </button>
@@ -967,7 +1082,7 @@ function KalkulatorHppForm() {
                       type="button"
                       onClick={() => hapusBarisKemasan(row.bahanId)}
                       aria-label={`Hapus ${row.bahanNama} dari Packaging Cost`}
-                      className="text-slate-400 hover:text-rose-600"
+                      className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-slate-400 motion-safe:transition active:scale-90 hover:bg-rose-50 hover:text-rose-600"
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
                     </button>
@@ -1294,10 +1409,16 @@ function KalkulatorHppForm() {
  */
 function DaftarProdukIsi({
   daftarMenu,
+  draf,
+  onPulihkanDraf,
+  onBuangDraf,
   onTambahBaru,
   onEditMenu,
 }: {
   daftarMenu: MenuTersimpan[];
+  draf: DrafTersimpan<IsiDrafMenu> | null;
+  onPulihkanDraf: () => void;
+  onBuangDraf: () => void;
   onTambahBaru: () => void;
   onEditMenu: (id: string) => void;
 }) {
@@ -1312,7 +1433,7 @@ function DaftarProdukIsi({
   }, [daftarMenu]);
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
@@ -1333,6 +1454,37 @@ function DaftarProdukIsi({
           Tambah Menu Baru
         </button>
       </header>
+
+      {draf ? (
+        <div
+          role="status"
+          className="mb-6 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+        >
+          <p className="font-semibold">Ada pekerjaan yang belum sempat disimpan</p>
+          <p className="mt-1 text-xs text-amber-800">
+            Draf &quot;{draf.data.namaMenu || "Menu tanpa nama"}&quot; tersimpan
+            otomatis {usiaDraf(draf.disimpanPada)} (
+            {draf.data.resepRows?.length ?? 0} bahan,{" "}
+            {draf.data.kemasanRows?.length ?? 0} item packaging).
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={onPulihkanDraf}
+              className="inline-flex items-center rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm motion-safe:transition hover:bg-amber-700"
+            >
+              Lanjutkan Draf
+            </button>
+            <button
+              type="button"
+              onClick={onBuangDraf}
+              className="inline-flex items-center rounded-lg border border-amber-400 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm motion-safe:transition hover:bg-amber-100"
+            >
+              Buang Draf
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {daftarMenu.length === 0 ? (
         <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">

@@ -14,10 +14,15 @@ export const metadata: Metadata = {
     "Aplikasi accounting pendamping Majoo POS — omset, kas, dan HPP dalam satu layar.",
 };
 
-// Wajib untuk PWA/mobile-friendly (webrules-hikimori poin 5).
+// Wajib untuk PWA/mobile-friendly (webrules-hikimori poin 5). Batas zoom
+// SENGAJA tidak dikunci (tidak ada maximumScale/userScalable: false) —
+// mengunci pinch-zoom melanggar WCAG (pengguna low-vision butuh zoom).
+// viewportFit "cover" + CSS env(safe-area-inset-*) di globals.css supaya
+// layout tidak ketiban notch/pill kamera di HP layar penuh (iPhone dsb).
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
