@@ -188,7 +188,12 @@ function Sidebar({
       </div>
 
       {profil ? (
-        <div className="mx-4 mb-4 flex items-center gap-3 rounded-xl bg-emerald-50 px-3 py-2.5">
+        <Link
+          href="/profil"
+          onClick={onTutupDrawer}
+          aria-label="Buka Profil Akun"
+          className="mx-4 mb-4 flex items-center gap-3 rounded-xl bg-emerald-50 px-3 py-2.5 motion-safe:transition active:scale-[0.98] hover:bg-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+        >
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-sm font-bold text-white">
             {inisial}
           </span>
@@ -196,7 +201,7 @@ function Sidebar({
             <p className="truncate text-sm font-semibold text-slate-900">{profil.nama}</p>
             <p className="text-xs text-slate-500">{LABEL_PERAN[profil.peran]}</p>
           </div>
-        </div>
+        </Link>
       ) : null}
 
       <nav className="flex-1 overflow-y-auto px-3">
