@@ -1,13 +1,32 @@
 "use client";
 
 // ============================================================
-// Halaman: Shift — buka shift, input penjualan, kas keluar,
-// tutup shift (PRD bagian 9.2). Peran UI: Kasir SAJA — Owner
-// tidak boleh input operasional harian ini (pemisahan tugas),
-// Owner memantau lewat Dashboard/Riwayat. firestore.rules tetap
-// memberi Owner (superadmin) akses baca/tulis penuh di backend
-// sebagai admin override (audit, koreksi data), tapi halaman ini
-// sengaja tidak ditampilkan/diizinkan untuk peran superadmin.
+// Halaman: Shift — input penjualan, kas keluar, tutup shift
+// (PRD bagian 9.2, disesuaikan atas permintaan pemilik cafe).
+// Peran UI: Kasir SAJA — Owner tidak boleh input operasional
+// harian ini (pemisahan tugas), Owner memantau lewat
+// Dashboard/Riwayat. firestore.rules tetap memberi Owner
+// (superadmin) akses baca/tulis penuh di backend sebagai admin
+// override (audit, koreksi data), tapi halaman ini sengaja tidak
+// ditampilkan/diizinkan untuk peran superadmin.
+//
+// PERUBAHAN PENTING: TIDAK ADA lagi langkah "Buka Shift" manual.
+// Modal Kas Awal kini FLAT Rp500.000 setiap hari (MODAL_KAS_AWAL_HARIAN
+// di bawah) — begitu Kasir membuka halaman ini dan belum ada shift
+// untuk tanggal hari ini, shift langsung dibuat otomatis di belakang
+// layar dengan modal itu, TANPA menampilkan form/tombol apa pun ke
+// Kasir. Kasir hanya melihat Input Penjualan, Kas Keluar, dan (di
+// akhir hari) Tutup Shift. Modal ini "reset" tiap hari secara alami
+// karena setiap hari adalah dokumen shift baru dengan modal flat yang
+// sama, TIDAK diwariskan dari sisa kas hari sebelumnya.
+//
+// Kas Keluar (nota air galon/kresek/plastik dkk.) tetap tercatat di
+// sub-koleksi shift/{id}/kas_keluar seperti sebelumnya, dan tetap
+// mengurangi "Kas Seharusnya" lewat formula yang sama:
+//   Kas Seharusnya = Modal Kas Awal (flat) + Omset Tunai − Total Kas Keluar
+// Karena modal sekarang konstan (tidak pernah diubah manual), secara
+// efektif kas keluar itu SELALU mengurangi bagian omset tunai hari
+// itu, bukan modal — persis seperti yang diminta.
 //
 // CATATAN ARSITEKTUR PENTING (batasan Spark Plan, tanpa Cloud
 // Functions): HPP bersifat privat, hanya bisa dibaca Owner
@@ -23,7 +42,7 @@
 // satu-satunya peran dengan akses ke uang DAN HPP sekaligus.
 // ============================================================
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
@@ -37,7 +56,7 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { Loader2, Minus, Plus, Save, TriangleAlert, Wallet } from "lucide-react";
+import { Loader2, Minus, Plus, Save, TriangleAlert } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
@@ -92,6 +111,11 @@ function tanggalHariIni(): string {
   ).padStart(2, "0")}`;
 }
 
+/** Modal Kas Awal FLAT — sama setiap hari, tidak lagi diinput manual
+ *  oleh Kasir dan TIDAK mewarisi sisa kas hari sebelumnya (reset
+ *  harian). Lihat komentar kepala file untuk alasannya. */
+const MODAL_KAS_AWAL_HARIAN = 500_000;
+
 export default function ShiftPage() {
   return (
     <RequireAuth peranDiizinkan={["kasir"]}>
@@ -108,8 +132,11 @@ function ShiftIsi() {
 
   const [memuatShiftAktif, setMemuatShiftAktif] = useState(true);
   const [shiftAktif, setShiftAktif] = useState<ShiftAktif | null>(null);
-  const [modalKasAwal, setModalKasAwal] = useState(0);
-  const [sedangBuka, setSedangBuka] = useState(false);
+  const [gagalMenyiapkan, setGagalMenyiapkan] = useState(false);
+  // Mencegah shift baru dibuat dua kali (mis. React re-render atau
+  // listener sempat menembak ulang) selagi penulisan pertama masih
+  // berjalan — lihat efek auto-provisioning di bawah.
+  const sedangMenyiapkanRef = useRef(false);
 
   // --- Cari shift "buka" milik kasir ini hari ini ---
   useEffect(() => {
@@ -136,79 +163,53 @@ function ShiftIsi() {
     return unsub;
   }, [user]);
 
-  async function handleBukaShift() {
-    if (!user || !profil) return;
-    setSedangBuka(true);
-    try {
-      await addDoc(collection(db, "shift"), {
-        tanggal: tanggalHariIni(),
-        kasirUid: user.uid,
-        kasirNama: profil.nama,
-        modalKasAwal,
-        totalOmset: 0,
-        omsetTunai: 0,
-        omsetNonTunai: 0,
-        totalKasKeluar: 0,
-        status: "buka",
-        waktuBuka: serverTimestamp(),
-      });
-      showToast("success", `Shift dibuka dengan modal awal ${formatRupiah(modalKasAwal)}.`);
-    } catch (error) {
+  // --- Auto-provisioning: TIDAK ADA lagi tombol "Buka Shift". Begitu
+  // dipastikan belum ada shift hari ini, langsung buat sendiri dengan
+  // modal flat, tanpa keterlibatan Kasir sama sekali. ---
+  useEffect(() => {
+    if (memuatShiftAktif || shiftAktif || !user || !profil) return;
+    if (sedangMenyiapkanRef.current) return;
+    sedangMenyiapkanRef.current = true;
+
+    addDoc(collection(db, "shift"), {
+      tanggal: tanggalHariIni(),
+      kasirUid: user.uid,
+      kasirNama: profil.nama,
+      modalKasAwal: MODAL_KAS_AWAL_HARIAN,
+      totalOmset: 0,
+      omsetTunai: 0,
+      omsetNonTunai: 0,
+      totalKasKeluar: 0,
+      status: "buka",
+      waktuBuka: serverTimestamp(),
+    }).catch((error) => {
+      sedangMenyiapkanRef.current = false;
+      setGagalMenyiapkan(true);
       showToast(
         "error",
-        error instanceof Error ? `Gagal membuka shift: ${error.message}` : "Gagal membuka shift.",
+        error instanceof Error
+          ? `Gagal menyiapkan shift hari ini: ${error.message}`
+          : "Gagal menyiapkan shift hari ini.",
       );
-    } finally {
-      setSedangBuka(false);
-    }
-  }
+    });
+  }, [memuatShiftAktif, shiftAktif, user, profil, showToast]);
 
-  if (memuatShiftAktif) {
+  if (memuatShiftAktif || (!shiftAktif && !gagalMenyiapkan)) {
     return (
       <main className="flex min-h-[50vh] items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
-        <span className="sr-only">Memeriksa status shift...</span>
+        <span className="sr-only">Menyiapkan shift hari ini...</span>
       </main>
     );
   }
 
   if (!shiftAktif) {
     return (
-      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
-        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
-            <Wallet className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-            <h1 className="text-lg font-bold text-slate-900">Buka Shift</h1>
-          </div>
-          <NumberField
-            id="modal-kas-awal"
-            label="Modal Kas Awal"
-            value={modalKasAwal}
-            onChange={setModalKasAwal}
-            prefix="Rp"
-            hint="Kas kembalian yang diterima saat mulai shift."
-          />
-          <button
-            type="button"
-            onClick={handleBukaShift}
-            disabled={sedangBuka}
-            aria-busy={sedangBuka}
-            className={[
-              "mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm",
-              "motion-safe:transition motion-safe:duration-150",
-              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
-              sedangBuka
-                ? "cursor-not-allowed bg-emerald-400"
-                : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
-            ].join(" ")}
-          >
-            {sedangBuka ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Wallet className="h-4 w-4" aria-hidden="true" />
-            )}
-            {sedangBuka ? "Membuka..." : "Buka Shift"}
-          </button>
+      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16 text-center">
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-6 shadow-sm">
+          <p className="text-sm text-amber-900">
+            Gagal menyiapkan shift hari ini. Coba muat ulang halaman ini.
+          </p>
         </div>
       </main>
     );
@@ -632,7 +633,7 @@ function TutupShiftKartu({
       className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
     >
       <h2 id="bagian-tutup" className="text-base font-semibold text-slate-900">
-        Tutup Shift
+        Tutup Shift Hari Ini
       </h2>
       <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <NumberField
@@ -653,6 +654,10 @@ function TutupShiftKartu({
       </div>
 
       <dl className="mt-4 divide-y divide-slate-100 rounded-lg bg-slate-50 p-3 text-sm">
+        <div className="flex justify-between py-1">
+          <dt className="text-slate-600">Modal Kas Awal (flat, tidak diinput manual)</dt>
+          <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(modalKasAwal)}</dd>
+        </div>
         <div className="flex justify-between py-1">
           <dt className="text-slate-600">Kas Seharusnya</dt>
           <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(kasSeharusnya)}</dd>

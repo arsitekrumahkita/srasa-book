@@ -120,7 +120,8 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
   - Logika murni & teruji: `src/shared/lib/hpp-calculator.ts` (14 unit test)
   - **Tersambung Firestore**: menulis `menu_harga/{menuId}` (publik) + `menu/{menuId}` (privat) sekaligus, sesuai pemisahan keamanan PRD 6.3
 - [x] Dashboard Analitik dasar (`/dashboard`) — kartu Omset & Laba Bersih hari ini + ringkasan bulan berjalan, dibaca dari `summary_harian`/`summary_bulanan`
-- [x] Shift — Buka/Tutup Shift, Input Penjualan, Kas Keluar (`/shift`)
+- [x] Shift — Input Penjualan, Kas Keluar, Tutup Shift Hari Ini (`/shift`)
+  - Modal Kas Awal FLAT Rp500.000 setiap hari, reset otomatis tiap hari (tidak mewarisi sisa kas hari sebelumnya) — TIDAK ADA lagi langkah "Buka Shift" manual, shift hari ini langsung disiapkan otomatis begitu Kasir membuka halaman. Lihat komentar kepala `src/app/shift/page.tsx` untuk detailnya.
 - [x] Belanja & Nota — kas belanja, item, riwayat harga, notifikasi kenaikan harga >10%, upload foto nota ke Cloudinary (`/belanja-nota`)
 - [x] Kelola Akun — buat akun staff (aplikasi Firebase kedua agar sesi Owner tidak ikut ter-log-out) & aktif/nonaktifkan akun (`/kelola-akun`)
 - [x] Riwayat shift dasar (`/riwayat`) & Pusat Notifikasi dasar (`/notifikasi`)
