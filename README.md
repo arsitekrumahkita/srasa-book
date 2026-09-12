@@ -156,7 +156,39 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
     wajib foto sebagai bukti, TIDAK PERLU persetujuan Owner (langsung
     berlaku begitu foto terunggah) — lihat `bahan_baku/{id}/penyesuaian_stok`.
 - [x] Kelola Akun — buat akun staff (aplikasi Firebase kedua agar sesi Owner tidak ikut ter-log-out) & aktif/nonaktifkan akun (`/kelola-akun`)
-- [x] Riwayat shift (`/riwayat`) — daftar shift, **Tanggungan Kasir** (selisih kas minus belum lunas + tombol Tandai Lunas), dan **Hitung Ulang Laba Bersih** (backfill manual untuk hari lampau) — & Pusat Notifikasi dasar (`/notifikasi`)
+- [x] Riwayat shift (`/riwayat`) — daftar shift, **Tanggungan Kasir** (selisih kas minus belum lunas + tombol Tandai Lunas), dan **Hitung Ulang Laporan Harian** (menghitung ulang omset/kas keluar/selisih kas/HPP/laba suatu tanggal dari data shift aslinya, lalu menimpanya — sekaligus jadi pemulihan bila ringkasan harian meleset) — & Pusat Notifikasi dasar (`/notifikasi`)
+
+**Perbaikan bug penting (pasca-rilis fitur Resep + Inventaris):**
+
+- **Shift tidak lagi dobel.** Sebelumnya pencarian shift menyaring
+  `status == "buka"`, sehingga begitu Kasir menekan Tutup Shift layarnya
+  tersangkut di spinner, dan memuat ulang halaman akan MEMBUAT shift kedua
+  di hari yang sama (modal Rp500.000 dobel + `jumlahShift` terhitung dua
+  kali). Sekarang shift hari ini ditemukan apa pun statusnya, dan bila
+  sudah ditutup Kasir melihat layar "Shift hari ini sudah ditutup".
+  Statusnya juga disimpan sebagai `terkunci` supaya Security Rules ikut
+  menolak perubahan dari Kasir, bukan hanya UI-nya.
+- **Harga bahan murah tidak lagi jadi Rp0.** Harga per satuan dulu
+  dibulatkan (`Math.round`), padahal bahan bervolume besar harganya
+  pecahan — air galon isi ulang Rp6.000 ÷ 19.000 ml = Rp0,32/ml
+  membulat jadi 0, artinya bahan itu dihitung GRATIS selamanya di HPP.
+  Nilai pecahan kini disimpan apa adanya; pembulatan hanya di tampilan
+  (`formatRupiahSatuan`, ada unit test-nya di `format.test.ts`).
+- **Laba Bersih tidak lagi minus palsu sepanjang hari.** Omset dulu
+  diambil dari field `shift.totalOmset` yang baru terisi saat Tutup
+  Shift, sementara HPP dihitung dari subkoleksi `penjualan` yang terisi
+  sejak pagi — hasilnya Dashboard menampilkan omset 0 dengan HPP penuh.
+  Keduanya kini bersumber dari `penjualan` yang sama.
+- **Menu & resep sekarang bisa diedit.** Kalkulator HPP dulu selalu
+  membuat `menuId` baru setiap Simpan, jadi salah takaran sekali berarti
+  salah selamanya (menu kembar, dan resep lama tetap dipakai Kasir untuk
+  mengurangi stok). Sekarang ada pilihan "Ubah: <nama menu>" yang memuat
+  resep tersimpan; bahan yang dibuang ikut dihapus dokumennya.
+- **Stok minus ditampilkan terang-terangan** di Belanja & Nota. Stok
+  minus selalu berarti ada yang keliru (takaran resep kebesaran atau
+  pembelian belum dicatat), jadi tidak lagi dibiarkan diam.
+- **Tombol +/− penjualan nonaktif sampai resep selesai dimuat**, supaya
+  penjualan tidak sempat tercatat tanpa stok gudang ikut berkurang.
 
 **Keputusan/penyederhanaan yang sengaja diambil pada fitur Resep +
 Inventaris otomatis (baca komentar kepala file terkait untuk detail):**
@@ -175,6 +207,9 @@ Inventaris otomatis (baca komentar kepala file terkait untuk detail):**
 - Laba Bersih di Dashboard dihitung ULANG setiap halaman dibuka (bukan
   terus-menerus real-time) — buka ulang halaman untuk angka terbaru
   sepanjang hari.
+- Modal Kas Awal flat Rp500.000 berlaku PER KASIR PER HARI. Bila dalam
+  satu hari ada lebih dari satu akun Kasir yang bertugas, masing-masing
+  mendapat shift sendiri dengan modal Rp500.000 sendiri.
 - Laba Bersih = Total Omset − HPP Terjual − Total Kas Keluar. Total
   Belanja (`kas_belanja`) SENGAJA tidak dikurangkan lagi di rumus ini —
   itu sudah "menjadi" HPP Terjual begitu bahannya terpakai lewat Resep,

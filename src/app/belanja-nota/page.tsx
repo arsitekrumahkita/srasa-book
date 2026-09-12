@@ -41,7 +41,7 @@ import { NumberField } from "@/shared/components/number-field";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
-import { formatRupiah } from "@/shared/lib/format";
+import { formatRupiah, formatRupiahSatuan } from "@/shared/lib/format";
 import { uploadNotaImage } from "@/shared/lib/cloudinary";
 import type { SatuanBahan } from "@/shared/types/inventaris";
 
@@ -328,7 +328,14 @@ function TambahItemKartu({
   // Harga per satuan (gram/pcs) DIHITUNG OTOMATIS dari total harga yang
   // dibayar dibagi jumlah dibeli — Purchasing TIDAK perlu menghitung
   // sendiri (misal: "1kg kopi Rp100.000" -> otomatis Rp100/gram).
-  const hargaPerSatuanOtomatis = qty > 0 ? Math.round(totalHarga / qty) : 0;
+  //
+  // SENGAJA TIDAK DIBULATKAN (dulu pakai Math.round dan itu bug): bahan
+  // murah bervolume besar harganya pecahan di bawah Rp1 per satuan —
+  // contoh air galon isi ulang Rp6.000 untuk 19.000 ml = Rp0,32/ml.
+  // Dibulatkan, nilainya jadi 0 dan bahan itu dihitung GRATIS selamanya
+  // di HPP. Nilai pecahan disimpan apa adanya; pembulatan hanya dilakukan
+  // di tampilan (formatRupiahSatuan) dan di total akhir HPP.
+  const hargaPerSatuanOtomatis = qty > 0 ? totalHarga / qty : 0;
 
   async function handleTambahItem() {
     if (!namaBahan.trim()) {
@@ -374,7 +381,7 @@ function TambahItemKartu({
               tipe: "kenaikan_harga_bahan",
               prioritas: "sedang",
               judul: "Kenaikan Harga Bahan",
-              pesan: `Harga "${namaBahan.trim()}" naik ${(selisihPersen * 100).toFixed(0)}% menjadi ${formatRupiah(hargaSatuan)}/${satuan}.`,
+              pesan: `Harga "${namaBahan.trim()}" naik ${(selisihPersen * 100).toFixed(0)}% menjadi ${formatRupiahSatuan(hargaSatuan)}/${satuan}.`,
               dibaca: false,
               waktu: serverTimestamp(),
             });
@@ -401,7 +408,7 @@ function TambahItemKartu({
 
       showToast(
         "success",
-        `${namaBahan.trim()} ditambahkan: ${formatRupiah(subtotal)} (${formatRupiah(hargaSatuan)}/${satuan}).`,
+        `${namaBahan.trim()} ditambahkan: ${formatRupiah(subtotal)} (${formatRupiahSatuan(hargaSatuan)}/${satuan}).`,
       );
       setNamaBahan("");
       setQty(1);
@@ -435,7 +442,7 @@ function TambahItemKartu({
           {itemBelanja.map((item) => (
             <li key={item.id} className="flex items-center justify-between py-1.5 text-sm">
               <span className="text-slate-700">
-                {item.bahanNama} · {item.qty} {item.satuan} × {formatRupiah(item.hargaSatuan)}
+                {item.bahanNama} · {item.qty} {item.satuan} × {formatRupiahSatuan(item.hargaSatuan)}
               </span>
               <span className="font-medium tabular-nums text-slate-900">
                 {formatRupiah(item.subtotal)}
@@ -474,7 +481,7 @@ function TambahItemKartu({
           value={totalHarga}
           onChange={setTotalHarga}
           prefix="Rp"
-          hint={qty > 0 && totalHarga > 0 ? `= ${formatRupiah(hargaPerSatuanOtomatis)} per ${satuanEfektif}` : undefined}
+          hint={qty > 0 && totalHarga > 0 ? `= ${formatRupiahSatuan(hargaPerSatuanOtomatis)} per ${satuanEfektif}` : undefined}
         />
       </div>
       <div className="mt-3 flex items-end gap-3">
@@ -538,6 +545,45 @@ const ALASAN_PENYESUAIAN = [
  * terunggah, stok langsung berkurang. Jejaknya permanen (lihat
  * firestore.rules bagian bahan_baku/{id}/penyesuaian_stok).
  */
+/**
+ * Stok gudang boleh minus secara teknis (pengurangan lewat Resep ditulis
+ * dengan increment() tanpa membaca stok lebih dulu — pola "tulis tanpa
+ * baca" yang wajib dipakai supaya Kasir tidak perlu izin baca harga
+ * bahan). Tapi stok minus SELALU berarti ada yang tidak beres: takaran
+ * resep kebesaran, pembelian lupa dicatat, atau bahan terpakai tanpa
+ * penjualan. Daripada dibiarkan diam-diam, kita tampilkan terang-terangan
+ * ke Purchasing/Owner di sini supaya bisa segera dikoreksi.
+ */
+function PeringatanStokMinus({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
+  const minus = daftarBahan.filter((b) => b.stokSaatIni < 0);
+  if (minus.length === 0) return null;
+  return (
+    <div
+      role="alert"
+      className="mt-3 rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm text-rose-900"
+    >
+      <p className="flex items-start gap-1.5 font-semibold">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        Stok minus terdeteksi — perlu dikoreksi
+      </p>
+      <p className="mt-1 text-xs text-rose-800">
+        Artinya bahan terpakai melebihi yang tercatat masuk. Cek takaran
+        resepnya di Kalkulator HPP, atau ada pembelian yang belum dicatat.
+      </p>
+      <ul className="mt-2 flex flex-col gap-0.5 text-xs">
+        {minus.map((b) => (
+          <li key={b.id} className="flex justify-between gap-3">
+            <span>{b.nama}</span>
+            <span className="font-semibold tabular-nums">
+              {b.stokSaatIni} {b.satuan}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
   const { user, profil } = useAuth();
   const { showToast } = useToast();
@@ -606,6 +652,7 @@ function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
     <section
       aria-labelledby="bagian-penyesuaian"
       className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+      data-bagian="penyesuaian-stok"
     >
       <h2 id="bagian-penyesuaian" className="text-base font-semibold text-slate-900">
         Stok Rusak / Kedaluwarsa
@@ -615,6 +662,8 @@ function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
         Keluarkan bahan dari stok TANPA penjualan (rusak/kedaluwarsa).
         Wajib lampirkan foto sebagai bukti — tidak perlu persetujuan Owner.
       </p>
+
+      <PeringatanStokMinus daftarBahan={daftarBahan} />
 
       {daftarBahan.length === 0 ? (
         <p className="mt-4 text-sm text-slate-500">Belum ada Bahan Baku.</p>

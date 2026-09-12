@@ -140,14 +140,26 @@ function ShiftIsi() {
   // berjalan — lihat efek auto-provisioning di bawah.
   const sedangMenyiapkanRef = useRef(false);
 
-  // --- Cari shift "buka" milik kasir ini hari ini ---
+  // --- Cari shift milik kasir ini untuk HARI INI, apa pun statusnya ---
+  //
+  // PENTING: dulu query ini menyaring `status == "buka"`, dan itu bug
+  // serius. Begitu Kasir menekan "Tutup & Kunci Shift", status berubah
+  // sehingga hasil query jadi kosong — layar tersangkut di spinner
+  // selamanya, dan kalau halaman dimuat ulang, efek auto-provisioning di
+  // bawah menganggap "belum ada shift hari ini" lalu MEMBUAT SHIFT BARU
+  // untuk tanggal yang sama: modal Rp500.000 kedua di hari yang sama,
+  // dan summary_harian.jumlahShift ikut terhitung dobel.
+  //
+  // Karena itu statusnya tidak lagi disaring di query: shift hari ini
+  // ditemukan apa pun kondisinya, dan yang menentukan tampilan adalah
+  // statusnya (masih buka -> layar input; sudah ditutup -> layar
+  // "sudah ditutup", BUKAN membuat shift baru).
   useEffect(() => {
     if (!user) return;
     const q = query(
       collection(db, "shift"),
       where("kasirUid", "==", user.uid),
       where("tanggal", "==", tanggalHariIni()),
-      where("status", "==", "buka"),
     );
     const unsub = onSnapshot(
       q,
@@ -155,8 +167,15 @@ function ShiftIsi() {
         if (snap.empty) {
           setShiftAktif(null);
         } else {
-          const d = snap.docs[0];
-          setShiftAktif({ id: d.id, modalKasAwal: d.data().modalKasAwal ?? 0, status: "buka" });
+          // Kalau (karena data lama) ada lebih dari satu shift hari ini,
+          // utamakan yang masih buka supaya Kasir tetap bisa bekerja.
+          const dokBuka = snap.docs.find((d) => (d.data().status ?? "buka") === "buka");
+          const d = dokBuka ?? snap.docs[0];
+          setShiftAktif({
+            id: d.id,
+            modalKasAwal: d.data().modalKasAwal ?? 0,
+            status: (d.data().status ?? "buka") as ShiftAktif["status"],
+          });
         }
         setMemuatShiftAktif(false);
       },
@@ -217,6 +236,26 @@ function ShiftIsi() {
     );
   }
 
+  // Shift hari ini sudah ditutup — JANGAN buat shift baru (itu akan jadi
+  // modal Rp500.000 kedua di hari yang sama). Kasir cukup diberi tahu,
+  // dan bisa mulai lagi besok karena tanggalnya sudah berganti.
+  if (shiftAktif.status !== "buka") {
+    return (
+      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16 text-center">
+        <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-6 shadow-sm">
+          <p className="text-base font-semibold text-emerald-900">
+            Shift hari ini sudah ditutup
+          </p>
+          <p className="mt-2 text-sm text-emerald-800">
+            Terima kasih. Shift baru akan tersedia otomatis besok dengan
+            modal kas Rp500.000 lagi. Kalau ada yang perlu dikoreksi hari
+            ini, hubungi Owner.
+          </p>
+        </div>
+      </main>
+    );
+  }
+
   return <ShiftBerjalan shiftId={shiftAktif.id} modalKasAwal={shiftAktif.modalKasAwal} />;
 }
 
@@ -231,6 +270,12 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
   // Kasir HANYA membaca takaran di sini, TIDAK PERNAH harga bahan
   // (lihat src/shared/lib/resep.ts).
   const [resepPerMenu, setResepPerMenu] = useState<Map<string, ResepItem[]>>(new Map());
+  // Tombol +/- baru boleh aktif setelah resep selesai dimuat. Kalau
+  // tidak, Kasir yang cepat menekan "+" begitu halaman terbuka akan
+  // mencatat penjualan TANPA stok gudang ikut berkurang (resepnya belum
+  // ada di memori) — selisihnya diam-diam dan tidak akan pernah
+  // ketahuan. Lebih baik tombolnya nonaktif sepersekian detik.
+  const [resepSiap, setResepSiap] = useState(false);
 
   useEffect(() => {
     const unsubMenu = onSnapshot(
@@ -256,7 +301,10 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
               return [m.id, [] as ResepItem[]] as [string, ResepItem[]];
             }
           }),
-        ).then((hasil) => setResepPerMenu(new Map(hasil)));
+        ).then((hasil) => {
+          setResepPerMenu(new Map(hasil));
+          setResepSiap(true);
+        });
       },
     );
 
@@ -402,6 +450,11 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
               Belum ada menu aktif. Tambahkan menu lewat Kalkulator HPP terlebih
               dahulu (Owner).
             </p>
+          ) : !resepSiap ? (
+            <p className="mt-3 flex items-center gap-2 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Menyiapkan data resep...
+            </p>
           ) : (
             <div className="mt-4 flex flex-col gap-5">
               {[...menuPerKategori.entries()].map(([kategori, items]) => (
@@ -422,7 +475,7 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
                             <button
                               type="button"
                               onClick={() => ubahQty(item, -1)}
-                              disabled={qty <= 0}
+                              disabled={qty <= 0 || !resepSiap}
                               aria-label={`Kurangi ${item.nama}`}
                               className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 text-slate-600 motion-safe:transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
                             >
@@ -434,8 +487,9 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
                             <button
                               type="button"
                               onClick={() => ubahQty(item, 1)}
+                              disabled={!resepSiap}
                               aria-label={`Tambah ${item.nama}`}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white motion-safe:transition hover:bg-emerald-700 active:scale-95"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white motion-safe:transition hover:bg-emerald-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Plus className="h-4 w-4" aria-hidden="true" />
                             </button>
@@ -639,7 +693,12 @@ function TutupShiftKartu({
         kasFisik,
         selisihKas,
         keteranganSelisih: keteranganSelisih.trim(),
-        status: "tutup",
+        // "terkunci", bukan "tutup": firestore.rules menolak update dari
+        // Kasir pada shift berstatus 'terkunci', jadi shift yang sudah
+        // ditutup benar-benar tidak bisa diubah/ditutup ulang oleh Kasir
+        // (kalau bisa, summary_harian akan terhitung dobel). Owner tetap
+        // bisa mengoreksi lewat backend sebagai admin override.
+        status: "terkunci",
         waktuTutup: serverTimestamp(),
       });
 

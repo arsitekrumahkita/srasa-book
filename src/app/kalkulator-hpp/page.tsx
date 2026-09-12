@@ -16,7 +16,19 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Info, Loader2, Save, TriangleAlert, Trash2 } from "lucide-react";
-import { collection, doc, onSnapshot, serverTimestamp, setDoc, where, query } from "firebase/firestore";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  orderBy,
+  serverTimestamp,
+  setDoc,
+  query,
+  where,
+} from "firebase/firestore";
 import { NumberField } from "@/shared/components/number-field";
 import { ResultRow } from "@/shared/components/result-row";
 import { RequireAuth } from "@/shared/components/require-auth";
@@ -26,7 +38,7 @@ import {
   persenKeFraksi,
   PROFIL_HPP_DEFAULT_AWAL,
 } from "@/shared/lib/hpp-calculator";
-import { formatPersen, formatRupiah } from "@/shared/lib/format";
+import { formatPersen, formatRupiah, formatRupiahSatuan } from "@/shared/lib/format";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import type { ProfilHppDefault } from "@/shared/types/hpp";
@@ -50,6 +62,16 @@ interface BarisResep {
   takaran: number;
   hargaSatuanBahan: number;
 }
+
+/** Menu yang sudah tersimpan, untuk dropdown "edit menu". */
+interface MenuTersimpan {
+  id: string;
+  nama: string;
+  kategori: string;
+}
+
+/** Nilai khusus di dropdown menu = sedang membuat menu baru. */
+const MENU_BARU = "";
 
 export default function KalkulatorHppPage() {
   return (
@@ -102,9 +124,53 @@ function KalkulatorHppForm() {
     return unsub;
   }, []);
 
+  // --- Mode edit menu ---
+  //
+  // Dulu setiap kali Simpan ditekan, halaman ini SELALU membuat menuId
+  // baru. Akibatnya resep sebuah menu tidak pernah bisa diperbaiki:
+  // menyimpan ulang hanya melahirkan menu kembar dengan nama sama, dan
+  // menu lama (beserta resep lamanya) tetap dipakai Kasir untuk
+  // mengurangi stok. Salah takaran sekali = salah selamanya. Sekarang
+  // Owner bisa memilih menu yang sudah ada, formnya terisi, lalu
+  // disimpan menimpa menu itu juga resepnya.
+  const [daftarMenu, setDaftarMenu] = useState<MenuTersimpan[]>([]);
+  const [menuDiedit, setMenuDiedit] = useState<string>(MENU_BARU);
+  const [memuatMenu, setMemuatMenu] = useState(false);
+  // Bahan yang ADA di resep tersimpan saat form dimuat — dipakai untuk
+  // tahu baris mana yang dihapus Owner, supaya dokumen resepnya ikut
+  // dihapus di Firestore (kalau tidak, bahan yang sudah dibuang tetap
+  // mengurangi stok gudang diam-diam).
+  const [resepIdTersimpan, setResepIdTersimpan] = useState<string[]>([]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "menu_harga"), orderBy("nama")),
+      (snap) => {
+        setDaftarMenu(
+          snap.docs.map((d) => ({
+            id: d.id,
+            nama: d.data().nama ?? "",
+            kategori: d.data().kategori ?? "Umum",
+          })),
+        );
+      },
+    );
+    return unsub;
+  }, []);
+
+  // Harga bahan diambil ulang dari daftarBahan (data live dari
+  // Firestore), bukan dari angka yang tersimpan di baris resep. Jadi
+  // ketika Purchasing mencatat pembelian dengan harga baru, HPP di
+  // layar ini ikut berubah sendiri tanpa resepnya perlu disentuh —
+  // dan menu yang dimuat untuk diedit tidak bergantung pada urutan
+  // selesainya pemuatan data.
   const hppBahan = useMemo(
-    () => resepRows.reduce((total, row) => total + row.takaran * row.hargaSatuanBahan, 0),
-    [resepRows],
+    () =>
+      resepRows.reduce((total, row) => {
+        const bahan = daftarBahan.find((b) => b.id === row.bahanId);
+        return total + row.takaran * (bahan?.hargaSatuanTerakhir ?? row.hargaSatuanBahan);
+      }, 0),
+    [resepRows, daftarBahan],
   );
 
   function tambahBarisResep() {
@@ -208,6 +274,73 @@ function KalkulatorHppForm() {
   // SECTION: Handler
   // ------------------------------------------------------------
 
+  function kosongkanForm() {
+    setNamaMenu("");
+    setKategoriMenu("");
+    setResepRows([]);
+    setResepIdTersimpan([]);
+    setBiayaKemasan(0);
+    setHargaJual(0);
+    setPakaiOverrideSusut(false);
+    setOverrideSusut(PROFIL_AWAL.persenSusut);
+  }
+
+  /** Muat menu tersimpan ke dalam form untuk diedit (resep, biaya
+   *  kemasan, harga jual, dan override susutnya). */
+  async function pilihMenu(menuId: string) {
+    setMenuDiedit(menuId);
+    if (menuId === MENU_BARU) {
+      kosongkanForm();
+      return;
+    }
+
+    const ringkas = daftarMenu.find((m) => m.id === menuId);
+    setMemuatMenu(true);
+    try {
+      const [hargaSnap, rahasiaSnap, resepSnap] = await Promise.all([
+        getDoc(doc(db, "menu_harga", menuId)),
+        getDoc(doc(db, "menu", menuId)),
+        getDocs(collection(db, "menu", menuId, "resep")),
+      ]);
+
+      setNamaMenu(hargaSnap.data()?.nama ?? ringkas?.nama ?? "");
+      setKategoriMenu(hargaSnap.data()?.kategori ?? ringkas?.kategori ?? "");
+      setHargaJual(hargaSnap.data()?.hargaJual ?? 0);
+
+      const rahasia = rahasiaSnap.data();
+      setBiayaKemasan(rahasia?.biayaKemasanManual ?? 0);
+      const overrideTersimpan = rahasia?.overridePersenSusut ?? null;
+      setPakaiOverrideSusut(overrideTersimpan !== null);
+      setOverrideSusut(
+        overrideTersimpan !== null ? overrideTersimpan * 100 : PROFIL_AWAL.persenSusut,
+      );
+
+      const baris: BarisResep[] = resepSnap.docs.map((d) => {
+        const data = d.data();
+        const bahanId: string = data.bahanId ?? d.id;
+        const bahan = daftarBahan.find((b) => b.id === bahanId);
+        return {
+          bahanId,
+          bahanNama: bahan?.nama ?? data.bahanNama ?? "",
+          satuan: (data.satuan === "pcs" ? "pcs" : "gram") as SatuanBahan,
+          takaran: data.takaran ?? 0,
+          hargaSatuanBahan: bahan?.hargaSatuanTerakhir ?? 0,
+        };
+      });
+      setResepRows(baris);
+      setResepIdTersimpan(resepSnap.docs.map((d) => d.id));
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal memuat menu: ${error.message}` : "Gagal memuat menu.",
+      );
+      setMenuDiedit(MENU_BARU);
+      kosongkanForm();
+    } finally {
+      setMemuatMenu(false);
+    }
+  }
+
   async function handleSimpan() {
     if (!namaMenu.trim()) {
       showToast("error", "Nama menu wajib diisi sebelum HPP bisa disimpan.");
@@ -230,7 +363,9 @@ function KalkulatorHppForm() {
       //     harga) — boleh dibaca Kasir juga, dipakai untuk mengurangi
       //     stok gudang otomatis saat penjualan tercatat (lihat
       //     src/shared/lib/resep.ts).
-      const menuId = doc(collection(db, "menu_harga")).id;
+      // Menu yang sedang diedit ditimpa memakai ID-nya sendiri; kalau
+      // tidak ada yang diedit, barulah ID baru dibuat.
+      const menuId = menuDiedit !== MENU_BARU ? menuDiedit : doc(collection(db, "menu_harga")).id;
       const hargaJualUntukDisimpan =
         hargaJual > 0
           ? hargaJual
@@ -268,15 +403,24 @@ function KalkulatorHppForm() {
         ),
       );
 
+      // Bahan yang dibuang Owner dari resep HARUS ikut dihapus di
+      // Firestore. Kalau hanya hilang dari layar, dokumennya tetap ada
+      // dan Kasir akan terus mengurangi stok bahan itu setiap menu ini
+      // terjual — stok menyusut tanpa sebab yang terlihat.
+      const idDipakai = new Set(resepRows.map((row) => row.bahanId));
+      const idDihapus = resepIdTersimpan.filter((id) => !idDipakai.has(id));
+      await Promise.all(
+        idDihapus.map((id) => deleteDoc(doc(db, "menu", menuId, "resep", id))),
+      );
+
       showToast(
         "success",
-        `HPP untuk "${namaMenu}" tersimpan: ${formatRupiah(hasil.breakdown.hppTotal)} per porsi.`,
+        menuDiedit !== MENU_BARU
+          ? `"${namaMenu}" diperbarui: HPP ${formatRupiah(hasil.breakdown.hppTotal)} per porsi.`
+          : `HPP untuk "${namaMenu}" tersimpan: ${formatRupiah(hasil.breakdown.hppTotal)} per porsi.`,
       );
-      setNamaMenu("");
-      setKategoriMenu("");
-      setResepRows([]);
-      setBiayaKemasan(0);
-      setHargaJual(0);
+      setMenuDiedit(MENU_BARU);
+      kosongkanForm();
     } catch (error) {
       showToast(
         "error",
@@ -316,6 +460,36 @@ function KalkulatorHppForm() {
             Data Menu
           </h2>
           <div className="mt-4 flex flex-col gap-4">
+            <div>
+              <label
+                htmlFor="pilih-menu"
+                className="block text-sm font-semibold text-slate-800"
+              >
+                Buat Baru atau Ubah Menu yang Ada
+              </label>
+              <select
+                id="pilih-menu"
+                value={menuDiedit}
+                onChange={(event) => pilihMenu(event.target.value)}
+                disabled={memuatMenu}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 disabled:opacity-60"
+              >
+                <option value={MENU_BARU}>+ Menu Baru</option>
+                {daftarMenu.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    Ubah: {m.nama} ({m.kategori})
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                {memuatMenu
+                  ? "Memuat data menu..."
+                  : menuDiedit !== MENU_BARU
+                    ? "Menyimpan akan MENIMPA menu ini beserta resepnya — harga jual lama ikut diperbarui."
+                    : "Pilih menu yang sudah ada bila ingin memperbaiki resep atau harganya."}
+              </p>
+            </div>
+
             <div>
               <label
                 htmlFor="nama-menu"
@@ -420,7 +594,11 @@ function KalkulatorHppForm() {
                   </span>
                   <div className="flex items-center gap-3">
                     <span className="font-medium tabular-nums text-slate-900">
-                      {formatRupiah(row.takaran * row.hargaSatuanBahan)}
+                      {formatRupiah(
+                        row.takaran *
+                          (daftarBahan.find((b) => b.id === row.bahanId)?.hargaSatuanTerakhir ??
+                            row.hargaSatuanBahan),
+                      )}
                     </span>
                     <button
                       type="button"
@@ -462,7 +640,7 @@ function KalkulatorHppForm() {
                     .filter((b) => !resepRows.some((r) => r.bahanId === b.id))
                     .map((b) => (
                       <option key={b.id} value={b.id}>
-                        {b.nama} ({formatRupiah(b.hargaSatuanTerakhir)}/{b.satuan})
+                        {b.nama} ({formatRupiahSatuan(b.hargaSatuanTerakhir)}/{b.satuan})
                       </option>
                     ))}
                 </select>
@@ -725,7 +903,11 @@ function KalkulatorHppForm() {
             ) : (
               <Save className="h-4 w-4" aria-hidden="true" />
             )}
-            {sedangMenyimpan ? "Menyimpan..." : "Simpan HPP Menu"}
+            {sedangMenyimpan
+              ? "Menyimpan..."
+              : menuDiedit !== MENU_BARU
+                ? "Perbarui Menu Ini"
+                : "Simpan HPP Menu"}
           </button>
         </div>
       </div>

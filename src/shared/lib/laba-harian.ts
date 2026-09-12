@@ -48,6 +48,13 @@ export interface RincianLabaMenu {
 export interface HasilLabaHarian {
   tanggal: string;
   totalOmset: number;
+  /** Omset tunai/non-tunai & selisih kas hanya terisi untuk shift yang
+   *  SUDAH ditutup (Kasir mengisinya saat Tutup Shift). Dipakai untuk
+   *  membangun ulang summary_harian dari sumber aslinya bila ringkasan
+   *  hari itu meleset — lihat Riwayat > Hitung Ulang. */
+  omsetTunai: number;
+  omsetNonTunai: number;
+  selisihKas: number;
   totalKasKeluar: number;
   totalHppTerjual: number;
   labaBersih: number;
@@ -69,18 +76,31 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
 
   let totalOmset = 0;
   let totalKasKeluar = 0;
+  let omsetNonTunai = 0;
+  let selisihKas = 0;
   const qtyPerMenu = new Map<string, { nama: string; qty: number }>();
 
   for (const shiftDoc of shiftSnap.docs) {
     const data = shiftDoc.data();
-    totalOmset += data.totalOmset ?? 0;
     totalKasKeluar += data.totalKasKeluar ?? 0;
+    omsetNonTunai += data.omsetNonTunai ?? 0;
+    selisihKas += data.selisihKas ?? 0;
 
+    // Omset dihitung dari subkoleksi penjualan, BUKAN dari field
+    // shift.totalOmset. Alasannya: field itu baru terisi saat Kasir
+    // menutup shift, sedangkan HPP Terjual di bawah selalu dihitung dari
+    // subkoleksi penjualan yang terisi sepanjang hari. Kalau sumbernya
+    // beda, sepanjang hari berjalan Dashboard menampilkan omset 0 tapi
+    // HPP penuh — Laba Bersih jadi minus besar dan bikin panik padahal
+    // datanya baik-baik saja. Dengan satu sumber yang sama, angkanya
+    // konsisten kapan pun dibuka, dan hasilnya tetap identik setelah
+    // shift ditutup.
     const penjualanSnap = await getDocs(collection(db, "shift", shiftDoc.id, "penjualan"));
     for (const item of penjualanSnap.docs) {
       const d = item.data();
       const menuId = d.menuId as string | undefined;
       const qty = d.qty ?? 0;
+      totalOmset += d.subtotal ?? 0;
       if (!menuId || qty <= 0) continue;
       const existing = qtyPerMenu.get(menuId);
       qtyPerMenu.set(menuId, {
@@ -148,6 +168,9 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
   return {
     tanggal,
     totalOmset,
+    omsetTunai: Math.max(totalOmset - omsetNonTunai, 0),
+    omsetNonTunai,
+    selisihKas,
     totalKasKeluar,
     totalHppTerjual,
     labaBersih,

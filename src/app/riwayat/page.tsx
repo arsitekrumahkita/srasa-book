@@ -281,14 +281,32 @@ function HitungUlangLabaKartu() {
     setSedangHitung(true);
     try {
       const hasil = await hitungLabaHarian(tanggal);
+      // Ringkasan harian ditulis ULANG dari sumber aslinya (dokumen shift
+      // + subkoleksi penjualan), bukan sekadar menambah labaBersih.
+      // summary_harian normalnya dibentuk lewat increment() oleh Kasir
+      // saat Tutup Shift; kalau penulisan itu sempat gagal (internet
+      // putus di tengah jalan) atau terlanjur terhitung dobel oleh data
+      // lama, angkanya akan meleset selamanya karena increment tidak
+      // bisa "diperbaiki" tanpa tahu nilai benarnya. Tombol ini jadi
+      // pemulihannya: menimpa semua angka hari itu dengan hasil hitung
+      // ulang yang otoritatif.
       await setDoc(
         doc(db, "summary_harian", tanggal),
-        { labaBersih: hasil.labaBersih, totalHpp: hasil.totalHppTerjual },
+        {
+          totalOmset: hasil.totalOmset,
+          omsetTunai: hasil.omsetTunai,
+          omsetNonTunai: hasil.omsetNonTunai,
+          totalKasKeluar: hasil.totalKasKeluar,
+          selisihKas: hasil.selisihKas,
+          jumlahShift: hasil.jumlahShift,
+          labaBersih: hasil.labaBersih,
+          totalHpp: hasil.totalHppTerjual,
+        },
         { merge: true },
       );
       showToast(
         "success",
-        `Laba Bersih ${tanggal}: ${formatRupiah(hasil.labaBersih)} (HPP Terjual ${formatRupiah(hasil.totalHppTerjual)}).`,
+        `${tanggal} — Omset ${formatRupiah(hasil.totalOmset)}, HPP Terjual ${formatRupiah(hasil.totalHppTerjual)}, Laba Bersih ${formatRupiah(hasil.labaBersih)}.`,
       );
     } catch (error) {
       showToast(
@@ -307,11 +325,14 @@ function HitungUlangLabaKartu() {
     >
       <h2 id="bagian-hitung-laba" className="flex items-center gap-2 text-base font-semibold text-slate-900">
         <Calculator className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-        Hitung Ulang Laba Bersih (Hari Lampau)
+        Hitung Ulang Laporan Harian
       </h2>
       <p className="mt-1 text-xs text-slate-500">
         Dashboard sudah otomatis menghitung Laba Bersih hari ini setiap
-        dibuka. Pakai ini untuk menghitung ulang hari-hari sebelumnya.
+        dibuka. Pakai ini untuk hari-hari sebelumnya, atau bila angka
+        ringkasan suatu hari terlihat janggal — omset, kas keluar, selisih
+        kas, HPP, dan laba hari itu akan dihitung ulang dari data shift
+        aslinya lalu ditimpa.
       </p>
       <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
         <div>
