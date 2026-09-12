@@ -1,0 +1,699 @@
+"use client";
+
+// ============================================================
+// Halaman: Shift — buka shift, input penjualan, kas keluar,
+// tutup shift (PRD bagian 9.2). Peran: Kasir (utama) + Owner
+// (akses penuh semua shift, lihat firestore.rules bagian shift).
+//
+// CATATAN ARSITEKTUR PENTING (batasan Spark Plan, tanpa Cloud
+// Functions): HPP bersifat privat, hanya bisa dibaca Owner
+// (koleksi `menu`, lihat firestore.rules). Kasir TIDAK bisa
+// membaca HPP, sehingga Kasir juga tidak bisa menuliskan
+// `hppSnapshot` yang akurat saat mencatat penjualan — menulis
+// nilai yang tidak bisa diverifikasi client sama saja bohong.
+// Karena itu, Sprint 1 ini Kasir HANYA mencatat angka uang yang
+// memang dia tahu (qty, harga jual dari menu_harga yang publik,
+// kas masuk/keluar). Perhitungan HPP terjual & laba (labaKotor,
+// labaBersih) SENGAJA belum diisi di sini — akan direkonsiliasi
+// dari sisi Owner (Dashboard/Riwayat, P1 lanjutan) yang memang
+// satu-satunya peran dengan akses ke uang DAN HPP sekaligus.
+// ============================================================
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  addDoc,
+  collection,
+  doc,
+  increment,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import { Loader2, Minus, Plus, Save, TriangleAlert, Wallet } from "lucide-react";
+import { RequireAuth } from "@/shared/components/require-auth";
+import { AppShell } from "@/shared/components/app-shell";
+import { NumberField } from "@/shared/components/number-field";
+import { useAuth } from "@/shared/lib/auth-context";
+import { useToast } from "@/shared/components/toast";
+import { db } from "@/shared/lib/firebase";
+import { formatRupiah } from "@/shared/lib/format";
+
+interface MenuHarga {
+  id: string;
+  nama: string;
+  kategori: string;
+  hargaJual: number;
+  aktif: boolean;
+}
+
+interface PenjualanItem {
+  id: string;
+  menuId: string;
+  menuNama: string;
+  kategori: string;
+  qty: number;
+  hargaJualSnapshot: number;
+  subtotal: number;
+}
+
+interface KasKeluarItem {
+  id: string;
+  kategori: string;
+  nominal: number;
+  keterangan: string;
+}
+
+interface ShiftAktif {
+  id: string;
+  modalKasAwal: number;
+  status: "buka" | "tutup" | "terkunci";
+}
+
+const KATEGORI_KAS_KELUAR = [
+  "Perlengkapan",
+  "Kebersihan",
+  "Utilitas",
+  "Bahan Baku Darurat",
+  "Lainnya",
+] as const;
+
+function tanggalHariIni(): string {
+  const sekarang = new Date();
+  return `${sekarang.getFullYear()}-${String(sekarang.getMonth() + 1).padStart(2, "0")}-${String(
+    sekarang.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+export default function ShiftPage() {
+  return (
+    <RequireAuth peranDiizinkan={["superadmin", "kasir"]}>
+      <AppShell>
+        <ShiftIsi />
+      </AppShell>
+    </RequireAuth>
+  );
+}
+
+function ShiftIsi() {
+  const { user, profil } = useAuth();
+  const { showToast } = useToast();
+
+  const [memuatShiftAktif, setMemuatShiftAktif] = useState(true);
+  const [shiftAktif, setShiftAktif] = useState<ShiftAktif | null>(null);
+  const [modalKasAwal, setModalKasAwal] = useState(0);
+  const [sedangBuka, setSedangBuka] = useState(false);
+
+  // --- Cari shift "buka" milik kasir ini hari ini ---
+  useEffect(() => {
+    if (!user) return;
+    const q = query(
+      collection(db, "shift"),
+      where("kasirUid", "==", user.uid),
+      where("tanggal", "==", tanggalHariIni()),
+      where("status", "==", "buka"),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        if (snap.empty) {
+          setShiftAktif(null);
+        } else {
+          const d = snap.docs[0];
+          setShiftAktif({ id: d.id, modalKasAwal: d.data().modalKasAwal ?? 0, status: "buka" });
+        }
+        setMemuatShiftAktif(false);
+      },
+      () => setMemuatShiftAktif(false),
+    );
+    return unsub;
+  }, [user]);
+
+  async function handleBukaShift() {
+    if (!user || !profil) return;
+    setSedangBuka(true);
+    try {
+      await addDoc(collection(db, "shift"), {
+        tanggal: tanggalHariIni(),
+        kasirUid: user.uid,
+        kasirNama: profil.nama,
+        modalKasAwal,
+        totalOmset: 0,
+        omsetTunai: 0,
+        omsetNonTunai: 0,
+        totalKasKeluar: 0,
+        status: "buka",
+        waktuBuka: serverTimestamp(),
+      });
+      showToast("success", `Shift dibuka dengan modal awal ${formatRupiah(modalKasAwal)}.`);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal membuka shift: ${error.message}` : "Gagal membuka shift.",
+      );
+    } finally {
+      setSedangBuka(false);
+    }
+  }
+
+  if (memuatShiftAktif) {
+    return (
+      <main className="flex min-h-[50vh] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
+        <span className="sr-only">Memeriksa status shift...</span>
+      </main>
+    );
+  }
+
+  if (!shiftAktif) {
+    return (
+      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="mb-4 flex items-center gap-2">
+            <Wallet className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+            <h1 className="text-lg font-bold text-slate-900">Buka Shift</h1>
+          </div>
+          <NumberField
+            id="modal-kas-awal"
+            label="Modal Kas Awal"
+            value={modalKasAwal}
+            onChange={setModalKasAwal}
+            prefix="Rp"
+            hint="Kas kembalian yang diterima saat mulai shift."
+          />
+          <button
+            type="button"
+            onClick={handleBukaShift}
+            disabled={sedangBuka}
+            aria-busy={sedangBuka}
+            className={[
+              "mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm",
+              "motion-safe:transition motion-safe:duration-150",
+              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
+              sedangBuka
+                ? "cursor-not-allowed bg-emerald-400"
+                : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+            ].join(" ")}
+          >
+            {sedangBuka ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Wallet className="h-4 w-4" aria-hidden="true" />
+            )}
+            {sedangBuka ? "Membuka..." : "Buka Shift"}
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  return <ShiftBerjalan shiftId={shiftAktif.id} modalKasAwal={shiftAktif.modalKasAwal} />;
+}
+
+function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwal: number }) {
+  const { showToast } = useToast();
+  const [menuList, setMenuList] = useState<MenuHarga[]>([]);
+  const [penjualan, setPenjualan] = useState<PenjualanItem[]>([]);
+  const [kasKeluar, setKasKeluar] = useState<KasKeluarItem[]>([]);
+
+  useEffect(() => {
+    const unsubMenu = onSnapshot(
+      query(collection(db, "menu_harga"), where("aktif", "==", true)),
+      (snap) => {
+        setMenuList(
+          snap.docs.map((d) => ({
+            id: d.id,
+            nama: d.data().nama ?? "",
+            kategori: d.data().kategori ?? "Umum",
+            hargaJual: d.data().hargaJual ?? 0,
+            aktif: true,
+          })),
+        );
+      },
+    );
+
+    const unsubPenjualan = onSnapshot(
+      query(collection(db, "shift", shiftId, "penjualan"), orderBy("menuNama")),
+      (snap) => {
+        setPenjualan(
+          snap.docs.map((d) => ({
+            id: d.id,
+            menuId: d.data().menuId,
+            menuNama: d.data().menuNama,
+            kategori: d.data().kategori ?? "Umum",
+            qty: d.data().qty ?? 0,
+            hargaJualSnapshot: d.data().hargaJualSnapshot ?? 0,
+            subtotal: d.data().subtotal ?? 0,
+          })),
+        );
+      },
+    );
+
+    const unsubKasKeluar = onSnapshot(
+      collection(db, "shift", shiftId, "kas_keluar"),
+      (snap) => {
+        setKasKeluar(
+          snap.docs.map((d) => ({
+            id: d.id,
+            kategori: d.data().kategori ?? "Lainnya",
+            nominal: d.data().nominal ?? 0,
+            keterangan: d.data().keterangan ?? "",
+          })),
+        );
+      },
+    );
+
+    return () => {
+      unsubMenu();
+      unsubPenjualan();
+      unsubKasKeluar();
+    };
+  }, [shiftId]);
+
+  const totalOmset = useMemo(
+    () => penjualan.reduce((total, item) => total + item.subtotal, 0),
+    [penjualan],
+  );
+  const totalKasKeluar = useMemo(
+    () => kasKeluar.reduce((total, item) => total + item.nominal, 0),
+    [kasKeluar],
+  );
+
+  async function ubahQty(item: MenuHarga, delta: number) {
+    const existing = penjualan.find((p) => p.menuId === item.id);
+    try {
+      if (!existing) {
+        if (delta <= 0) return;
+        await setDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          menuId: item.id,
+          menuNama: item.nama,
+          kategori: item.kategori,
+          qty: delta,
+          hargaJualSnapshot: item.hargaJual,
+          subtotal: item.hargaJual * delta,
+        });
+        return;
+      }
+      const qtyBaru = existing.qty + delta;
+      if (qtyBaru <= 0) {
+        await setDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          menuId: item.id,
+          menuNama: item.nama,
+          kategori: item.kategori,
+          qty: 0,
+          hargaJualSnapshot: item.hargaJual,
+          subtotal: 0,
+        });
+        return;
+      }
+      await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+        qty: increment(delta),
+        subtotal: increment(item.hargaJual * delta),
+      });
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error
+          ? `Gagal mencatat penjualan: ${error.message}`
+          : "Gagal mencatat penjualan.",
+      );
+    }
+  }
+
+  const menuPerKategori = useMemo(() => {
+    const map = new Map<string, MenuHarga[]>();
+    for (const item of menuList) {
+      const list = map.get(item.kategori) ?? [];
+      list.push(item);
+      map.set(item.kategori, list);
+    }
+    return map;
+  }, [menuList]);
+
+  return (
+    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+      <header className="mb-6 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+            SRASA BOOK
+          </p>
+          <h1 className="text-2xl font-bold text-slate-900">Shift Berjalan</h1>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-slate-500">Total Omset Berjalan</p>
+          <p className="text-xl font-bold tabular-nums text-emerald-700">
+            {formatRupiah(totalOmset)}
+          </p>
+        </div>
+      </header>
+
+      <div className="flex flex-col gap-6">
+        <section
+          aria-labelledby="bagian-penjualan"
+          className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+        >
+          <h2 id="bagian-penjualan" className="text-base font-semibold text-slate-900">
+            Input Penjualan
+          </h2>
+          {menuList.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">
+              Belum ada menu aktif. Tambahkan menu lewat Kalkulator HPP terlebih
+              dahulu (Owner).
+            </p>
+          ) : (
+            <div className="mt-4 flex flex-col gap-5">
+              {[...menuPerKategori.entries()].map(([kategori, items]) => (
+                <div key={kategori}>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {kategori}
+                  </p>
+                  <div className="flex flex-col divide-y divide-slate-100">
+                    {items.map((item) => {
+                      const qty = penjualan.find((p) => p.menuId === item.id)?.qty ?? 0;
+                      return (
+                        <div key={item.id} className="flex items-center justify-between gap-3 py-2.5">
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">{item.nama}</p>
+                            <p className="text-xs text-slate-500">{formatRupiah(item.hargaJual)}</p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => ubahQty(item, -1)}
+                              disabled={qty <= 0}
+                              aria-label={`Kurangi ${item.nama}`}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 text-slate-600 motion-safe:transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <Minus className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                            <span className="w-6 text-center text-sm font-semibold tabular-nums text-slate-900">
+                              {qty}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => ubahQty(item, 1)}
+                              aria-label={`Tambah ${item.nama}`}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white motion-safe:transition hover:bg-emerald-700 active:scale-95"
+                            >
+                              <Plus className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <KasKeluarKartu shiftId={shiftId} daftar={kasKeluar} total={totalKasKeluar} />
+
+        <TutupShiftKartu
+          shiftId={shiftId}
+          modalKasAwal={modalKasAwal}
+          totalOmset={totalOmset}
+          totalKasKeluar={totalKasKeluar}
+        />
+      </div>
+    </main>
+  );
+}
+
+function KasKeluarKartu({
+  shiftId,
+  daftar,
+  total,
+}: {
+  shiftId: string;
+  daftar: KasKeluarItem[];
+  total: number;
+}) {
+  const { showToast } = useToast();
+  const [kategori, setKategori] = useState<(typeof KATEGORI_KAS_KELUAR)[number]>(
+    KATEGORI_KAS_KELUAR[0],
+  );
+  const [nominal, setNominal] = useState(0);
+  const [keterangan, setKeterangan] = useState("");
+  const [sedangSimpan, setSedangSimpan] = useState(false);
+
+  async function handleTambah() {
+    if (nominal <= 0) {
+      showToast("error", "Nominal kas keluar harus lebih besar dari 0.");
+      return;
+    }
+    setSedangSimpan(true);
+    try {
+      await addDoc(collection(db, "shift", shiftId, "kas_keluar"), {
+        kategori,
+        nominal,
+        keterangan: keterangan.trim(),
+        waktu: serverTimestamp(),
+      });
+      await updateDoc(doc(db, "shift", shiftId), { totalKasKeluar: increment(nominal) });
+      showToast("success", `Kas keluar ${formatRupiah(nominal)} (${kategori}) dicatat.`);
+      setNominal(0);
+      setKeterangan("");
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error
+          ? `Gagal mencatat kas keluar: ${error.message}`
+          : "Gagal mencatat kas keluar.",
+      );
+    } finally {
+      setSedangSimpan(false);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-kas-keluar"
+      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <div className="flex items-center justify-between">
+        <h2 id="bagian-kas-keluar" className="text-base font-semibold text-slate-900">
+          Kas Keluar
+        </h2>
+        <p className="text-sm font-semibold tabular-nums text-slate-900">
+          {formatRupiah(total)}
+        </p>
+      </div>
+
+      {daftar.length > 0 ? (
+        <ul className="mt-3 divide-y divide-slate-100">
+          {daftar.map((item) => (
+            <li key={item.id} className="flex items-center justify-between py-1.5 text-sm">
+              <span className="text-slate-700">
+                {item.kategori}
+                {item.keterangan ? ` — ${item.keterangan}` : ""}
+              </span>
+              <span className="font-medium tabular-nums text-slate-900">
+                {formatRupiah(item.nominal)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto]">
+        <div>
+          <label htmlFor="kategori-kas-keluar" className="block text-sm font-semibold text-slate-800">
+            Kategori
+          </label>
+          <select
+            id="kategori-kas-keluar"
+            value={kategori}
+            onChange={(event) =>
+              setKategori(event.target.value as (typeof KATEGORI_KAS_KELUAR)[number])
+            }
+            className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          >
+            {KATEGORI_KAS_KELUAR.map((opsi) => (
+              <option key={opsi} value={opsi}>
+                {opsi}
+              </option>
+            ))}
+          </select>
+        </div>
+        <NumberField id="nominal-kas-keluar" label="Nominal" value={nominal} onChange={setNominal} prefix="Rp" />
+        <div className="flex items-end">
+          <button
+            type="button"
+            onClick={handleTambah}
+            disabled={sedangSimpan}
+            aria-busy={sedangSimpan}
+            className={[
+              "inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold text-white shadow-sm sm:w-auto",
+              "motion-safe:transition motion-safe:duration-150",
+              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
+              sedangSimpan
+                ? "cursor-not-allowed bg-emerald-400"
+                : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+            ].join(" ")}
+          >
+            {sedangSimpan ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : "Catat"}
+          </button>
+        </div>
+      </div>
+      <div className="mt-2">
+        <label htmlFor="keterangan-kas-keluar" className="block text-xs text-slate-500">
+          Keterangan (opsional)
+        </label>
+        <input
+          id="keterangan-kas-keluar"
+          type="text"
+          value={keterangan}
+          onChange={(event) => setKeterangan(event.target.value)}
+          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+        />
+      </div>
+    </section>
+  );
+}
+
+function TutupShiftKartu({
+  shiftId,
+  modalKasAwal,
+  totalOmset,
+  totalKasKeluar,
+}: {
+  shiftId: string;
+  modalKasAwal: number;
+  totalOmset: number;
+  totalKasKeluar: number;
+}) {
+  const { showToast } = useToast();
+  const { user } = useAuth();
+  const [omsetNonTunai, setOmsetNonTunai] = useState(0);
+  const [kasFisik, setKasFisik] = useState(0);
+  const [sedangTutup, setSedangTutup] = useState(false);
+
+  const omsetTunai = Math.max(totalOmset - omsetNonTunai, 0);
+  const kasSeharusnya = modalKasAwal + omsetTunai - totalKasKeluar;
+  const selisihKas = kasFisik - kasSeharusnya;
+
+  async function handleTutupShift() {
+    if (!user) return;
+    setSedangTutup(true);
+    try {
+      await updateDoc(doc(db, "shift", shiftId), {
+        totalOmset,
+        omsetTunai,
+        omsetNonTunai,
+        totalKasKeluar,
+        kasSeharusnya,
+        kasFisik,
+        selisihKas,
+        status: "tutup",
+        waktuTutup: serverTimestamp(),
+      });
+
+      // Pola "tulis tanpa baca" (lihat firestore.rules bagian
+      // summary_harian) — Kasir boleh menulis increment tanpa perlu
+      // izin baca dokumen ringkasan. HPP/laba SENGAJA tidak
+      // diikutsertakan di sini (lihat catatan arsitektur di atas).
+      const tanggal = tanggalHariIni();
+      await setDoc(
+        doc(db, "summary_harian", tanggal),
+        {
+          totalOmset: increment(totalOmset),
+          omsetTunai: increment(omsetTunai),
+          omsetNonTunai: increment(omsetNonTunai),
+          totalKasKeluar: increment(totalKasKeluar),
+          selisihKas: increment(selisihKas),
+          jumlahShift: increment(1),
+        },
+        { merge: true },
+      );
+
+      showToast("success", "Shift ditutup dan terkunci. Terima kasih!");
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal menutup shift: ${error.message}` : "Gagal menutup shift.",
+      );
+    } finally {
+      setSedangTutup(false);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-tutup"
+      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2 id="bagian-tutup" className="text-base font-semibold text-slate-900">
+        Tutup Shift
+      </h2>
+      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <NumberField
+          id="omset-non-tunai"
+          label="Omset Non-Tunai"
+          value={omsetNonTunai}
+          onChange={setOmsetNonTunai}
+          prefix="Rp"
+          hint="Total QRIS/kartu/transfer selama shift ini."
+        />
+        <NumberField
+          id="kas-fisik"
+          label="Kas Fisik Dihitung"
+          value={kasFisik}
+          onChange={setKasFisik}
+          prefix="Rp"
+        />
+      </div>
+
+      <dl className="mt-4 divide-y divide-slate-100 rounded-lg bg-slate-50 p-3 text-sm">
+        <div className="flex justify-between py-1">
+          <dt className="text-slate-600">Kas Seharusnya</dt>
+          <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(kasSeharusnya)}</dd>
+        </div>
+        <div className="flex justify-between py-1">
+          <dt className="text-slate-600">Selisih Kas</dt>
+          <dd
+            className={`font-semibold tabular-nums ${selisihKas === 0 ? "text-emerald-700" : "text-amber-700"}`}
+          >
+            {formatRupiah(selisihKas)}
+          </dd>
+        </div>
+      </dl>
+
+      {selisihKas !== 0 ? (
+        <div
+          role="alert"
+          className="mt-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+        >
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p>Ada selisih kas. Periksa kembali sebelum menutup shift bila memungkinkan.</p>
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        onClick={handleTutupShift}
+        disabled={sedangTutup}
+        aria-busy={sedangTutup}
+        className={[
+          "mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm",
+          "motion-safe:transition motion-safe:duration-150",
+          "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
+          sedangTutup
+            ? "cursor-not-allowed bg-emerald-400"
+            : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+        ].join(" ")}
+      >
+        {sedangTutup ? (
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <Save className="h-4 w-4" aria-hidden="true" />
+        )}
+        {sedangTutup ? "Menutup Shift..." : "Tutup & Kunci Shift"}
+      </button>
+    </section>
+  );
+}

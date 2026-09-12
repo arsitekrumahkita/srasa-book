@@ -1,0 +1,290 @@
+rules_version = '2';
+
+// ============================================================
+// Firestore Security Rules — SRASA BOOK
+// Menegakkan matriks hak akses PRD bagian 6.2, berdasarkan skema
+// data PRD bagian 10. Ditulis untuk Spark Plan: TIDAK ada Cloud
+// Functions/custom claims, jadi peran (role) dibaca langsung dari
+// dokumen users/{uid} setiap kali dicek (via get()).
+//
+// Data menu SUDAH DIPECAH jadi dua koleksi terpisah dengan menuId
+// yang sama (PRD bagian 6.3 & 10): `menu_harga` (nama, kategori,
+// harga jual — boleh dibaca Kasir) dan `menu` (HPP, resep, margin —
+// khusus Owner). Ini menutup celah yang sebelumnya ada saat harga
+// dan HPP masih tercampur di satu dokumen — Security Rules bekerja
+// di level dokumen, jadi pemisahan fisik ini yang benar-benar
+// menegakkan kerahasiaan, bukan sekadar menyembunyikannya di UI.
+// ============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------
+    // SECTION: Helper functions
+    // ------------------------------------------------------------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return isSignedIn() && userDoc().aktif == true;
+    }
+
+    function role() {
+      return userDoc().peran;
+    }
+
+    function isSuperadmin() {
+      return isActiveUser() && role() == 'superadmin';
+    }
+
+    function isKasir() {
+      return isActiveUser() && role() == 'kasir';
+    }
+
+    function isPurchasing() {
+      return isActiveUser() && role() == 'purchasing';
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: users — profil & peran setiap akun
+    // Hanya Owner yang membuat/mengubah akun staff (PRD 9.7: staff
+    // tidak mendaftar sendiri). Setiap orang boleh membaca dokumennya
+    // sendiri (untuk tahu perannya sendiri saat login).
+    // ------------------------------------------------------------
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isSuperadmin());
+      allow list: if isSuperadmin();
+      allow create, update, delete: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: profil_cafe — pengaturan umum (termasuk default % HPP)
+    // Semua peran aktif perlu baca (ambang notifikasi dsb), hanya
+    // Owner yang boleh mengubah.
+    // ------------------------------------------------------------
+
+    match /profil_cafe/{cafeId} {
+      allow read: if isActiveUser();
+      allow write: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: bahan_baku — inventaris & harga bahan
+    // Purchasing mengelola penuh (input belanja & update harga),
+    // Owner akses penuh, Kasir TIDAK punya akses sama sekali
+    // (sesuai matriks 6.2).
+    // ------------------------------------------------------------
+
+    match /bahan_baku/{bahanId} {
+      allow read, write: if isSuperadmin() || isPurchasing();
+
+      match /riwayat_harga/{riwayatId} {
+        allow read: if isSuperadmin() || isPurchasing();
+        // Riwayat harga dibuat otomatis oleh klien saat harga berubah,
+        // tidak pernah diedit/dihapus manual — jaga integritas jejak audit.
+        allow create: if isSuperadmin() || isPurchasing();
+        allow update, delete: if isSuperadmin();
+      }
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: menu_harga — nama, kategori, harga jual (PUBLIK)
+    // Kasir boleh baca (butuh ini untuk input penjualan per menu).
+    // Purchasing TIDAK punya akses (matriks 6.2: baris menu = "-").
+    // Hanya Owner yang menulis (menu dikelola lewat Kalkulator HPP).
+    // ------------------------------------------------------------
+
+    match /menu_harga/{menuId} {
+      allow read: if isSuperadmin() || isKasir();
+      allow write: if isSuperadmin();
+
+      match /varian/{varianId} {
+        allow read: if isSuperadmin() || isKasir();
+        allow write: if isSuperadmin();
+      }
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: menu — HPP, resep, margin (PRIVAT, khusus Owner)
+    // menuId-nya SAMA dengan menu_harga/{menuId} di atas, tapi ini
+    // koleksi terpisah — bukan sub-koleksi — supaya Kasir yang punya
+    // akses ke menu_harga tidak otomatis ikut punya akses ke sini.
+    // ------------------------------------------------------------
+
+    match /menu/{menuId} {
+      allow read, write: if isSuperadmin();
+
+      match /varian/{varianId} {
+        allow read, write: if isSuperadmin();
+      }
+
+      match /resep/{resepId} {
+        allow read, write: if isSuperadmin();
+      }
+
+      match /biaya_tambahan/{biayaId} {
+        allow read, write: if isSuperadmin();
+      }
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: shift — buka/tutup shift, penjualan, kas keluar
+    // Kasir hanya boleh baca/ubah shift MILIKNYA SENDIRI dan hanya
+    // selagi belum terkunci; Owner akses penuh semua shift.
+    // Purchasing TIDAK punya akses (matriks 6.2).
+    // ------------------------------------------------------------
+
+    match /shift/{shiftId} {
+      allow read: if isSuperadmin()
+        || (isKasir() && resource.data.kasirUid == request.auth.uid);
+      allow create: if isSuperadmin() || isKasir();
+      allow update: if isSuperadmin()
+        || (isKasir()
+            && resource.data.kasirUid == request.auth.uid
+            && resource.data.status != 'terkunci');
+      allow delete: if isSuperadmin();
+
+      match /penjualan/{itemId} {
+        allow read: if isSuperadmin()
+          || (isKasir()
+              && get(/databases/$(database)/documents/shift/$(shiftId)).data.kasirUid == request.auth.uid);
+        allow create, update: if isSuperadmin()
+          || (isKasir()
+              && get(/databases/$(database)/documents/shift/$(shiftId)).data.kasirUid == request.auth.uid
+              && get(/databases/$(database)/documents/shift/$(shiftId)).data.status != 'terkunci');
+        allow delete: if isSuperadmin();
+      }
+
+      match /kas_keluar/{kasKeluarId} {
+        allow read: if isSuperadmin()
+          || (isKasir()
+              && get(/databases/$(database)/documents/shift/$(shiftId)).data.kasirUid == request.auth.uid);
+        allow create, update: if isSuperadmin()
+          || (isKasir()
+              && get(/databases/$(database)/documents/shift/$(shiftId)).data.kasirUid == request.auth.uid
+              && get(/databases/$(database)/documents/shift/$(shiftId)).data.status != 'terkunci');
+        allow delete: if isSuperadmin();
+      }
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: kas_belanja — belanja harian & nota
+    // Purchasing hanya boleh baca/ubah entri MILIKNYA SENDIRI dan
+    // selagi belum terkunci; Owner akses penuh. Kasir TIDAK punya
+    // akses (matriks 6.2).
+    // ------------------------------------------------------------
+
+    match /kas_belanja/{belanjaId} {
+      allow read: if isSuperadmin()
+        || (isPurchasing() && resource.data.purchasingUid == request.auth.uid);
+      allow create: if isSuperadmin() || isPurchasing();
+      allow update: if isSuperadmin()
+        || (isPurchasing()
+            && resource.data.purchasingUid == request.auth.uid
+            && resource.data.status != 'terkunci');
+      allow delete: if isSuperadmin();
+
+      match /item/{itemId} {
+        allow read: if isSuperadmin()
+          || (isPurchasing()
+              && get(/databases/$(database)/documents/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid);
+        allow create, update: if isSuperadmin()
+          || (isPurchasing()
+              && get(/databases/$(database)/documents/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid
+              && get(/databases/$(database)/documents/kas_belanja/$(belanjaId)).data.status != 'terkunci');
+        allow delete: if isSuperadmin();
+      }
+
+      match /nota/{notaId} {
+        allow read: if isSuperadmin()
+          || (isPurchasing()
+              && get(/databases/$(database)/documents/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid);
+        allow create: if isSuperadmin() || isPurchasing();
+        allow update, delete: if isSuperadmin();
+      }
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: summary_harian & summary_bulanan — dasar Dashboard
+    // Owner-only untuk BACA (data laba/margin sensitif). Kasir &
+    // Purchasing tetap diberi izin TULIS (update saja, bukan baca)
+    // supaya klien mereka bisa memutakhirkan angka ringkasan lewat
+    // FieldValue.increment() saat tutup shift/nota disimpan, TANPA
+    // perlu membaca isi dokumennya lebih dulu (lihat README bagian
+    // implementasi client). Ini pola standar Firestore untuk
+    // "tulis tanpa baca".
+    // ------------------------------------------------------------
+
+    match /summary_harian/{tanggal} {
+      allow read: if isSuperadmin();
+      allow write: if isSuperadmin() || isKasir() || isPurchasing();
+    }
+
+    match /summary_bulanan/{bulan} {
+      allow read: if isSuperadmin();
+      allow write: if isSuperadmin() || isKasir() || isPurchasing();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: tiket_approval — pengajuan koreksi data terkunci
+    // Semua peran aktif boleh mengajukan (create) dan membaca
+    // tiket MILIKNYA SENDIRI; hanya Owner yang bisa mengubah status
+    // (setujui/tolak) dan menghapus.
+    // ------------------------------------------------------------
+
+    match /tiket_approval/{tiketId} {
+      allow read: if isSuperadmin()
+        || (isActiveUser() && resource.data.diajukanOlehUid == request.auth.uid);
+      allow create: if isActiveUser()
+        && request.resource.data.diajukanOlehUid == request.auth.uid
+        && request.resource.data.status == 'menunggu';
+      allow update: if isSuperadmin();
+      allow delete: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: notifikasi — Pusat Notifikasi (lintas peran)
+    // Setiap orang membaca notifikasi yang ditujukan ke uid-nya
+    // ATAU ke perannya; siapa saja yang aktif boleh MEMBUAT
+    // notifikasi untuk orang lain (misalnya Kasir memicu notifikasi
+    // "kas keluar besar" untuk Owner); hanya penerima yang boleh
+    // mengubahnya (menandai sudah dibaca).
+    // ------------------------------------------------------------
+
+    match /notifikasi/{notifId} {
+      allow read: if isActiveUser()
+        && (resource.data.untukUid == request.auth.uid || resource.data.untukPeran == role());
+      allow create: if isActiveUser();
+      allow update: if isActiveUser() && resource.data.untukUid == request.auth.uid;
+      allow delete: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: catatan_owner & backup_log — Owner-only sepenuhnya
+    // ------------------------------------------------------------
+
+    match /catatan_owner/{catatanId} {
+      allow read, write: if isSuperadmin();
+    }
+
+    match /backup_log/{logId} {
+      allow read, write: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: Jaring pengaman — apa pun yang tidak disebut di atas
+    // otomatis tertolak, sama seperti rules default Firebase.
+    // ------------------------------------------------------------
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

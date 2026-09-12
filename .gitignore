@@ -30,8 +30,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files — TIDAK PERNAH commit kredensial sungguhan, tapi
+# .env.local.example (template kosong) memang HARUS ikut ter-commit
+# supaya siapa pun yang clone tahu variabel apa saja yang perlu diisi.
 .env*
+!.env.local.example
 
 # vercel
 .vercel

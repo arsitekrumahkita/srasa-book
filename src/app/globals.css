@@ -1,26 +1,100 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
+  /* ------------------------------------------------------------
+   * Palet warna — mengikuti referensi layout dashboard finance
+   * (hijau emerald sebagai brand tunggal, latar bertona mint tipis
+   * di belakang kartu putih). Dipakai KONSISTEN di seluruh halaman,
+   * bukan hanya Dashboard, sesuai permintaan Owner/user.
+   * ------------------------------------------------------------ */
+  --background: #f3faf7;
   --foreground: #171717;
+  --color-app-bg: #f3faf7;
+  --color-brand: #059669; /* emerald-600 — warna aksi & aktif utama */
+  --color-brand-dark: #065f46; /* emerald-800 — untuk gradien kartu hero */
+  --color-brand-light: #10b981; /* emerald-500 — ujung terang gradien */
+
+  /* Warna kategori untuk chart (donut/bar) — tetap dalam keluarga
+     hijau + beberapa aksen netral, agar tetap terasa satu palet
+     alih-alih warna-warni acak. */
+  --color-chart-hijau: #059669;
+  --color-chart-kuning: #f59e0b;
+  --color-chart-merah: #f43f5e;
+  --color-chart-teal: #0ea5e9;
+
+  /* Standar text-shadow tipis (webrules-hikimori poin 4) — tujuannya
+     keterbacaan, bukan dekorasi, jadi nilainya sengaja sangat tipis. */
+  --text-shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.12);
+  --text-shadow-on-image: 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* Aplikasi ini sengaja hanya punya satu tema (terang) — kartu putih
+   di atas latar mint tipis seperti referensi. Skema gelap OS TIDAK
+   diikuti supaya kartu (bg-white eksplisit di semua halaman) tidak
+   kehilangan kontras di atas latar yang tiba-tiba jadi gelap. */
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+}
+
+body,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+span,
+a,
+button,
+label {
+  text-shadow: var(--text-shadow-subtle);
+}
+
+/* Hormati prefers-reduced-motion (WCAG) — matikan animasi/transisi
+   untuk pengguna yang mengaktifkan setting ini di OS/browser mereka. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Keyframe untuk toast masuk/keluar (dipakai src/shared/components/toast.tsx) */
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-slide-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
 }
