@@ -28,7 +28,7 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
 import { auth, db } from "./firebase";
 
-export type PeranPengguna = "superadmin" | "kasir" | "purchasing";
+export type PeranPengguna = "superadmin" | "finance" | "kasir" | "purchasing";
 
 export interface ProfilPengguna {
   nama: string;

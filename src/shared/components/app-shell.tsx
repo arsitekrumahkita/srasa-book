@@ -47,7 +47,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, peran: ["superadmin"] },
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, peran: ["superadmin", "finance"] },
   { href: "/shift", label: "Shift", icon: Wallet, peran: ["kasir"] },
   {
     href: "/belanja-nota",
@@ -59,20 +59,26 @@ const NAV_ITEMS: NavItem[] = [
     href: "/kalkulator-hpp",
     label: "Kalkulator HPP",
     icon: Calculator,
-    peran: ["superadmin"],
+    peran: ["superadmin", "finance"],
   },
-  { href: "/riwayat", label: "Riwayat", icon: History, peran: ["superadmin"] },
-  { href: "/kelola-akun", label: "Kelola Akun", icon: Users, peran: ["superadmin"] },
+  { href: "/riwayat", label: "Riwayat", icon: History, peran: ["superadmin", "finance"] },
+  {
+    href: "/kelola-akun",
+    label: "Kelola Akun",
+    icon: Users,
+    peran: ["superadmin", "finance"],
+  },
   {
     href: "/notifikasi",
     label: "Notifikasi",
     icon: Bell,
-    peran: ["superadmin", "kasir", "purchasing"],
+    peran: ["superadmin", "finance", "kasir", "purchasing"],
   },
 ];
 
 const LABEL_PERAN: Record<PeranPengguna, string> = {
   superadmin: "Owner",
+  finance: "Finance",
   kasir: "Kasir",
   purchasing: "Purchasing",
 };

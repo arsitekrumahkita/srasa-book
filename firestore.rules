@@ -39,8 +39,22 @@ service cloud.firestore {
       return userDoc().peran;
     }
 
+    // "finance" adalah peran tambahan yang aksesnya SENGAJA dibuat
+    // setara penuh dengan Owner (superadmin) — termasuk Kelola Akun
+    // — atas permintaan pemilik cafe. Daripada menulis ulang setiap
+    // baris `isSuperadmin()` di seluruh rules ini menjadi
+    // `isSuperadmin() || isFinance()`, fungsi isSuperadmin() di sini
+    // SENGAJA mencakup keduanya, supaya satu tempat ini menjadi
+    // satu-satunya sumber kebenaran untuk "akses level Owner". Kalau
+    // suatu saat Finance perlu dibedakan (mis. tidak boleh Kelola
+    // Akun), pisahkan lagi jadi dua fungsi lalu ubah pemanggilnya
+    // satu per satu.
     function isSuperadmin() {
-      return isActiveUser() && role() == 'superadmin';
+      return isActiveUser() && (role() == 'superadmin' || role() == 'finance');
+    }
+
+    function isFinance() {
+      return isActiveUser() && role() == 'finance';
     }
 
     function isKasir() {

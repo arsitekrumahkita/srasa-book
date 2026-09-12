@@ -1,9 +1,12 @@
 "use client";
 
 // ============================================================
-// Halaman: Kelola Akun (PRD bagian 9.7). Peran: SUPERADMIN (Owner)
-// saja — staff tidak bisa mendaftar sendiri, sesuai firestore.rules
-// (users: create/update/delete khusus superadmin).
+// Halaman: Kelola Akun (PRD bagian 9.7). Peran UI: Owner
+// (superadmin) dan Finance — staff tidak bisa mendaftar sendiri,
+// sesuai firestore.rules (users: create/update/delete khusus
+// isOwnerLevel(), yaitu superadmin ATAU finance — akses Finance
+// dibuat setara Owner atas permintaan, lihat helper isOwnerLevel()
+// di firestore.rules).
 //
 // CATATAN TEKNIS PENTING: `createUserWithEmailAndPassword` pada
 // Firebase Auth client SDK otomatis membuat sesi baru itu AKTIF di
@@ -48,13 +51,14 @@ function bersihkanUsername(nilai: string): string {
 
 const LABEL_PERAN: Record<PeranPengguna, string> = {
   superadmin: "Owner (Superadmin)",
+  finance: "Finance",
   kasir: "Kasir",
   purchasing: "Purchasing",
 };
 
 export default function KelolaAkunPage() {
   return (
-    <RequireAuth peranDiizinkan={["superadmin"]}>
+    <RequireAuth peranDiizinkan={["superadmin", "finance"]}>
       <AppShell>
         <KelolaAkunIsi />
       </AppShell>
@@ -242,6 +246,7 @@ function BuatAkunKartu() {
           >
             <option value="kasir">Kasir</option>
             <option value="purchasing">Purchasing</option>
+            <option value="finance">Finance</option>
           </select>
         </div>
         <div>

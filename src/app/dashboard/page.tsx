@@ -84,7 +84,7 @@ function bulanIni(): string {
 
 export default function DashboardPage() {
   return (
-    <RequireAuth peranDiizinkan={["superadmin"]}>
+    <RequireAuth peranDiizinkan={["superadmin", "finance"]}>
       <AppShell>
         <DashboardIsi />
       </AppShell>

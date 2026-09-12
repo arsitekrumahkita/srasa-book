@@ -42,7 +42,7 @@ const PROFIL_AWAL = {
 
 export default function KalkulatorHppPage() {
   return (
-    <RequireAuth peranDiizinkan={["superadmin"]}>
+    <RequireAuth peranDiizinkan={["superadmin", "finance"]}>
       <AppShell>
         <KalkulatorHppForm />
       </AppShell>

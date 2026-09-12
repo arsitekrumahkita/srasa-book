@@ -33,7 +33,7 @@ interface RiwayatShift {
 
 export default function RiwayatPage() {
   return (
-    <RequireAuth peranDiizinkan={["superadmin"]}>
+    <RequireAuth peranDiizinkan={["superadmin", "finance"]}>
       <AppShell>
         <RiwayatIsi />
       </AppShell>

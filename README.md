@@ -78,7 +78,7 @@ langsung di Firebase Console:
    | `email`     | string  | sama seperti langkah 2          |
    | `username`  | string  | username pilihan (huruf kecil, tanpa spasi) |
    | `nomorHp`   | string  | boleh dikosongkan, isi menyusul |
-   | `peran`     | string  | `superadmin`                    |
+   | `peran`     | string  | `superadmin` (akun Owner pertama — akun Finance dibuat belakangan lewat `/kelola-akun`, bukan lewat langkah manual ini) |
    | `aktif`     | boolean | `true`                          |
 4. **Firestore Database → Data → Start collection** (dari root, sejajar
    dengan `users`) → Collection ID: `usernames` → Document ID: **username
@@ -110,8 +110,10 @@ Seluruh halaman P0 (dasar) sudah ada dan saling terhubung lewat Login +
 peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
 
 - [x] Sprint 0 — Fondasi proyek (Next.js, TypeScript, Tailwind, struktur folder)
-- [x] Autentikasi (`/login`) & konteks peran (`src/shared/lib/auth-context.tsx`, `RequireAuth`, `AppShell`) — SUPERADMIN/Kasir/Purchasing
+- [x] Autentikasi (`/login`) & konteks peran (`src/shared/lib/auth-context.tsx`, `RequireAuth`, `AppShell`) — SUPERADMIN (Owner) / Finance / Kasir / Purchasing
   - Pemisahan tugas: halaman input operasional (`/shift`, `/belanja-nota`) hanya bisa dibuka oleh Kasir/Purchasing masing-masing — Owner TIDAK melakukan input harian ini, cukup memantau lewat Dashboard/Riwayat/Notifikasi. `firestore.rules` tetap memberi Owner (superadmin) akses baca/tulis penuh di backend sebagai admin override (audit/koreksi data), hanya UI-nya yang disembunyikan.
+  - Peran **Finance** aksesnya SENGAJA dibuat setara penuh dengan Owner (Dashboard, Kalkulator HPP, Kelola Akun, Riwayat, Notifikasi) — lihat komentar `isSuperadmin()` di `firestore.rules` yang menjelaskan alasannya. Dibuat lewat `/kelola-akun` sama seperti staff lain (pilih "Finance" di dropdown Peran).
+  - "Tutup Shift" BUKAN menu terpisah di sidebar — itu kartu di bagian bawah halaman `/shift` (setelah Buka Shift + input penjualan), muncul otomatis begitu Kasir sudah membuka shift hari itu.
   - Bisa masuk pakai Email ATAU Username (lihat koleksi `usernames/{username}` di firestore.rules), tombol Masuk dengan Google, dan Lupa Kata Sandi
   - **Wajib diaktifkan manual di Firebase Console** sebelum dipakai: Authentication → Sign-in method → aktifkan **Email/Password** dan **Google**
 - [x] Kalkulator HPP versi manual + komponen persentase (`/kalkulator-hpp`)

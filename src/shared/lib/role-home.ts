@@ -9,6 +9,7 @@ import type { PeranPengguna } from "./auth-context";
 export function halamanBerandaPeran(peran: PeranPengguna): string {
   switch (peran) {
     case "superadmin":
+    case "finance":
       return "/dashboard";
     case "kasir":
       return "/shift";
