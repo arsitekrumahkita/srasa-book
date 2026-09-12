@@ -111,6 +111,7 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
 
 - [x] Sprint 0 — Fondasi proyek (Next.js, TypeScript, Tailwind, struktur folder)
 - [x] Autentikasi (`/login`) & konteks peran (`src/shared/lib/auth-context.tsx`, `RequireAuth`, `AppShell`) — SUPERADMIN/Kasir/Purchasing
+  - Pemisahan tugas: halaman input operasional (`/shift`, `/belanja-nota`) hanya bisa dibuka oleh Kasir/Purchasing masing-masing — Owner TIDAK melakukan input harian ini, cukup memantau lewat Dashboard/Riwayat/Notifikasi. `firestore.rules` tetap memberi Owner (superadmin) akses baca/tulis penuh di backend sebagai admin override (audit/koreksi data), hanya UI-nya yang disembunyikan.
   - Bisa masuk pakai Email ATAU Username (lihat koleksi `usernames/{username}` di firestore.rules), tombol Masuk dengan Google, dan Lupa Kata Sandi
   - **Wajib diaktifkan manual di Firebase Console** sebelum dipakai: Authentication → Sign-in method → aktifkan **Email/Password** dan **Google**
 - [x] Kalkulator HPP versi manual + komponen persentase (`/kalkulator-hpp`)

@@ -1,9 +1,13 @@
 "use client";
 
 // ============================================================
-// Halaman: Belanja & Nota (PRD bagian 9.3). Peran: Purchasing
-// (utama) + Owner (akses penuh, lihat firestore.rules bagian
-// bahan_baku & kas_belanja).
+// Halaman: Belanja & Nota (PRD bagian 9.3). Peran UI: Purchasing
+// SAJA — Owner tidak input belanja operasional ini (pemisahan
+// tugas), Owner memantau lewat Dashboard/notifikasi kenaikan
+// harga. firestore.rules tetap memberi Owner (superadmin) akses
+// baca/tulis penuh di backend sebagai admin override, tapi
+// halaman ini sengaja tidak ditampilkan/diizinkan untuk
+// superadmin.
 //
 // Cakupan P0 pada versi ini: catat kas belanja harian, tambah item
 // belanja (bahan lama dipilih dari daftar, bahan baru diketik dan
@@ -79,7 +83,7 @@ function tanggalHariIni(): string {
 
 export default function BelanjaNotaPage() {
   return (
-    <RequireAuth peranDiizinkan={["superadmin", "purchasing"]}>
+    <RequireAuth peranDiizinkan={["purchasing"]}>
       <AppShell>
         <BelanjaNotaIsi />
       </AppShell>

@@ -2,8 +2,12 @@
 
 // ============================================================
 // Halaman: Shift — buka shift, input penjualan, kas keluar,
-// tutup shift (PRD bagian 9.2). Peran: Kasir (utama) + Owner
-// (akses penuh semua shift, lihat firestore.rules bagian shift).
+// tutup shift (PRD bagian 9.2). Peran UI: Kasir SAJA — Owner
+// tidak boleh input operasional harian ini (pemisahan tugas),
+// Owner memantau lewat Dashboard/Riwayat. firestore.rules tetap
+// memberi Owner (superadmin) akses baca/tulis penuh di backend
+// sebagai admin override (audit, koreksi data), tapi halaman ini
+// sengaja tidak ditampilkan/diizinkan untuk peran superadmin.
 //
 // CATATAN ARSITEKTUR PENTING (batasan Spark Plan, tanpa Cloud
 // Functions): HPP bersifat privat, hanya bisa dibaca Owner
@@ -90,7 +94,7 @@ function tanggalHariIni(): string {
 
 export default function ShiftPage() {
   return (
-    <RequireAuth peranDiizinkan={["superadmin", "kasir"]}>
+    <RequireAuth peranDiizinkan={["kasir"]}>
       <AppShell>
         <ShiftIsi />
       </AppShell>

@@ -48,12 +48,12 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, peran: ["superadmin"] },
-  { href: "/shift", label: "Shift", icon: Wallet, peran: ["superadmin", "kasir"] },
+  { href: "/shift", label: "Shift", icon: Wallet, peran: ["kasir"] },
   {
     href: "/belanja-nota",
     label: "Belanja & Nota",
     icon: ShoppingBasket,
-    peran: ["superadmin", "purchasing"],
+    peran: ["purchasing"],
   },
   {
     href: "/kalkulator-hpp",
