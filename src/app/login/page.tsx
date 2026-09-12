@@ -23,7 +23,7 @@
 // input Email ATAU Username (diterjemahkan dulu jadi email).
 // ============================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import {
   GoogleAuthProvider,
@@ -34,7 +34,12 @@ import {
 } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { KeyRound, LogIn, Loader2 } from "lucide-react";
-import { auth, db } from "@/shared/lib/firebase";
+import { auth, db, persistensiSiap } from "@/shared/lib/firebase";
+import {
+  bacaAlasanLogout,
+  bacaAlasanLogoutServer,
+  langgananAlasanLogout,
+} from "@/shared/components/auto-logout";
 import { useAuth } from "@/shared/lib/auth-context";
 import { halamanBerandaPeran } from "@/shared/lib/role-home";
 import { useToast } from "@/shared/components/toast";
@@ -102,6 +107,17 @@ export default function LoginPage() {
     }
   }, [loading, user, profil, router]);
 
+  // Kalau pengguna sampai di sini karena auto logout (idle 60 menit),
+  // jelaskan kenapa — tanpa ini layar login yang muncul tiba-tiba
+  // terasa seperti aplikasi error/data hilang, padahal drafnya aman.
+  // Dibaca sebagai external store (lihat auto-logout.tsx) supaya aman
+  // dipanggil saat render, termasuk saat render di server.
+  const alasanLogout = useSyncExternalStore(
+    langgananAlasanLogout,
+    bacaAlasanLogout,
+    bacaAlasanLogoutServer,
+  );
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!pengenal || !password) {
@@ -111,6 +127,12 @@ export default function LoginPage() {
 
     setSedangMasuk(true);
     try {
+      // Tunggu persistensi sesi ditetapkan LEBIH DULU (lihat
+      // firebase.ts): kalau signIn mendahuluinya, sesi pertama bisa
+      // terlanjur tersimpan dengan persistensi bawaan (localStorage)
+      // dan malah bertahan setelah tab ditutup — kebalikan dari yang
+      // diminta.
+      await persistensiSiap;
       const email = await terjemahkanKeEmail(pengenal);
       await signInWithEmailAndPassword(auth, email, password);
       // Redirect ditangani oleh useEffect di atas begitu profil termuat.
@@ -124,6 +146,7 @@ export default function LoginPage() {
   async function handleGoogle() {
     setSedangGoogle(true);
     try {
+      await persistensiSiap;
       await signInWithPopup(auth, new GoogleAuthProvider());
       // Kalau akun Google ini belum punya dokumen users/{uid} (staff
       // memang tidak bisa daftar sendiri, PRD 9.7), blok "profil
@@ -192,6 +215,15 @@ export default function LoginPage() {
           </p>
           <h1 className="mt-1 text-2xl font-bold text-slate-900">Masuk Aplikasi</h1>
         </div>
+
+        {alasanLogout ? (
+          <div
+            role="status"
+            className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900"
+          >
+            {alasanLogout}
+          </div>
+        ) : null}
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div>

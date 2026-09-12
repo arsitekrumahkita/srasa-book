@@ -1,0 +1,314 @@
+"use client";
+
+// ============================================================
+// Ekspor laporan ke Excel (.xlsx) dan PDF (A4) dengan KOP SURAT
+// berisi Detail Perusahaan — atas permintaan pemilik cafe.
+//
+// Kedua pustaka (exceljs & jspdf) di-import SECARA DINAMIS di dalam
+// fungsi, bukan di puncak berkas. Ini disengaja: keduanya berat
+// (ratusan KB) dan hanya dipakai saat tombol Ekspor benar-benar
+// ditekan. Dengan import dinamis, bundel halaman Riwayat tetap
+// ringan untuk mayoritas kunjungan yang tidak mengekspor apa pun —
+// penting karena aplikasi ini dipakai dari HP di cafe.
+//
+// Struktur kop mengikuti surat resmi: nama perusahaan besar di
+// tengah, bidang usaha & alamat/kontak di bawahnya, garis pemisah
+// tebal, baru judul laporan + periode. Kaki halaman berisi catatan
+// perusahaan, waktu cetak, dan nomor halaman.
+// ============================================================
+
+import type { DetailPerusahaan } from "@/shared/types/perusahaan";
+
+/** Satu kolom pada tabel laporan. */
+export interface KolomLaporan<T> {
+  judul: string;
+  /** Ambil nilai mentah dari satu baris data. */
+  ambil: (baris: T) => string | number;
+  /** Lebar kolom Excel (karakter). PDF menghitung lebarnya sendiri. */
+  lebar?: number;
+  /** Kolom angka dirata-kanan & diformat ribuan di kedua keluaran. */
+  angka?: boolean;
+}
+
+export interface OpsiLaporan<T> {
+  judul: string;
+  /** mis. "12 Agustus 2026 s/d 12 September 2026" */
+  periode: string;
+  perusahaan: DetailPerusahaan;
+  kolom: KolomLaporan<T>[];
+  baris: T[];
+  /** Baris ringkasan di bawah tabel, mis. Total Omset. */
+  ringkasan?: { label: string; nilai: string }[];
+  /** Nama berkas tanpa ekstensi. */
+  namaBerkas: string;
+}
+
+function tanggalCetak(): string {
+  return new Date().toLocaleString("id-ID", {
+    dateStyle: "long",
+    timeStyle: "short",
+  });
+}
+
+function unduh(blob: Blob, namaBerkas: string): void {
+  const url = URL.createObjectURL(blob);
+  const tautan = document.createElement("a");
+  tautan.href = url;
+  tautan.download = namaBerkas;
+  document.body.appendChild(tautan);
+  tautan.click();
+  document.body.removeChild(tautan);
+  // Beri jeda sebelum mencabut URL — sebagian browser membatalkan
+  // unduhan kalau objek URL-nya dicabut terlalu cepat.
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** Baris-baris kop yang dipakai BERSAMA oleh Excel & PDF, supaya kedua
+ *  keluaran tidak pernah berbeda isinya. */
+function barisKop(p: DetailPerusahaan): string[] {
+  const kontak = [
+    p.telepon ? `Telp: ${p.telepon}` : "",
+    p.email ? `Email: ${p.email}` : "",
+    p.website,
+  ]
+    .filter(Boolean)
+    .join("  •  ");
+
+  return [p.bidangUsaha, p.alamat, kontak, p.npwp ? `NPWP: ${p.npwp}` : ""].filter(
+    Boolean,
+  );
+}
+
+// ------------------------------------------------------------
+// EXCEL
+// ------------------------------------------------------------
+
+export async function eksporExcel<T>(opsi: OpsiLaporan<T>): Promise<void> {
+  const ExcelJS = (await import("exceljs")).default;
+  const wb = new ExcelJS.Workbook();
+  wb.creator = opsi.perusahaan.nama || "SRASA BOOK";
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet("Laporan", {
+    pageSetup: {
+      paperSize: 9, // A4
+      orientation: "portrait",
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      margins: { left: 0.5, right: 0.5, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 },
+    },
+  });
+
+  const jumlahKolom = Math.max(opsi.kolom.length, 2);
+  const kolomTerakhir = String.fromCharCode(64 + jumlahKolom);
+
+  function tambahBarisKop(teks: string, ukuran: number, tebal: boolean) {
+    const baris = ws.addRow([teks]);
+    ws.mergeCells(`A${baris.number}:${kolomTerakhir}${baris.number}`);
+    baris.getCell(1).font = { size: ukuran, bold: tebal };
+    baris.getCell(1).alignment = { horizontal: "center" };
+    return baris;
+  }
+
+  // --- KOP SURAT ---
+  tambahBarisKop(opsi.perusahaan.nama || "SRASA BOOK", 16, true);
+  for (const teks of barisKop(opsi.perusahaan)) {
+    tambahBarisKop(teks, 10, false);
+  }
+
+  // Garis pemisah tebal di bawah kop, seperti kop surat cetak.
+  const barisGaris = ws.addRow([]);
+  ws.mergeCells(`A${barisGaris.number}:${kolomTerakhir}${barisGaris.number}`);
+  barisGaris.getCell(1).border = { bottom: { style: "medium" } };
+
+  ws.addRow([]);
+  tambahBarisKop(opsi.judul, 13, true);
+  tambahBarisKop(`Periode: ${opsi.periode}`, 10, false);
+  ws.addRow([]);
+
+  // --- HEADER TABEL ---
+  const barisHeader = ws.addRow(opsi.kolom.map((k) => k.judul));
+  barisHeader.eachCell((sel) => {
+    sel.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    sel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF047857" } };
+    sel.alignment = { horizontal: "center", vertical: "middle" };
+    sel.border = {
+      top: { style: "thin" },
+      left: { style: "thin" },
+      bottom: { style: "thin" },
+      right: { style: "thin" },
+    };
+  });
+
+  // --- ISI TABEL ---
+  for (const baris of opsi.baris) {
+    const barisExcel = ws.addRow(opsi.kolom.map((k) => k.ambil(baris)));
+    barisExcel.eachCell((sel, kolomKe) => {
+      const kolom = opsi.kolom[kolomKe - 1];
+      sel.border = {
+        top: { style: "hair" },
+        left: { style: "thin" },
+        bottom: { style: "hair" },
+        right: { style: "thin" },
+      };
+      if (kolom?.angka) {
+        sel.numFmt = "#,##0";
+        sel.alignment = { horizontal: "right" };
+      }
+    });
+  }
+
+  // --- RINGKASAN ---
+  if (opsi.ringkasan?.length) {
+    ws.addRow([]);
+    for (const item of opsi.ringkasan) {
+      const baris = ws.addRow([item.label, item.nilai]);
+      baris.getCell(1).font = { bold: true };
+      baris.getCell(2).font = { bold: true };
+    }
+  }
+
+  // --- KAKI ---
+  ws.addRow([]);
+  const barisCetak = ws.addRow([`Dicetak: ${tanggalCetak()}`]);
+  barisCetak.getCell(1).font = { size: 9, italic: true, color: { argb: "FF64748B" } };
+  if (opsi.perusahaan.catatanKaki) {
+    const barisCatatan = ws.addRow([opsi.perusahaan.catatanKaki]);
+    barisCatatan.getCell(1).font = { size: 9, italic: true, color: { argb: "FF64748B" } };
+  }
+
+  // Lebar kolom: pakai lebar yang diminta, atau perkirakan dari isi.
+  opsi.kolom.forEach((kolom, indeks) => {
+    const isiTerpanjang = Math.max(
+      kolom.judul.length,
+      ...opsi.baris.map((b) => String(kolom.ambil(b)).length),
+    );
+    ws.getColumn(indeks + 1).width = kolom.lebar ?? Math.min(Math.max(isiTerpanjang + 3, 10), 40);
+  });
+
+  const buffer = await wb.xlsx.writeBuffer();
+  unduh(
+    new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    `${opsi.namaBerkas}.xlsx`,
+  );
+}
+
+// ------------------------------------------------------------
+// PDF (A4)
+// ------------------------------------------------------------
+
+export async function eksporPdf<T>(opsi: OpsiLaporan<T>): Promise<void> {
+  const { jsPDF } = await import("jspdf");
+  const autoTable = (await import("jspdf-autotable")).default;
+
+  const dok = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+  const lebarHalaman = dok.internal.pageSize.getWidth(); // 210mm
+  const tinggiHalaman = dok.internal.pageSize.getHeight(); // 297mm
+  const margin = 15;
+  const tengah = lebarHalaman / 2;
+
+  // --- KOP SURAT ---
+  let y = 18;
+  dok.setFont("helvetica", "bold");
+  dok.setFontSize(16);
+  dok.text(opsi.perusahaan.nama || "SRASA BOOK", tengah, y, { align: "center" });
+
+  dok.setFont("helvetica", "normal");
+  dok.setFontSize(9);
+  dok.setTextColor(70, 70, 70);
+  for (const teks of barisKop(opsi.perusahaan)) {
+    y += 4.5;
+    // Alamat panjang dipotong otomatis supaya tidak melewati margin.
+    for (const potongan of dok.splitTextToSize(teks, lebarHalaman - margin * 2) as string[]) {
+      dok.text(potongan, tengah, y, { align: "center" });
+      y += 4.5;
+    }
+    y -= 4.5;
+  }
+
+  y += 4;
+  dok.setDrawColor(4, 120, 87);
+  dok.setLineWidth(0.8);
+  dok.line(margin, y, lebarHalaman - margin, y);
+
+  // --- JUDUL LAPORAN ---
+  y += 9;
+  dok.setTextColor(15, 23, 42);
+  dok.setFont("helvetica", "bold");
+  dok.setFontSize(12);
+  dok.text(opsi.judul, tengah, y, { align: "center" });
+
+  y += 5.5;
+  dok.setFont("helvetica", "normal");
+  dok.setFontSize(9.5);
+  dok.setTextColor(70, 70, 70);
+  dok.text(`Periode: ${opsi.periode}`, tengah, y, { align: "center" });
+
+  // --- TABEL ---
+  autoTable(dok, {
+    startY: y + 6,
+    margin: { left: margin, right: margin, bottom: 22 },
+    head: [opsi.kolom.map((k) => k.judul)],
+    body: opsi.baris.map((baris) =>
+      opsi.kolom.map((k) => {
+        const nilai = k.ambil(baris);
+        return typeof nilai === "number" ? nilai.toLocaleString("id-ID") : String(nilai);
+      }),
+    ),
+    styles: { fontSize: 8.5, cellPadding: 2, lineColor: [226, 232, 240], lineWidth: 0.1 },
+    headStyles: { fillColor: [4, 120, 87], textColor: 255, fontStyle: "bold", halign: "center" },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: Object.fromEntries(
+      opsi.kolom.map((k, i) => [i, { halign: k.angka ? "right" : "left" }]),
+    ),
+  });
+
+  // --- RINGKASAN ---
+  const setelahTabel =
+    (dok as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y + 6;
+  let yRingkasan = setelahTabel + 8;
+  if (opsi.ringkasan?.length) {
+    dok.setFontSize(9.5);
+    dok.setTextColor(15, 23, 42);
+    for (const item of opsi.ringkasan) {
+      // Ringkasan yang kepepet di kaki halaman dipindah ke halaman baru,
+      // supaya tidak pernah tercetak menimpa footer.
+      if (yRingkasan > tinggiHalaman - 28) {
+        dok.addPage();
+        yRingkasan = 25;
+      }
+      dok.setFont("helvetica", "bold");
+      dok.text(item.label, margin, yRingkasan);
+      dok.text(item.nilai, lebarHalaman - margin, yRingkasan, { align: "right" });
+      yRingkasan += 6;
+    }
+  }
+
+  // --- KAKI HALAMAN (di setiap halaman) ---
+  const jumlahHalaman = dok.getNumberOfPages();
+  for (let halaman = 1; halaman <= jumlahHalaman; halaman += 1) {
+    dok.setPage(halaman);
+    dok.setDrawColor(226, 232, 240);
+    dok.setLineWidth(0.2);
+    dok.line(margin, tinggiHalaman - 16, lebarHalaman - margin, tinggiHalaman - 16);
+
+    dok.setFont("helvetica", "normal");
+    dok.setFontSize(7.5);
+    dok.setTextColor(100, 116, 139);
+    dok.text(`Dicetak: ${tanggalCetak()}`, margin, tinggiHalaman - 11);
+    dok.text(
+      `Halaman ${halaman} dari ${jumlahHalaman}`,
+      lebarHalaman - margin,
+      tinggiHalaman - 11,
+      { align: "right" },
+    );
+    if (opsi.perusahaan.catatanKaki) {
+      dok.text(opsi.perusahaan.catatanKaki, tengah, tinggiHalaman - 7, { align: "center" });
+    }
+  }
+
+  unduh(dok.output("blob"), `${opsi.namaBerkas}.pdf`);
+}

@@ -44,7 +44,16 @@ import { db } from "@/shared/lib/firebase";
 import { formatRupiah, formatRupiahSatuan } from "@/shared/lib/format";
 import { uploadNotaImage } from "@/shared/lib/cloudinary";
 import { setMirrorStokKasir } from "@/shared/lib/resep";
+import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
 import type { SatuanBahan } from "@/shared/types/inventaris";
+
+/** Isi draf otomatis untuk form Tambah Item (lihat TambahItemKartu). */
+interface IsiDrafItemBelanja {
+  namaBahan: string;
+  qty: number;
+  totalHarga: number;
+  satuanBahanBaru: SatuanBahan;
+}
 
 interface BahanBaku {
   id: string;
@@ -324,11 +333,39 @@ function TambahItemKartu({
   totalBelanja: number;
 }) {
   const { showToast } = useToast();
+  const { user } = useAuth();
   const [namaBahan, setNamaBahan] = useState("");
   const [qty, setQty] = useState(1);
   const [satuanBahanBaru, setSatuanBahanBaru] = useState<SatuanBahan>("gram");
   const [totalHarga, setTotalHarga] = useState(0);
   const [sedangSimpan, setSedangSimpan] = useState(false);
+
+  // --- Auto Draft ---
+  // Item yang sedang diketik (nama bahan + jumlah + total harga)
+  // biasanya sedang disalin dari struk belanja di tangan. Kalau hilang
+  // karena auto logout, Purchasing harus mencari & membaca struknya
+  // lagi. Dikunci per dokumen belanja harian.
+  const kunciDraf = `item-belanja:${belanjaId}`;
+  const isiDraf = useMemo<IsiDrafItemBelanja>(
+    () => ({ namaBahan, qty, totalHarga, satuanBahanBaru }),
+    [namaBahan, qty, totalHarga, satuanBahanBaru],
+  );
+  useDrafOtomatis(user?.uid, kunciDraf, isiDraf, namaBahan.trim().length > 0);
+
+  useEffect(() => {
+    if (!user) return;
+    let dibatalkan = false;
+    ambilDrafAsync<IsiDrafItemBelanja>(user.uid, kunciDraf).then((tersimpan) => {
+      if (dibatalkan || !tersimpan?.data?.namaBahan) return;
+      setNamaBahan(tersimpan.data.namaBahan);
+      setQty(tersimpan.data.qty ?? 1);
+      setTotalHarga(tersimpan.data.totalHarga ?? 0);
+      setSatuanBahanBaru(tersimpan.data.satuanBahanBaru === "pcs" ? "pcs" : "gram");
+    });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [user, kunciDraf]);
 
   const bahanCocokPreview = daftarBahan.find(
     (b) => b.nama.trim().toLowerCase() === namaBahan.trim().toLowerCase(),
@@ -443,6 +480,8 @@ function TambahItemKartu({
       setNamaBahan("");
       setQty(1);
       setTotalHarga(0);
+      // Item sudah tersimpan ke Firestore — drafnya tidak perlu lagi.
+      if (user) hapusDraf(user.uid, kunciDraf);
     } catch (error) {
       showToast(
         "error",

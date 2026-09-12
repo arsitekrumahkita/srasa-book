@@ -76,6 +76,20 @@ service cloud.firestore {
       allow get: if isSignedIn() && (request.auth.uid == userId || isSuperadmin());
       allow list: if isSuperadmin();
       allow create, update, delete: if isSuperadmin();
+
+      // Halaman Profil Akun: setiap orang boleh memperbaiki NAMA-nya
+      // sendiri (salah ketik saat akun dibuat Owner, dsb).
+      //
+      // Dibatasi hasOnly(['nama']) dan BUKAN sekadar "boleh ubah
+      // dokumen sendiri" — ini bedanya krusial: kalau `peran` ikut
+      // boleh berubah, Kasir bisa menaikkan dirinya sendiri jadi
+      // superadmin hanya lewat devtools browser, dan SELURUH matriks
+      // hak akses di berkas ini jadi tidak berarti. `aktif` juga
+      // ditahan, supaya akun yang dinonaktifkan Owner tidak bisa
+      // menghidupkan dirinya kembali.
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["nama"]);
     }
 
     // ------------------------------------------------------------

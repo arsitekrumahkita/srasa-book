@@ -13,7 +13,7 @@
 // dasar ini).
 // ============================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   doc,
@@ -24,13 +24,23 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { Calculator, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import {
+  Calculator,
+  ChevronDown,
+  ChevronUp,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Loader2,
+} from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { hitungLabaHarian } from "@/shared/lib/laba-harian";
+import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
+import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import type { TanggunganKasir } from "@/shared/types/inventaris";
 
 interface RiwayatShift {
@@ -94,6 +104,7 @@ function RiwayatIsi() {
 
       <div className="mb-6 flex flex-col gap-6">
         <TanggunganKasirKartu />
+        <EksporLaporanKartu daftarShift={daftarShift} />
         <HitungUlangLabaKartu />
       </div>
 
@@ -260,6 +271,192 @@ function TanggunganKasirKartu() {
   );
 }
 
+/**
+ * Ekspor Laporan Shift ke Excel (.xlsx) & PDF (A4) berkop surat.
+ *
+ * Rentang tanggal disaring DI SISI KLIEN dari daftar shift yang sudah
+ * ada di layar, bukan lewat query Firestore baru — daftarnya memang
+ * sudah dimuat seluruhnya untuk ditampilkan di halaman ini, jadi
+ * query tambahan hanya akan memakan kuota baca tanpa menambah apa pun.
+ */
+function EksporLaporanKartu({ daftarShift }: { daftarShift: RiwayatShift[] }) {
+  const { showToast } = useToast();
+  const { detail: perusahaan } = useDetailPerusahaan();
+  const [dariTanggal, setDariTanggal] = useState(tanggalAwalBulanISO());
+  const [sampaiTanggal, setSampaiTanggal] = useState(tanggalIniISO());
+  const [sedangEkspor, setSedangEkspor] = useState<"excel" | "pdf" | null>(null);
+
+  const terpilih = useMemo(
+    () =>
+      daftarShift
+        .filter((s) => s.tanggal >= dariTanggal && s.tanggal <= sampaiTanggal)
+        .slice()
+        .sort((a, b) => a.tanggal.localeCompare(b.tanggal)),
+    [daftarShift, dariTanggal, sampaiTanggal],
+  );
+
+  const total = useMemo(
+    () => ({
+      omset: terpilih.reduce((t, s) => t + s.totalOmset, 0),
+      kasKeluar: terpilih.reduce((t, s) => t + s.totalKasKeluar, 0),
+      selisih: terpilih.reduce((t, s) => t + s.selisihKas, 0),
+    }),
+    [terpilih],
+  );
+
+  function susunOpsi(): OpsiLaporan<RiwayatShift> {
+    return {
+      judul: "LAPORAN SHIFT HARIAN",
+      periode: `${formatTanggalPanjang(dariTanggal)} s/d ${formatTanggalPanjang(sampaiTanggal)}`,
+      perusahaan,
+      namaBerkas: `Laporan-Shift_${dariTanggal}_sd_${sampaiTanggal}`,
+      kolom: [
+        { judul: "Tanggal", ambil: (s) => s.tanggal, lebar: 14 },
+        { judul: "Kasir", ambil: (s) => s.kasirNama || "—", lebar: 22 },
+        { judul: "Status", ambil: (s) => labelStatus(s.status), lebar: 16 },
+        { judul: "Total Omset", ambil: (s) => s.totalOmset, angka: true, lebar: 16 },
+        { judul: "Kas Keluar", ambil: (s) => s.totalKasKeluar, angka: true, lebar: 16 },
+        { judul: "Selisih Kas", ambil: (s) => s.selisihKas, angka: true, lebar: 16 },
+      ],
+      baris: terpilih,
+      ringkasan: [
+        { label: "Jumlah Shift", nilai: String(terpilih.length) },
+        { label: "Total Omset", nilai: formatRupiah(total.omset) },
+        { label: "Total Kas Keluar", nilai: formatRupiah(total.kasKeluar) },
+        { label: "Total Selisih Kas", nilai: formatRupiah(total.selisih) },
+      ],
+    };
+  }
+
+  async function handleEkspor(jenis: "excel" | "pdf") {
+    if (terpilih.length === 0) {
+      showToast("error", "Tidak ada shift pada rentang tanggal itu.");
+      return;
+    }
+    setSedangEkspor(jenis);
+    try {
+      const opsi = susunOpsi();
+      if (jenis === "excel") await eksporExcel(opsi);
+      else await eksporPdf(opsi);
+      showToast("success", `Laporan ${jenis === "excel" ? "Excel" : "PDF"} berhasil diunduh.`);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal mengekspor: ${error.message}` : "Gagal mengekspor.",
+      );
+    } finally {
+      setSedangEkspor(null);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-ekspor"
+      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2
+        id="bagian-ekspor"
+        className="flex items-center gap-2 text-base font-semibold text-slate-900"
+      >
+        <Download className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        Ekspor Laporan (Excel / PDF A4)
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Laporan dicetak dengan KOP SURAT berisi Detail Perusahaan. Atur
+        datanya di menu Profil Akun bagian Detail Perusahaan.
+      </p>
+
+      {!perusahaan.nama ? (
+        <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+          Detail Perusahaan belum diisi — kop surat akan tercetak kosong.
+          Isi dulu lewat Profil Akun → Detail Perusahaan.
+        </p>
+      ) : null}
+
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="ekspor-dari" className="block text-sm font-semibold text-slate-800">
+            Dari Tanggal
+          </label>
+          <input
+            id="ekspor-dari"
+            type="date"
+            value={dariTanggal}
+            onChange={(event) => setDariTanggal(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+        <div>
+          <label htmlFor="ekspor-sampai" className="block text-sm font-semibold text-slate-800">
+            Sampai Tanggal
+          </label>
+          <input
+            id="ekspor-sampai"
+            type="date"
+            value={sampaiTanggal}
+            onChange={(event) => setSampaiTanggal(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+      </div>
+
+      <p className="mt-3 text-xs text-slate-600">
+        {terpilih.length} shift terpilih · Total Omset {formatRupiah(total.omset)}
+      </p>
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <button
+          type="button"
+          onClick={() => handleEkspor("excel")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "excel"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-emerald-400"
+        >
+          {sedangEkspor === "excel" ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
+          )}
+          {sedangEkspor === "excel" ? "Menyiapkan..." : "Ekspor Excel"}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleEkspor("pdf")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "pdf"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-600 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {sedangEkspor === "pdf" ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <FileText className="h-4 w-4" aria-hidden="true" />
+          )}
+          {sedangEkspor === "pdf" ? "Menyiapkan..." : "Ekspor PDF (A4)"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function labelStatus(status: RiwayatShift["status"]): string {
+  return status === "buka" ? "Sedang Berjalan" : status === "tutup" ? "Ditutup" : "Terkunci";
+}
+
+function formatTanggalPanjang(iso: string): string {
+  const [tahun, bulan, hari] = iso.split("-").map(Number);
+  if (!tahun || !bulan || !hari) return iso;
+  return new Date(tahun, bulan - 1, hari).toLocaleDateString("id-ID", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function tanggalAwalBulanISO(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
 function tanggalIniISO(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -369,6 +566,7 @@ function HitungUlangLabaKartu() {
 }
 
 function StatusBadge({ status }: { status: RiwayatShift["status"] }) {
-  const label = status === "buka" ? "Sedang Berjalan" : status === "tutup" ? "Ditutup" : "Terkunci";
-  return <span>{label}</span>;
+  // Pakai labelStatus() yang sama dengan yang dicetak di ekspor — kalau
+  // istilahnya diubah, layar dan laporan berubah bersamaan.
+  return <span>{labelStatus(status)}</span>;
 }

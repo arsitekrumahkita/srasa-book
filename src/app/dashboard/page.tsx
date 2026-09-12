@@ -25,21 +25,13 @@
 // ============================================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  collection,
-  doc,
-  documentId,
-  limit,
-  onSnapshot,
-  orderBy,
-  query,
-  setDoc,
-} from "firebase/firestore";
+import { collection, doc, onSnapshot, setDoc } from "firebase/firestore";
 import {
   AlertTriangle,
   ArrowDownRight,
   ArrowUpRight,
   Bell,
+  CalendarRange,
   Loader2,
   TriangleAlert,
   Wallet,
@@ -63,6 +55,7 @@ import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { useNotifikasiGabungan } from "@/shared/lib/notifikasi";
 import { hitungLabaHarian } from "@/shared/lib/laba-harian";
+import { ambilTren, LABEL_PERIODE_TREN, type PeriodeTren, type TitikTren } from "@/shared/lib/tren";
 
 interface SummaryHarian {
   totalOmset?: number;
@@ -126,10 +119,54 @@ function DashboardIsi() {
   const [ringkasanHarian, setRingkasanHarian] = useState<SummaryHarian | null>(null);
   const [ringkasanKemarin, setRingkasanKemarin] = useState<SummaryHarian | null>(null);
   const [ringkasanBulanan, setRingkasanBulanan] = useState<SummaryHarian | null>(null);
-  const [tren7Hari, setTren7Hari] = useState<{ tanggal: string; omset: number; laba: number }[]>([]);
   const [memuat, setMemuat] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { daftar: notifikasi, memuat: memuatNotifikasi } = useNotifikasiGabungan();
+
+  // --- Analitik Tren dengan rentang waktu custom (Harian/Mingguan/
+  // Bulanan/Custom Tanggal/Custom Bulan) — lihat src/shared/lib/tren.ts.
+  const [periodeTren, setPeriodeTren] = useState<PeriodeTren>("harian");
+  const [tanggalMulaiInput, setTanggalMulaiInput] = useState(tanggalKe(6));
+  const [tanggalSelesaiInput, setTanggalSelesaiInput] = useState(tanggalKe(0));
+  const [bulanMulaiInput, setBulanMulaiInput] = useState(bulanIni());
+  const [bulanSelesaiInput, setBulanSelesaiInput] = useState(bulanIni());
+  const [dataTren, setDataTren] = useState<TitikTren[]>([]);
+  const [memuatTren, setMemuatTren] = useState(true);
+  const [errorTren, setErrorTren] = useState<string | null>(null);
+
+  useEffect(() => {
+    let dibatalkan = false;
+    const opsi =
+      periodeTren === "custom-tanggal"
+        ? { tanggalMulai: tanggalMulaiInput, tanggalSelesai: tanggalSelesaiInput }
+        : periodeTren === "custom-bulan"
+          ? { bulanMulai: bulanMulaiInput, bulanSelesai: bulanSelesaiInput }
+          : {};
+    // setState "mulai memuat" SENGAJA ditunda satu microtask (bukan
+    // dipanggil langsung di badan efek) — pola yang sama seperti
+    // ambilDrafAsync di src/shared/lib/draf.ts, supaya dianggap
+    // callback sistem eksternal (Promise), bukan setState sinkron di
+    // dalam efek (react-hooks/set-state-in-effect).
+    Promise.resolve().then(() => {
+      if (!dibatalkan) {
+        setMemuatTren(true);
+        setErrorTren(null);
+      }
+    });
+    ambilTren(periodeTren, opsi)
+      .then((hasil) => {
+        if (!dibatalkan) setDataTren(hasil);
+      })
+      .catch(() => {
+        if (!dibatalkan) setErrorTren("Gagal memuat data tren untuk periode ini.");
+      })
+      .finally(() => {
+        if (!dibatalkan) setMemuatTren(false);
+      });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [periodeTren, tanggalMulaiInput, tanggalSelesaiInput, bulanMulaiInput, bulanSelesaiInput]);
 
   // Banner Stok Menipis — kriteria "Batas Minimal Stok" ditentukan
   // manual per bahan (lihat Belanja & Nota / Kelola Produk). Owner/
@@ -179,28 +216,10 @@ function DashboardIsi() {
       setRingkasanBulanan(snap.exists() ? (snap.data() as SummaryHarian) : null);
     });
 
-    const unsubTren = onSnapshot(
-      query(collection(db, "summary_harian"), orderBy(documentId(), "desc"), limit(7)),
-      (snap) => {
-        const data = snap.docs
-          .map((d) => {
-            const v = d.data() as SummaryHarian;
-            return {
-              tanggal: d.id.slice(5), // "MM-DD" saja, biar ringkas di sumbu-X
-              omset: v.totalOmset ?? 0,
-              laba: v.labaBersih ?? 0,
-            };
-          })
-          .reverse();
-        setTren7Hari(data);
-      },
-    );
-
     return () => {
       unsubHarian();
       unsubKemarin();
       unsubBulanan();
-      unsubTren();
     };
   }, []);
 
@@ -249,7 +268,7 @@ function DashboardIsi() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
+    <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-6">
         <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
           SRASA BOOK
@@ -340,19 +359,108 @@ function DashboardIsi() {
 
           {/* --- Baris grafik --- */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
-              <h2 className="text-sm font-semibold text-slate-900">Tren 7 Hari Terakhir</h2>
-              <p className="text-xs text-slate-500">Omset vs Laba Bersih per hari.</p>
+            <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">Analitik Tren</h2>
+                  <p className="text-xs text-slate-500">Omset vs Laba Bersih — {LABEL_PERIODE_TREN[periodeTren]}.</p>
+                </div>
+                <div className="flex items-center gap-1.5 rounded-full bg-slate-100 p-1">
+                  {(
+                    [
+                      ["harian", "Harian"],
+                      ["mingguan", "Mingguan"],
+                      ["bulanan", "Bulanan"],
+                      ["custom-tanggal", "Tgl"],
+                      ["custom-bulan", "Bulan"],
+                    ] as [PeriodeTren, string][]
+                  ).map(([nilai, label]) => (
+                    <button
+                      key={nilai}
+                      type="button"
+                      onClick={() => setPeriodeTren(nilai)}
+                      className={`rounded-full px-2.5 py-1 text-xs font-medium motion-safe:transition ${
+                        periodeTren === nilai
+                          ? "bg-white text-emerald-700 shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {periodeTren === "custom-tanggal" ? (
+                <div className="animasi-masuk-halus mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                  <CalendarRange className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                  <label className="flex items-center gap-1.5">
+                    Dari
+                    <input
+                      type="date"
+                      value={tanggalMulaiInput}
+                      max={tanggalSelesaiInput}
+                      onChange={(e) => setTanggalMulaiInput(e.target.value)}
+                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    Sampai
+                    <input
+                      type="date"
+                      value={tanggalSelesaiInput}
+                      min={tanggalMulaiInput}
+                      onChange={(e) => setTanggalSelesaiInput(e.target.value)}
+                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                    />
+                  </label>
+                </div>
+              ) : null}
+
+              {periodeTren === "custom-bulan" ? (
+                <div className="animasi-masuk-halus mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                  <CalendarRange className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                  <label className="flex items-center gap-1.5">
+                    Dari
+                    <input
+                      type="month"
+                      value={bulanMulaiInput}
+                      max={bulanSelesaiInput}
+                      onChange={(e) => setBulanMulaiInput(e.target.value)}
+                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    Sampai
+                    <input
+                      type="month"
+                      value={bulanSelesaiInput}
+                      min={bulanMulaiInput}
+                      onChange={(e) => setBulanSelesaiInput(e.target.value)}
+                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                    />
+                  </label>
+                </div>
+              ) : null}
+
               <div className="mt-4 h-64 w-full">
-                {tren7Hari.length === 0 ? (
+                {errorTren ? (
+                  <div className="flex h-full items-center justify-center text-sm text-rose-600">
+                    {errorTren}
+                  </div>
+                ) : memuatTren ? (
+                  <div className="flex h-full items-center justify-center">
+                    <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
+                  </div>
+                ) : dataTren.length === 0 ? (
                   <div className="flex h-full items-center justify-center text-sm text-slate-400">
                     Belum ada data.
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={tren7Hari} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+                    <LineChart data={dataTren} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
                       <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="tanggal" tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} />
+                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} />
                       <YAxis
                         tick={{ fontSize: 11, fill: "#64748b" }}
                         axisLine={false}
@@ -371,6 +479,8 @@ function DashboardIsi() {
                         stroke="var(--color-chart-hijau)"
                         strokeWidth={2.5}
                         dot={false}
+                        isAnimationActive
+                        animationDuration={400}
                       />
                       <Line
                         type="monotone"
@@ -379,6 +489,8 @@ function DashboardIsi() {
                         stroke="var(--color-chart-kuning)"
                         strokeWidth={2.5}
                         dot={false}
+                        isAnimationActive
+                        animationDuration={400}
                       />
                     </LineChart>
                   </ResponsiveContainer>
@@ -394,7 +506,7 @@ function DashboardIsi() {
               </div>
             </section>
 
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <h2 className="text-sm font-semibold text-slate-900">Komposisi Hari Ini</h2>
               <p className="text-xs text-slate-500">Tunai, non-tunai, dan kas keluar.</p>
               <div className="mt-2 h-48 w-full">
@@ -443,7 +555,7 @@ function DashboardIsi() {
 
           {/* --- Bulan Ini + Aktivitas Terbaru --- */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
+            <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
               <h2 className="text-sm font-semibold text-slate-900">Bulan Ini</h2>
               {ringkasanBulanan ? (
                 <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -456,7 +568,7 @@ function DashboardIsi() {
               )}
             </section>
 
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-2 flex items-center gap-2">
                 <Bell className="h-4 w-4 text-emerald-700" aria-hidden="true" />
                 <h2 className="text-sm font-semibold text-slate-900">Aktivitas Terbaru</h2>
@@ -655,7 +767,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
   }
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
+    <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-6">
         <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
           SRASA BOOK
@@ -693,7 +805,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
           {[...perKategori.entries()].map(([kategori, items]) => (
             <section
               key={kategori}
-              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+              className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
             >
               <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
                 {kategori}

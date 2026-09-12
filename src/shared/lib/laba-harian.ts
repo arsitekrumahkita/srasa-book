@@ -129,20 +129,32 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
     const menuSnap = await getDoc(doc(db, "menu", menuId));
     const menuData = menuSnap.exists() ? menuSnap.data() : null;
 
+    // Resep dan Packaging Cost disimpan di SUBKOLEKSI YANG SAMA
+    // (menu/{menuId}/resep) — dibedakan lewat field `jenis` per baris
+    // ("bahan" default, atau "kemasan"). Keduanya dijumlahkan terpisah
+    // di sini dari harga bahan_baku TERKINI, BUKAN dari cache
+    // `biayaKemasanManual`/`hppBahanOtomatis` di dokumen menu — cache
+    // itu cuma untuk ditampilkan di Kalkulator HPP saat menu terakhir
+    // diedit, sedangkan di sini kita mau angka yang selalu mutakhir
+    // (harga bahan & kemasan bisa berubah kapan pun Purchasing belanja
+    // lagi, tanpa Owner perlu membuka-tutup Kalkulator HPP lagi).
     const resepSnap = await getDocs(collection(db, "menu", menuId, "resep"));
     let hppBahan = 0;
+    let biayaKemasan = 0;
     for (const r of resepSnap.docs) {
       const rd = r.data();
       const takaran: number = rd.takaran ?? 0;
       const bahanId: string = rd.bahanId ?? r.id;
       if (takaran <= 0 || !bahanId) continue;
-      hppBahan += takaran * (await ambilHargaBahan(bahanId));
+      const biaya = takaran * (await ambilHargaBahan(bahanId));
+      if (rd.jenis === "kemasan") biayaKemasan += biaya;
+      else hppBahan += biaya;
     }
 
     const breakdown = hitungHppBreakdown(
       {
         hppBahan,
-        biayaKemasan: menuData?.biayaKemasanManual ?? 0,
+        biayaKemasan,
         overridePersenSusut: menuData?.overridePersenSusut ?? null,
         overridePersenUtilitas: menuData?.overridePersenUtilitas ?? null,
         overridePersenTenagaKerja: menuData?.overridePersenTenagaKerja ?? null,

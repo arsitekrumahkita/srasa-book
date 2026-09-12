@@ -20,7 +20,7 @@
 // ============================================================
 
 import { getApps, initializeApp, type FirebaseOptions } from "firebase/app";
-import { getAuth } from "firebase/auth";
+import { browserSessionPersistence, getAuth, setPersistence } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 export const firebaseConfig: FirebaseOptions = {
@@ -54,3 +54,44 @@ export const firebaseApp = getApps().length
 
 export const auth = getAuth(firebaseApp);
 export const db = getFirestore(firebaseApp);
+
+// ============================================================
+// PERSISTENSI SESI — atas permintaan pemilik cafe, sesi login WAJIB
+// berakhir saat: tab browser ditutup, aplikasi browser ditutup, dan
+// perangkat dimatikan.
+//
+// Ketiganya ditangani oleh SATU pengaturan ini: browserSessionPersistence
+// menyimpan sesi di sessionStorage, yang umurnya terikat pada TAB
+// browser itu sendiri. Tab ditutup -> hilang. Browser ditutup ->
+// semua tab hilang, jadi sesi hilang. Perangkat dimatikan -> browser
+// ikut tertutup, sesi hilang. Tidak ada yang tertinggal di disk,
+// jadi tidak ada sesi yang bisa "hidup lagi" setelah perangkat menyala.
+//
+// Bawaan Firebase adalah browserLocalPersistence (localStorage) yang
+// justru BERTAHAN melewati ketiga kejadian itu — kebalikan dari yang
+// diminta. Kalau suatu saat ingin "tetap login di perangkat ini",
+// ganti baris ini ke browserLocalPersistence, TAPI ketiga syarat di
+// atas otomatis tidak berlaku lagi.
+//
+// Batas idle 60 menit TIDAK ditangani di sini (Firebase tidak punya
+// konsep itu) — lihat src/shared/components/auto-logout.tsx.
+//
+// setPersistence() asinkron, jadi janjinya diekspor supaya halaman
+// Login bisa MENUNGGUNYA sebelum memanggil signIn — kalau tidak,
+// ada celah balapan kecil di mana sesi pertama masih memakai
+// persistensi bawaan (localStorage) dan akhirnya malah bertahan
+// setelah tab ditutup.
+// ============================================================
+
+export const persistensiSiap: Promise<void> = setPersistence(
+  auth,
+  browserSessionPersistence,
+).catch((error) => {
+  // Mode privat/penyimpanan diblokir: Firebase otomatis jatuh ke
+  // penyimpanan memori, yang justru LEBIH ketat (hilang saat reload).
+  // Jadi kegagalan di sini tidak pernah membuat sesi jadi lebih awet
+  // dari yang diminta — cukup dicatat, bukan dilempar.
+  if (process.env.NODE_ENV !== "production") {
+    console.warn("[firebase] Gagal menetapkan persistensi sesi:", error);
+  }
+});
