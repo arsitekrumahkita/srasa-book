@@ -14,31 +14,42 @@
 // tanpa tombol "Hitung" terpisah.
 // ============================================================
 
-import { useMemo, useState } from "react";
-import { Info, Loader2, Save, TriangleAlert } from "lucide-react";
-import { collection, doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
+import { Info, Loader2, Save, TriangleAlert, Trash2 } from "lucide-react";
+import { collection, doc, onSnapshot, serverTimestamp, setDoc, where, query } from "firebase/firestore";
 import { NumberField } from "@/shared/components/number-field";
 import { ResultRow } from "@/shared/components/result-row";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
-import { hitungKalkulatorHpp, persenKeFraksi } from "@/shared/lib/hpp-calculator";
+import {
+  hitungKalkulatorHpp,
+  persenKeFraksi,
+  PROFIL_HPP_DEFAULT_AWAL,
+} from "@/shared/lib/hpp-calculator";
 import { formatPersen, formatRupiah } from "@/shared/lib/format";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import type { ProfilHppDefault } from "@/shared/types/hpp";
+import type { BahanBaku, SatuanBahan } from "@/shared/types/inventaris";
 
 // ------------------------------------------------------------
 // SECTION: Nilai awal (placeholder — nanti dibaca dari Profil
-// Cafe di Firestore begitu Sprint 0 lanjutan/autentikasi selesai)
+// Cafe di Firestore begitu Sprint 0 lanjutan/autentikasi selesai).
+// Diimpor dari hpp-calculator.ts supaya kalkulasi Laba Bersih
+// otomatis di Dashboard (src/shared/lib/laba-harian.ts) memakai
+// default yang SAMA PERSIS — satu sumber kebenaran.
 // ------------------------------------------------------------
 
-const PROFIL_AWAL = {
-  persenSusut: 3,
-  persenUtilitas: 5,
-  persenTenagaKerja: 10,
-  persenOverheadLain: 7,
-  targetFoodCost: 35,
-};
+const PROFIL_AWAL = PROFIL_HPP_DEFAULT_AWAL;
+
+/** Satu baris Resep yang sedang disusun di form (belum tersimpan). */
+interface BarisResep {
+  bahanId: string;
+  bahanNama: string;
+  satuan: SatuanBahan;
+  takaran: number;
+  hargaSatuanBahan: number;
+}
 
 export default function KalkulatorHppPage() {
   return (
@@ -59,8 +70,74 @@ function KalkulatorHppForm() {
   // --- Input dasar menu ---
   const [namaMenu, setNamaMenu] = useState("");
   const [kategoriMenu, setKategoriMenu] = useState("");
-  const [hppBahan, setHppBahan] = useState(0);
   const [biayaKemasan, setBiayaKemasan] = useState(0);
+
+  // --- Resep (bahan + takaran) — HPP Bahan TIDAK LAGI diinput
+  // manual, melainkan dihitung otomatis dari baris-baris ini
+  // (takaran × harga bahan terkini). Lihat src/shared/lib/resep.ts
+  // untuk alasan keamanannya (Kasir nanti hanya baca takaran di
+  // sini, tidak pernah harga bahan_baku). ---
+  const [daftarBahan, setDaftarBahan] = useState<BahanBaku[]>([]);
+  const [resepRows, setResepRows] = useState<BarisResep[]>([]);
+  const [bahanDipilih, setBahanDipilih] = useState("");
+  const [takaranInput, setTakaranInput] = useState(0);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "bahan_baku"), where("aktif", "==", true)),
+      (snap) => {
+        setDaftarBahan(
+          snap.docs.map((d) => ({
+            id: d.id,
+            nama: d.data().nama ?? "",
+            kategori: d.data().kategori ?? "Umum",
+            satuan: d.data().satuan === "pcs" ? "pcs" : "gram",
+            hargaSatuanTerakhir: d.data().hargaSatuanTerakhir ?? 0,
+            stokSaatIni: d.data().stokSaatIni ?? 0,
+            aktif: true,
+          })),
+        );
+      },
+    );
+    return unsub;
+  }, []);
+
+  const hppBahan = useMemo(
+    () => resepRows.reduce((total, row) => total + row.takaran * row.hargaSatuanBahan, 0),
+    [resepRows],
+  );
+
+  function tambahBarisResep() {
+    const bahan = daftarBahan.find((b) => b.id === bahanDipilih);
+    if (!bahan) {
+      showToast("error", "Pilih bahan baku terlebih dahulu.");
+      return;
+    }
+    if (takaranInput <= 0) {
+      showToast("error", "Takaran harus lebih besar dari 0.");
+      return;
+    }
+    if (resepRows.some((r) => r.bahanId === bahan.id)) {
+      showToast("error", `${bahan.nama} sudah ada di resep ini.`);
+      return;
+    }
+    setResepRows((prev) => [
+      ...prev,
+      {
+        bahanId: bahan.id,
+        bahanNama: bahan.nama,
+        satuan: bahan.satuan,
+        takaran: takaranInput,
+        hargaSatuanBahan: bahan.hargaSatuanTerakhir,
+      },
+    ]);
+    setBahanDipilih("");
+    setTakaranInput(0);
+  }
+
+  function hapusBarisResep(bahanId: string) {
+    setResepRows((prev) => prev.filter((r) => r.bahanId !== bahanId));
+  }
 
   // --- Default persentase dari Profil Cafe (bisa diubah di halaman ini
   //     untuk sekarang; nanti pindah ke halaman Profil Cafe tersendiri) ---
@@ -136,8 +213,8 @@ function KalkulatorHppForm() {
       showToast("error", "Nama menu wajib diisi sebelum HPP bisa disimpan.");
       return;
     }
-    if (hppBahan <= 0) {
-      showToast("error", "HPP Bahan harus lebih besar dari 0.");
+    if (resepRows.length === 0) {
+      showToast("error", "Tambahkan minimal satu bahan di Resep sebelum HPP bisa disimpan.");
       return;
     }
 
@@ -149,6 +226,10 @@ function KalkulatorHppForm() {
       //     boleh dibaca Kasir.
       //   - menu/{menuId}: HPP, breakdown biaya, override persentase —
       //     khusus Owner (Security Rules menolak peran lain).
+      //   - menu/{menuId}/resep/{bahanId}: bahan + takaran SAJA (tanpa
+      //     harga) — boleh dibaca Kasir juga, dipakai untuk mengurangi
+      //     stok gudang otomatis saat penjualan tercatat (lihat
+      //     src/shared/lib/resep.ts).
       const menuId = doc(collection(db, "menu_harga")).id;
       const hargaJualUntukDisimpan =
         hargaJual > 0
@@ -167,7 +248,7 @@ function KalkulatorHppForm() {
       await setDoc(doc(db, "menu", menuId), {
         hppCache: hasil.breakdown.hppTotal,
         foodCostPersen: hasil.evaluasi?.foodCostPersen ?? null,
-        hppBahanManual: hppBahan,
+        hppBahanOtomatis: hppBahan,
         biayaKemasanManual: biayaKemasan,
         overridePersenSusut: pakaiOverrideSusut ? persenKeFraksi(overrideSusut) : null,
         overridePersenUtilitas: null,
@@ -176,13 +257,24 @@ function KalkulatorHppForm() {
         updatedAt: serverTimestamp(),
       });
 
+      await Promise.all(
+        resepRows.map((row) =>
+          setDoc(doc(db, "menu", menuId, "resep", row.bahanId), {
+            bahanId: row.bahanId,
+            bahanNama: row.bahanNama,
+            takaran: row.takaran,
+            satuan: row.satuan,
+          }),
+        ),
+      );
+
       showToast(
         "success",
         `HPP untuk "${namaMenu}" tersimpan: ${formatRupiah(hasil.breakdown.hppTotal)} per porsi.`,
       );
       setNamaMenu("");
       setKategoriMenu("");
-      setHppBahan(0);
+      setResepRows([]);
       setBiayaKemasan(0);
       setHargaJual(0);
     } catch (error) {
@@ -260,14 +352,6 @@ function KalkulatorHppForm() {
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <NumberField
-                id="hpp-bahan"
-                label="HPP Bahan per Porsi"
-                value={hppBahan}
-                onChange={setHppBahan}
-                prefix="Rp"
-                hint="Total biaya bahan baku untuk membuat satu porsi menu ini."
-              />
-              <NumberField
                 id="biaya-kemasan"
                 label="Biaya Kemasan per Porsi"
                 value={biayaKemasan}
@@ -310,6 +394,100 @@ function KalkulatorHppForm() {
                 ) : null}
               </div>
             </div>
+          </div>
+        </section>
+
+        {/* --- Kartu: Resep (Bahan + Takaran) --- */}
+        <section
+          aria-labelledby="bagian-resep"
+          className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+        >
+          <h2 id="bagian-resep" className="text-base font-semibold text-slate-900">
+            Resep (Bahan + Takaran)
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            HPP Bahan per porsi DIHITUNG OTOMATIS dari sini — takaran ×
+            harga bahan terkini. Resep ini juga yang dipakai untuk
+            mengurangi stok gudang otomatis saat Kasir mencatat penjualan.
+          </p>
+
+          {resepRows.length > 0 ? (
+            <ul className="mt-4 divide-y divide-slate-100 rounded-lg bg-slate-50 p-3">
+              {resepRows.map((row) => (
+                <li key={row.bahanId} className="flex items-center justify-between gap-3 py-2 text-sm">
+                  <span className="text-slate-700">
+                    {row.bahanNama} · {row.takaran} {row.satuan}
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="font-medium tabular-nums text-slate-900">
+                      {formatRupiah(row.takaran * row.hargaSatuanBahan)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => hapusBarisResep(row.bahanId)}
+                      aria-label={`Hapus ${row.bahanNama} dari resep`}
+                      className="text-slate-400 hover:text-rose-600"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-4 text-sm text-slate-500">
+              Belum ada bahan di resep menu ini.
+            </p>
+          )}
+
+          {daftarBahan.length === 0 ? (
+            <p className="mt-4 text-sm text-amber-700">
+              Belum ada Bahan Baku. Tambahkan dulu lewat Belanja & Nota
+              (Purchasing) sebelum menyusun resep di sini.
+            </p>
+          ) : (
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr_auto]">
+              <div>
+                <label htmlFor="bahan-resep" className="block text-sm font-semibold text-slate-800">
+                  Bahan
+                </label>
+                <select
+                  id="bahan-resep"
+                  value={bahanDipilih}
+                  onChange={(event) => setBahanDipilih(event.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                >
+                  <option value="">Pilih bahan...</option>
+                  {daftarBahan
+                    .filter((b) => !resepRows.some((r) => r.bahanId === b.id))
+                    .map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.nama} ({formatRupiah(b.hargaSatuanTerakhir)}/{b.satuan})
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <NumberField
+                id="takaran-resep"
+                label={`Takaran (${daftarBahan.find((b) => b.id === bahanDipilih)?.satuan ?? "gram/pcs"})`}
+                value={takaranInput}
+                onChange={setTakaranInput}
+              />
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={tambahBarisResep}
+                  className="inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] sm:w-auto"
+                >
+                  Tambah
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-4 flex justify-between rounded-lg bg-emerald-50 px-3 py-2.5 text-sm">
+            <span className="font-medium text-emerald-900">HPP Bahan per Porsi (otomatis)</span>
+            <span className="font-bold tabular-nums text-emerald-900">{formatRupiah(hppBahan)}</span>
           </div>
         </section>
 

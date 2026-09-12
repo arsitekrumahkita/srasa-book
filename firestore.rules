@@ -120,10 +120,33 @@ service cloud.firestore {
     match /bahan_baku/{bahanId} {
       allow read, write: if isSuperadmin() || isPurchasing();
 
+      // Kasir TIDAK BOLEH baca bahan_baku sama sekali (harga tetap
+      // rahasia), tapi Resep (lihat menu/{id}/resep di bawah) butuh
+      // stok gudang otomatis berkurang saat Kasir mencatat penjualan.
+      // Izin ini SENGAJA hanya "update", bukan "read" — dan dibatasi
+      // hanya boleh mengubah field `stokSaatIni` (via increment()),
+      // tidak pernah `hargaSatuanTerakhir` atau field lain. Kasir
+      // menulis TANPA PERNAH membaca isi dokumennya (pola "tulis
+      // tanpa baca", sama seperti summary_harian) — lihat komentar
+      // src/shared/lib/resep.ts untuk penjelasan lengkap.
+      allow update: if isKasir()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["stokSaatIni"]);
+
       match /riwayat_harga/{riwayatId} {
         allow read: if isSuperadmin() || isPurchasing();
         // Riwayat harga dibuat otomatis oleh klien saat harga berubah,
         // tidak pernah diedit/dihapus manual — jaga integritas jejak audit.
+        allow create: if isSuperadmin() || isPurchasing();
+        allow update, delete: if isSuperadmin();
+      }
+
+      // Penyesuaian stok manual TANPA approval (bahan rusak/
+      // kedaluwarsa) — wajib foto, tapi tidak perlu persetujuan Owner
+      // (atas permintaan pemilik cafe). Purchasing & Owner/Finance
+      // boleh mencatat; jejaknya permanen (tidak bisa diedit/dihapus,
+      // sama seperti riwayat_harga).
+      match /penyesuaian_stok/{penyesuaianId} {
+        allow read: if isSuperadmin() || isPurchasing();
         allow create: if isSuperadmin() || isPurchasing();
         allow update, delete: if isSuperadmin();
       }
@@ -160,8 +183,14 @@ service cloud.firestore {
         allow read, write: if isSuperadmin();
       }
 
+      // Resep (bahan + takaran) SENGAJA boleh dibaca Kasir juga —
+      // isinya cuma bahanId + takaran + satuan, TIDAK ADA Rupiah,
+      // supaya Kasir bisa mengurangi stok gudang otomatis saat
+      // mencatat penjualan (lihat src/shared/lib/resep.ts). Dokumen
+      // induk menu/{menuId} (HPP, breakdown biaya) TETAP privat.
       match /resep/{resepId} {
-        allow read, write: if isSuperadmin();
+        allow read: if isSuperadmin() || isKasir();
+        allow write: if isSuperadmin();
       }
 
       match /biaya_tambahan/{biayaId} {
@@ -299,6 +328,22 @@ service cloud.firestore {
       allow create: if isActiveUser();
       allow update: if isActiveUser() && resource.data.untukUid == request.auth.uid;
       allow delete: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: tanggungan_kasir — dibuat otomatis saat Tutup Shift
+    // dengan Selisih Kas negatif (kekurangan), sebagai jejak
+    // tanggung jawab ganti rugi Kasir (atas permintaan pemilik
+    // cafe). Kasir boleh membuat tanggungannya SENDIRI (uid harus
+    // cocok) dan membaca miliknya sendiri; hanya Owner/Finance yang
+    // bisa menandai lunas atau menghapus.
+    // ------------------------------------------------------------
+
+    match /tanggungan_kasir/{tanggunganId} {
+      allow read: if isSuperadmin()
+        || (isKasir() && resource.data.kasirUid == request.auth.uid);
+      allow create: if isKasir() && request.resource.data.kasirUid == request.auth.uid;
+      allow update, delete: if isSuperadmin();
     }
 
     // ------------------------------------------------------------

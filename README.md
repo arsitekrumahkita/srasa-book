@@ -116,32 +116,81 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
   - "Tutup Shift" BUKAN menu terpisah di sidebar — itu kartu di bagian bawah halaman `/shift` (setelah Buka Shift + input penjualan), muncul otomatis begitu Kasir sudah membuka shift hari itu.
   - Bisa masuk pakai Email ATAU Username (lihat koleksi `usernames/{username}` di firestore.rules), tombol Masuk dengan Google, dan Lupa Kata Sandi
   - **Wajib diaktifkan manual di Firebase Console** sebelum dipakai: Authentication → Sign-in method → aktifkan **Email/Password** dan **Google**
-- [x] Kalkulator HPP versi manual + komponen persentase (`/kalkulator-hpp`)
-  - Logika murni & teruji: `src/shared/lib/hpp-calculator.ts` (14 unit test)
-  - **Tersambung Firestore**: menulis `menu_harga/{menuId}` (publik) + `menu/{menuId}` (privat) sekaligus, sesuai pemisahan keamanan PRD 6.3
-- [x] Dashboard Analitik dasar (`/dashboard`) — kartu Omset & Laba Bersih hari ini + ringkasan bulan berjalan, dibaca dari `summary_harian`/`summary_bulanan`
+- [x] Kalkulator HPP + **Resep otomatis** (`/kalkulator-hpp`)
+  - HPP Bahan per porsi TIDAK LAGI diinput manual — dihitung otomatis dari
+    Resep (bahan + takaran, satuan gram/pcs) × harga bahan terkini di
+    `bahan_baku`. Resep tersimpan di `menu/{menuId}/resep/{bahanId}` (lihat
+    `src/shared/lib/resep.ts`) dan juga dipakai Kasir untuk mengurangi stok
+    gudang otomatis saat mencatat penjualan (lihat poin Shift di bawah).
+  - Logika breakdown biaya (susut/utilitas/tenaga kerja/overhead) tetap
+    fungsi murni & teruji: `src/shared/lib/hpp-calculator.ts` (14 unit test)
+  - **Tersambung Firestore**: menulis `menu_harga/{menuId}` (publik) + `menu/{menuId}` (privat, breakdown biaya) + `menu/{menuId}/resep/{bahanId}` (bahan+takaran, boleh dibaca Kasir) sekaligus, sesuai pemisahan keamanan PRD 6.3
+  - Belum ada halaman "edit menu yang sudah ada" — hanya bisa membuat menu
+    baru dari form ini (batasan lama, bukan baru di pass ini).
+- [x] Dashboard Analitik (`/dashboard`) — kartu Omset & **Laba Bersih OTOMATIS** hari ini + ringkasan bulan berjalan, dibaca dari `summary_harian`/`summary_bulanan`
+  - Laba Bersih & HPP Terjual dihitung OTOMATIS setiap Dashboard dibuka
+    (bukan manual lagi) — lihat `src/shared/lib/laba-harian.ts`: jumlahkan
+    qty terjual per menu dari semua shift hari itu, kalikan HPP per porsi
+    TERKINI (dari Resep + harga bahan sekarang), kurangi Total Kas Keluar.
+    Kasir/Purchasing SAMA SEKALI tidak terlibat dalam kalkulasi ini —
+    hanya sisi Owner/Finance yang boleh baca harga bahan.
+  - Untuk hari-hari LAMPAU, gunakan kartu "Hitung Ulang Laba Bersih" di
+    halaman Riwayat (backfill manual, dijelaskan di bawah).
 - [x] Shift — Input Penjualan, Kas Keluar, Tutup Shift Hari Ini (`/shift`)
   - Modal Kas Awal FLAT Rp500.000 setiap hari, reset otomatis tiap hari (tidak mewarisi sisa kas hari sebelumnya) — TIDAK ADA lagi langkah "Buka Shift" manual, shift hari ini langsung disiapkan otomatis begitu Kasir membuka halaman. Lihat komentar kepala `src/app/shift/page.tsx` untuk detailnya.
+  - **Stok gudang berkurang/bertambah otomatis** setiap qty penjualan
+    berubah, lewat Resep menu yang bersangkutan (`src/shared/lib/resep.ts`)
+    — Kasir tidak pernah melihat harga bahan, hanya takarannya.
+  - Selisih Kas BOLEH minus (Kasir tetap bisa Tutup Shift), tapi WAJIB diisi
+    keterangan bila ada selisih. Selisih negatif otomatis tercatat sebagai
+    **Tanggungan Kasir** (`tanggungan_kasir`) untuk dasar tuntutan ganti
+    rugi — Owner/Finance menandai lunas dari halaman Riwayat.
 - [x] Belanja & Nota — kas belanja, item, riwayat harga, notifikasi kenaikan harga >10%, upload foto nota ke Cloudinary (`/belanja-nota`)
+  - Purchasing input **Total Harga Dibayar** + Jumlah Dibeli (satuan gram/pcs)
+    — harga per satuan (mis. Rp/gram) DIHITUNG OTOMATIS (total ÷ jumlah),
+    tidak perlu dihitung manual.
+  - Setiap belanja otomatis MENAMBAH stok gudang (`bahan_baku.stokSaatIni`)
+    — sebelumnya stok tidak pernah bertambah sama sekali (celah yang
+    diperbaiki di pass ini).
+  - **Stok Rusak/Kedaluwarsa**: keluarkan bahan dari stok TANPA penjualan,
+    wajib foto sebagai bukti, TIDAK PERLU persetujuan Owner (langsung
+    berlaku begitu foto terunggah) — lihat `bahan_baku/{id}/penyesuaian_stok`.
 - [x] Kelola Akun — buat akun staff (aplikasi Firebase kedua agar sesi Owner tidak ikut ter-log-out) & aktif/nonaktifkan akun (`/kelola-akun`)
-- [x] Riwayat shift dasar (`/riwayat`) & Pusat Notifikasi dasar (`/notifikasi`)
+- [x] Riwayat shift (`/riwayat`) — daftar shift, **Tanggungan Kasir** (selisih kas minus belum lunas + tombol Tandai Lunas), dan **Hitung Ulang Laba Bersih** (backfill manual untuk hari lampau) — & Pusat Notifikasi dasar (`/notifikasi`)
 
-**Batasan yang disengaja pada versi P0 ini (lihat komentar kepala tiap
-file terkait untuk detail teknisnya), menyusul sebagai P1:**
+**Keputusan/penyederhanaan yang sengaja diambil pada fitur Resep +
+Inventaris otomatis (baca komentar kepala file terkait untuk detail):**
 
-- **HPP terjual & Laba Bersih belum otomatis terhitung di Shift/Dashboard.**
-  Ini bukan bug yang terlewat — Kasir memang TIDAK BOLEH bisa membaca HPP
-  (koleksi `menu` privat khusus Owner, PRD 6.3), sehingga Kasir juga tidak
-  bisa menuliskan `hppSnapshot` yang bisa dipercaya saat mencatat
-  penjualan. Rekonsiliasi laba (mencocokkan penjualan dengan HPP terkini)
-  perlu dikerjakan dari sisi Owner — belum dibangun di pass ini.
-- Dashboard belum punya grafik tren, perbandingan periode kontekstual,
-  atau pita peringatan otomatis (PRD 9.1) — baru kartu angka hari ini/bulan ini.
+- Satuan bahan baku dibatasi HANYA `gram` atau `pcs` — TIDAK ADA konversi
+  kg/liter + faktor konversi seperti draft awal PRD 8.3. Purchasing input
+  langsung dalam satuan pakai.
+- Harga bahan = harga pembelian TERAKHIR saja (bukan rata-rata bergerak 3
+  pembelian terakhir seperti draft awal PRD 8.3) — penyederhanaan yang
+  sudah ada sejak modul Belanja & Nota pertama kali dibuat.
+- Profil Cafe (persentase susut/utilitas/tenaga kerja/overhead default)
+  masih berupa konstanta di kode (`PROFIL_HPP_DEFAULT_AWAL` di
+  `src/shared/lib/hpp-calculator.ts`), BELUM ada halaman Firestore
+  tersendiri — Kalkulator HPP dan kalkulasi Laba Bersih otomatis
+  memakai konstanta yang SAMA supaya tetap konsisten satu sama lain.
+- Laba Bersih di Dashboard dihitung ULANG setiap halaman dibuka (bukan
+  terus-menerus real-time) — buka ulang halaman untuk angka terbaru
+  sepanjang hari.
+- Laba Bersih = Total Omset − HPP Terjual − Total Kas Keluar. Total
+  Belanja (`kas_belanja`) SENGAJA tidak dikurangkan lagi di rumus ini —
+  itu sudah "menjadi" HPP Terjual begitu bahannya terpakai lewat Resep,
+  jadi mengurangkannya lagi akan menghitung dua kali.
+
+**Batasan lain yang masih P1/P2 (lihat PRD bagian 13 untuk roadmap lengkap):**
+
+- Dashboard belum punya toggle periode grafik Mingguan/Bulanan/Tahunan
+  (PRD 9.1) — baru tren Harian 7 hari.
 - Riwayat belum ada filter tanggal, laporan bulanan/tahunan, atau Export
   Excel/PDF (PRD 9.6).
 - Notifikasi belum ada badge jumlah belum-dibaca di ikon lonceng Nav.
-- Belanja & Nota belum ada deteksi nota duplikat, dan bahan baru dibuat
-  langsung dari form ini (belum ada halaman kelola inventaris tersendiri).
+- Belanja & Nota belum ada deteksi nota duplikat.
+- Alur "Ajukan Koreksi" (tiket approval, PRD 7.5) untuk data yang sudah
+  terkunci belum dibangun sebagai UI (skema `tiket_approval` sudah ada di
+  firestore.rules, siap dipakai nanti).
 - Analisis Produk, Saran Strategi, Catatan Owner, Export Excel/PDF, dan
   Backup JSON (PRD 9.5, 9.8, 9.10) — sepenuhnya belum dikerjakan (P1/P2).
 

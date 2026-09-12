@@ -34,7 +34,7 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { Camera, CheckCircle2, Loader2, Plus, ShoppingBasket } from "lucide-react";
+import { AlertTriangle, Camera, CheckCircle2, Loader2, Plus, ShoppingBasket } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
@@ -43,12 +43,14 @@ import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { uploadNotaImage } from "@/shared/lib/cloudinary";
+import type { SatuanBahan } from "@/shared/types/inventaris";
 
 interface BahanBaku {
   id: string;
   nama: string;
-  satuanBeli: string;
+  satuan: SatuanBahan;
   hargaSatuanTerakhir: number;
+  stokSaatIni: number;
 }
 
 interface ItemBelanja {
@@ -217,8 +219,9 @@ function BelanjaBerjalan({ belanjaId, modalDiberikan }: { belanjaId: string; mod
         snap.docs.map((d) => ({
           id: d.id,
           nama: d.data().nama ?? "",
-          satuanBeli: d.data().satuanBeli ?? "pcs",
+          satuan: d.data().satuan === "pcs" ? "pcs" : "gram",
           hargaSatuanTerakhir: d.data().hargaSatuanTerakhir ?? 0,
+          stokSaatIni: d.data().stokSaatIni ?? 0,
         })),
       );
     });
@@ -283,6 +286,8 @@ function BelanjaBerjalan({ belanjaId, modalDiberikan }: { belanjaId: string; mod
           totalBelanja={totalBelanja}
         />
 
+        <PenyesuaianStokKartu daftarBahan={daftarBahan} />
+
         <NotaKartu belanjaId={belanjaId} notaList={notaList} />
 
         <SelesaikanBelanjaKartu
@@ -312,26 +317,35 @@ function TambahItemKartu({
   const { showToast } = useToast();
   const [namaBahan, setNamaBahan] = useState("");
   const [qty, setQty] = useState(1);
-  const [satuan, setSatuan] = useState("pcs");
-  const [hargaSatuan, setHargaSatuan] = useState(0);
+  const [satuanBahanBaru, setSatuanBahanBaru] = useState<SatuanBahan>("gram");
+  const [totalHarga, setTotalHarga] = useState(0);
   const [sedangSimpan, setSedangSimpan] = useState(false);
+
+  const bahanCocokPreview = daftarBahan.find(
+    (b) => b.nama.trim().toLowerCase() === namaBahan.trim().toLowerCase(),
+  );
+  const satuanEfektif: SatuanBahan = bahanCocokPreview?.satuan ?? satuanBahanBaru;
+  // Harga per satuan (gram/pcs) DIHITUNG OTOMATIS dari total harga yang
+  // dibayar dibagi jumlah dibeli — Purchasing TIDAK perlu menghitung
+  // sendiri (misal: "1kg kopi Rp100.000" -> otomatis Rp100/gram).
+  const hargaPerSatuanOtomatis = qty > 0 ? Math.round(totalHarga / qty) : 0;
 
   async function handleTambahItem() {
     if (!namaBahan.trim()) {
       showToast("error", "Nama bahan wajib diisi.");
       return;
     }
-    if (qty <= 0 || hargaSatuan <= 0) {
-      showToast("error", "Jumlah dan harga satuan harus lebih besar dari 0.");
+    if (qty <= 0 || totalHarga <= 0) {
+      showToast("error", "Jumlah dan total harga harus lebih besar dari 0.");
       return;
     }
 
     setSedangSimpan(true);
     try {
-      const subtotal = qty * hargaSatuan;
-      const bahanCocok = daftarBahan.find(
-        (b) => b.nama.trim().toLowerCase() === namaBahan.trim().toLowerCase(),
-      );
+      const bahanCocok = bahanCocokPreview;
+      const satuan = satuanEfektif;
+      const hargaSatuan = hargaPerSatuanOtomatis;
+      const subtotal = totalHarga;
 
       await addDoc(collection(db, "kas_belanja", belanjaId, "item"), {
         bahanId: bahanCocok?.id ?? null,
@@ -344,7 +358,8 @@ function TambahItemKartu({
       await updateDoc(doc(db, "kas_belanja", belanjaId), { totalBelanja: increment(subtotal) });
 
       if (bahanCocok) {
-        // Bahan sudah ada -> cek kenaikan harga & catat riwayat.
+        // Bahan sudah ada -> cek kenaikan harga & catat riwayat, LALU
+        // tambahkan stok gudang otomatis (qty yang baru dibeli).
         const hargaLama = bahanCocok.hargaSatuanTerakhir;
         if (hargaLama > 0 && hargaSatuan !== hargaLama) {
           const selisihPersen = (hargaSatuan - hargaLama) / hargaLama;
@@ -359,7 +374,7 @@ function TambahItemKartu({
               tipe: "kenaikan_harga_bahan",
               prioritas: "sedang",
               judul: "Kenaikan Harga Bahan",
-              pesan: `Harga "${namaBahan.trim()}" naik ${(selisihPersen * 100).toFixed(0)}% menjadi ${formatRupiah(hargaSatuan)}.`,
+              pesan: `Harga "${namaBahan.trim()}" naik ${(selisihPersen * 100).toFixed(0)}% menjadi ${formatRupiah(hargaSatuan)}/${satuan}.`,
               dibaca: false,
               waktu: serverTimestamp(),
             });
@@ -367,28 +382,30 @@ function TambahItemKartu({
         }
         await updateDoc(doc(db, "bahan_baku", bahanCocok.id), {
           hargaSatuanTerakhir: hargaSatuan,
+          stokSaatIni: increment(qty),
           updatedAt: serverTimestamp(),
         });
       } else {
-        // Bahan baru -> buat dokumen inventaris dasar (Owner bisa
-        // merapikan kategori/konversi satuan kemudian).
+        // Bahan baru -> buat dokumen inventaris, stok awal = qty yang
+        // baru saja dibeli (bukan 0 seperti sebelumnya).
         await setDoc(doc(collection(db, "bahan_baku")), {
           nama: namaBahan.trim(),
           kategori: "Umum",
-          satuanBeli: satuan,
-          satuanPakai: satuan,
-          faktorKonversi: 1,
+          satuan,
           hargaSatuanTerakhir: hargaSatuan,
-          stokSaatIni: 0,
+          stokSaatIni: qty,
           aktif: true,
           updatedAt: serverTimestamp(),
         });
       }
 
-      showToast("success", `${namaBahan.trim()} ditambahkan: ${formatRupiah(subtotal)}.`);
+      showToast(
+        "success",
+        `${namaBahan.trim()} ditambahkan: ${formatRupiah(subtotal)} (${formatRupiah(hargaSatuan)}/${satuan}).`,
+      );
       setNamaBahan("");
       setQty(1);
-      setHargaSatuan(0);
+      setTotalHarga(0);
     } catch (error) {
       showToast(
         "error",
@@ -450,21 +467,36 @@ function TambahItemKartu({
             ))}
           </datalist>
         </div>
-        <NumberField id="qty-item" label="Jumlah" value={qty} onChange={setQty} suffix={satuan} step={1} />
-        <NumberField id="harga-satuan" label="Harga Satuan" value={hargaSatuan} onChange={setHargaSatuan} prefix="Rp" />
+        <NumberField id="qty-item" label="Jumlah Dibeli" value={qty} onChange={setQty} suffix={satuanEfektif} step={1} />
+        <NumberField
+          id="total-harga"
+          label="Total Harga Dibayar"
+          value={totalHarga}
+          onChange={setTotalHarga}
+          prefix="Rp"
+          hint={qty > 0 && totalHarga > 0 ? `= ${formatRupiah(hargaPerSatuanOtomatis)} per ${satuanEfektif}` : undefined}
+        />
       </div>
       <div className="mt-3 flex items-end gap-3">
         <div className="max-w-[140px] flex-1">
           <label htmlFor="satuan-item" className="block text-xs text-slate-500">
             Satuan
           </label>
-          <input
-            id="satuan-item"
-            type="text"
-            value={satuan}
-            onChange={(event) => setSatuan(event.target.value)}
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
-          />
+          {bahanCocokPreview ? (
+            <p className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+              {bahanCocokPreview.satuan} (ikut bahan)
+            </p>
+          ) : (
+            <select
+              id="satuan-item"
+              value={satuanBahanBaru}
+              onChange={(event) => setSatuanBahanBaru(event.target.value as SatuanBahan)}
+              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+            >
+              <option value="gram">gram</option>
+              <option value="pcs">pcs</option>
+            </select>
+          )}
         </div>
         <button
           type="button"
@@ -488,6 +520,188 @@ function TambahItemKartu({
           Tambah
         </button>
       </div>
+    </section>
+  );
+}
+
+const ALASAN_PENYESUAIAN = [
+  { value: "rusak", label: "Rusak" },
+  { value: "kedaluwarsa", label: "Kedaluwarsa" },
+  { value: "lainnya", label: "Lainnya" },
+] as const;
+
+/**
+ * Penyesuaian Stok manual TANPA approval — untuk bahan rusak/
+ * kedaluwarsa yang harus dikeluarkan dari inventaris tanpa ada
+ * penjualan sama sekali. Wajib foto sebagai bukti (atas permintaan
+ * pemilik cafe), tapi TIDAK perlu persetujuan Owner — begitu foto
+ * terunggah, stok langsung berkurang. Jejaknya permanen (lihat
+ * firestore.rules bagian bahan_baku/{id}/penyesuaian_stok).
+ */
+function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
+  const { user, profil } = useAuth();
+  const { showToast } = useToast();
+  const [bahanId, setBahanId] = useState("");
+  const [jumlah, setJumlah] = useState(0);
+  const [alasan, setAlasan] = useState<(typeof ALASAN_PENYESUAIAN)[number]["value"]>("rusak");
+  const [keterangan, setKeterangan] = useState("");
+  const [sedangSimpan, setSedangSimpan] = useState(false);
+
+  async function handleFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const bahan = daftarBahan.find((b) => b.id === bahanId);
+    if (!bahan) {
+      showToast("error", "Pilih bahan terlebih dahulu.");
+      return;
+    }
+    if (jumlah <= 0) {
+      showToast("error", "Jumlah yang dikeluarkan harus lebih besar dari 0.");
+      return;
+    }
+    if (!user || !profil) return;
+
+    setSedangSimpan(true);
+    try {
+      const hasilFoto = await uploadNotaImage(file, "penyesuaian-stok");
+      await addDoc(collection(db, "bahan_baku", bahan.id, "penyesuaian_stok"), {
+        bahanId: bahan.id,
+        bahanNama: bahan.nama,
+        jumlah,
+        satuan: bahan.satuan,
+        alasan,
+        keterangan: keterangan.trim(),
+        fotoUrl: hasilFoto.url,
+        dicatatOlehUid: user.uid,
+        dicatatOlehNama: profil.nama,
+        waktu: serverTimestamp(),
+      });
+      // Langsung kurangi stok — TANPA approval, sesuai permintaan.
+      await updateDoc(doc(db, "bahan_baku", bahan.id), {
+        stokSaatIni: increment(-jumlah),
+        updatedAt: serverTimestamp(),
+      });
+      showToast(
+        "success",
+        `${jumlah} ${bahan.satuan} ${bahan.nama} dikeluarkan dari stok (${alasan}).`,
+      );
+      setBahanId("");
+      setJumlah(0);
+      setKeterangan("");
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error
+          ? `Gagal mencatat penyesuaian stok: ${error.message}`
+          : "Gagal mencatat penyesuaian stok.",
+      );
+    } finally {
+      setSedangSimpan(false);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-penyesuaian"
+      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2 id="bagian-penyesuaian" className="text-base font-semibold text-slate-900">
+        Stok Rusak / Kedaluwarsa
+      </h2>
+      <p className="mt-1 flex items-start gap-1.5 text-xs text-slate-500">
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        Keluarkan bahan dari stok TANPA penjualan (rusak/kedaluwarsa).
+        Wajib lampirkan foto sebagai bukti — tidak perlu persetujuan Owner.
+      </p>
+
+      {daftarBahan.length === 0 ? (
+        <p className="mt-4 text-sm text-slate-500">Belum ada Bahan Baku.</p>
+      ) : (
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-4">
+          <div className="sm:col-span-2">
+            <label htmlFor="bahan-penyesuaian" className="block text-sm font-semibold text-slate-800">
+              Bahan
+            </label>
+            <select
+              id="bahan-penyesuaian"
+              value={bahanId}
+              onChange={(event) => setBahanId(event.target.value)}
+              className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+            >
+              <option value="">Pilih bahan...</option>
+              {daftarBahan.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.nama} (stok: {b.stokSaatIni} {b.satuan})
+                </option>
+              ))}
+            </select>
+          </div>
+          <NumberField
+            id="jumlah-penyesuaian"
+            label="Jumlah"
+            value={jumlah}
+            onChange={setJumlah}
+            suffix={daftarBahan.find((b) => b.id === bahanId)?.satuan}
+          />
+          <div>
+            <label htmlFor="alasan-penyesuaian" className="block text-sm font-semibold text-slate-800">
+              Alasan
+            </label>
+            <select
+              id="alasan-penyesuaian"
+              value={alasan}
+              onChange={(event) =>
+                setAlasan(event.target.value as (typeof ALASAN_PENYESUAIAN)[number]["value"])
+              }
+              className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+            >
+              {ALASAN_PENYESUAIAN.map((opsi) => (
+                <option key={opsi.value} value={opsi.value}>
+                  {opsi.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3">
+        <label htmlFor="keterangan-penyesuaian" className="block text-xs text-slate-500">
+          Keterangan (opsional)
+        </label>
+        <input
+          id="keterangan-penyesuaian"
+          type="text"
+          value={keterangan}
+          onChange={(event) => setKeterangan(event.target.value)}
+          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+        />
+      </div>
+
+      <label
+        className={[
+          "mt-4 inline-flex h-[42px] cursor-pointer items-center justify-center gap-2 rounded-lg border border-rose-600 px-4 text-sm font-semibold text-rose-700 shadow-sm",
+          "motion-safe:transition motion-safe:duration-150 hover:bg-rose-50",
+          sedangSimpan || daftarBahan.length === 0 ? "pointer-events-none opacity-60" : "",
+        ].join(" ")}
+      >
+        {sedangSimpan ? (
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <Camera className="h-4 w-4" aria-hidden="true" />
+        )}
+        {sedangSimpan ? "Menyimpan..." : "Foto Bukti & Keluarkan Stok"}
+        <input
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={handleFile}
+          disabled={sedangSimpan || daftarBahan.length === 0}
+        />
+      </label>
     </section>
   );
 }

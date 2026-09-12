@@ -21,6 +21,24 @@ import type {
 } from "@/shared/types/hpp";
 
 // ------------------------------------------------------------
+// SECTION: Default Profil Cafe (placeholder)
+// Belum ada halaman "Profil Cafe" tersendiri di Firestore (P1
+// lanjutan) — nilai ini dipakai sebagai satu-satunya sumber
+// kebenaran sementara oleh KEDUA pemakainya: form Kalkulator HPP
+// (input awal) dan kalkulasi Laba Bersih otomatis di Dashboard
+// (src/shared/lib/laba-harian.ts), supaya keduanya selalu konsisten
+// walau Profil Cafe belum benar-benar bisa diubah dari UI.
+// ------------------------------------------------------------
+
+export const PROFIL_HPP_DEFAULT_AWAL = {
+  persenSusut: 3,
+  persenUtilitas: 5,
+  persenTenagaKerja: 10,
+  persenOverheadLain: 7,
+  targetFoodCost: 35,
+};
+
+// ------------------------------------------------------------
 // SECTION: Util angka kecil
 // ------------------------------------------------------------
 

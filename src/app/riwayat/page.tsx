@@ -14,12 +14,24 @@
 // ============================================================
 
 import { useEffect, useState } from "react";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
-import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import {
+  collection,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import { Calculator, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
+import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
+import { hitungLabaHarian } from "@/shared/lib/laba-harian";
+import type { TanggunganKasir } from "@/shared/types/inventaris";
 
 interface RiwayatShift {
   id: string;
@@ -79,6 +91,11 @@ function RiwayatIsi() {
           Daftar seluruh shift, terbaru di atas.
         </p>
       </header>
+
+      <div className="mb-6 flex flex-col gap-6">
+        <TanggunganKasirKartu />
+        <HitungUlangLabaKartu />
+      </div>
 
       {memuat ? (
         <div className="flex justify-center py-12">
@@ -148,6 +165,185 @@ function RiwayatIsi() {
         </ul>
       )}
     </main>
+  );
+}
+
+/**
+ * Tanggungan Kasir — daftar Selisih Kas negatif yang belum diganti,
+ * dibuat otomatis saat Kasir Tutup Shift dengan kekurangan (lihat
+ * src/app/shift/page.tsx). Owner/Finance menandai lunas dari sini
+ * setelah Kasir mengganti secara nyata (di luar aplikasi — tidak ada
+ * pencatatan pembayaran tunai di dalam sistem ini).
+ */
+function TanggunganKasirKartu() {
+  const { showToast } = useToast();
+  const [daftar, setDaftar] = useState<TanggunganKasir[]>([]);
+  const [memuat, setMemuat] = useState(true);
+  const [sedangUbah, setSedangUbah] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "tanggungan_kasir"), where("status", "==", "belum_lunas")),
+      (snap) => {
+        setDaftar(
+          snap.docs.map((d) => ({
+            id: d.id,
+            shiftId: d.data().shiftId ?? "",
+            tanggal: d.data().tanggal ?? "",
+            kasirUid: d.data().kasirUid ?? "",
+            kasirNama: d.data().kasirNama ?? "",
+            nominal: d.data().nominal ?? 0,
+            keterangan: d.data().keterangan ?? "",
+            status: "belum_lunas",
+          })),
+        );
+        setMemuat(false);
+      },
+      () => setMemuat(false),
+    );
+    return unsub;
+  }, []);
+
+  async function tandaiLunas(id: string) {
+    setSedangUbah(id);
+    try {
+      await updateDoc(doc(db, "tanggungan_kasir", id), { status: "lunas" });
+      showToast("success", "Tanggungan ditandai lunas.");
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal menandai lunas: ${error.message}` : "Gagal menandai lunas.",
+      );
+    } finally {
+      setSedangUbah(null);
+    }
+  }
+
+  if (memuat || daftar.length === 0) return null;
+
+  return (
+    <section
+      aria-labelledby="bagian-tanggungan"
+      className="rounded-xl border border-rose-200 bg-rose-50 p-5 shadow-sm"
+    >
+      <h2 id="bagian-tanggungan" className="text-base font-semibold text-rose-900">
+        Tanggungan Kasir (Selisih Kas Minus, Belum Lunas)
+      </h2>
+      <ul className="mt-3 flex flex-col divide-y divide-rose-100">
+        {daftar.map((t) => (
+          <li key={t.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
+            <div>
+              <p className="font-medium text-rose-900">
+                {t.kasirNama} · {t.tanggal}
+              </p>
+              <p className="text-xs text-rose-700">
+                {formatRupiah(t.nominal)}
+                {t.keterangan ? ` — ${t.keterangan}` : ""}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => tandaiLunas(t.id)}
+              disabled={sedangUbah === t.id}
+              aria-busy={sedangUbah === t.id}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-rose-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600"
+            >
+              {sedangUbah === t.id ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : null}
+              Tandai Lunas
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function tanggalIniISO(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Hitung ulang Laba Bersih & HPP Terjual untuk hari LAMPAU secara
+ * manual. Dashboard sudah menghitung otomatis untuk HARI INI setiap
+ * dibuka (lihat src/app/dashboard/page.tsx) — tombol ini untuk
+ * mem-back-fill hari-hari sebelumnya (mis. resep baru disusun
+ * belakangan, atau Owner belum sempat buka Dashboard hari itu).
+ */
+function HitungUlangLabaKartu() {
+  const { showToast } = useToast();
+  const [tanggal, setTanggal] = useState(tanggalIniISO());
+  const [sedangHitung, setSedangHitung] = useState(false);
+
+  async function handleHitung() {
+    setSedangHitung(true);
+    try {
+      const hasil = await hitungLabaHarian(tanggal);
+      await setDoc(
+        doc(db, "summary_harian", tanggal),
+        { labaBersih: hasil.labaBersih, totalHpp: hasil.totalHppTerjual },
+        { merge: true },
+      );
+      showToast(
+        "success",
+        `Laba Bersih ${tanggal}: ${formatRupiah(hasil.labaBersih)} (HPP Terjual ${formatRupiah(hasil.totalHppTerjual)}).`,
+      );
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal menghitung: ${error.message}` : "Gagal menghitung Laba Bersih.",
+      );
+    } finally {
+      setSedangHitung(false);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-hitung-laba"
+      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2 id="bagian-hitung-laba" className="flex items-center gap-2 text-base font-semibold text-slate-900">
+        <Calculator className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        Hitung Ulang Laba Bersih (Hari Lampau)
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Dashboard sudah otomatis menghitung Laba Bersih hari ini setiap
+        dibuka. Pakai ini untuk menghitung ulang hari-hari sebelumnya.
+      </p>
+      <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div>
+          <label htmlFor="tanggal-hitung-laba" className="block text-sm font-semibold text-slate-800">
+            Tanggal
+          </label>
+          <input
+            id="tanggal-hitung-laba"
+            type="date"
+            value={tanggal}
+            onChange={(event) => setTanggal(event.target.value)}
+            className="mt-1.5 rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={handleHitung}
+          disabled={sedangHitung}
+          aria-busy={sedangHitung}
+          className={[
+            "inline-flex h-[42px] items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold text-white shadow-sm",
+            "motion-safe:transition motion-safe:duration-150",
+            "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
+            sedangHitung
+              ? "cursor-not-allowed bg-emerald-400"
+              : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+          ].join(" ")}
+        >
+          {sedangHitung ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : "Hitung"}
+        </button>
+      </div>
+    </section>
   );
 }
 

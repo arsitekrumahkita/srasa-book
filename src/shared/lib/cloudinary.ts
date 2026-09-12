@@ -74,7 +74,10 @@ async function kompresGambar(file: File): Promise<Blob> {
  * Melempar Error dengan pesan yang bisa langsung ditampilkan lewat
  * toast bila konfigurasi belum diisi atau upload gagal.
  */
-export async function uploadNotaImage(file: File): Promise<HasilUploadNota> {
+export async function uploadNotaImage(
+  file: File,
+  folder: string = "nota-belanja",
+): Promise<HasilUploadNota> {
   const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
   const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
 
@@ -89,7 +92,7 @@ export async function uploadNotaImage(file: File): Promise<HasilUploadNota> {
   const formData = new FormData();
   formData.append("file", gambarTerkompres, file.name);
   formData.append("upload_preset", uploadPreset);
-  formData.append("folder", "nota-belanja");
+  formData.append("folder", folder);
 
   const response = await fetch(
     `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,

@@ -24,8 +24,17 @@
 // bisa diperluas di tempat untuk rincian laba.
 // ============================================================
 
-import { useEffect, useMemo, useState } from "react";
-import { collection, doc, documentId, limit, onSnapshot, orderBy, query } from "firebase/firestore";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  collection,
+  doc,
+  documentId,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  setDoc,
+} from "firebase/firestore";
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -51,6 +60,7 @@ import { AppShell } from "@/shared/components/app-shell";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { useNotifikasiGabungan } from "@/shared/lib/notifikasi";
+import { hitungLabaHarian } from "@/shared/lib/laba-harian";
 
 interface SummaryHarian {
   totalOmset?: number;
@@ -149,6 +159,32 @@ function DashboardIsi() {
       unsubBulanan();
       unsubTren();
     };
+  }, []);
+
+  // --- Laba Bersih & HPP Terjual OTOMATIS, dihitung dari Resep +
+  // harga bahan TERKINI (lihat src/shared/lib/laba-harian.ts) —
+  // TIDAK PERNAH melibatkan Kasir, hanya sisi Owner yang boleh baca
+  // harga bahan. Dijalankan SEKALI setiap Dashboard dibuka (bukan
+  // tiap snapshot berubah, supaya tidak menulis berulang ke dokumen
+  // yang sedang didengarkan sendiri) — buka ulang halaman ini untuk
+  // angka terbaru sepanjang hari. Gagal-lunak: kalau ada menu tanpa
+  // resep, kartu lain di Dashboard tetap tampil normal.
+  const sudahHitungLabaRef = useRef(false);
+  useEffect(() => {
+    if (sudahHitungLabaRef.current) return;
+    sudahHitungLabaRef.current = true;
+    const tanggal = tanggalKe(0);
+    hitungLabaHarian(tanggal)
+      .then((hasil) =>
+        setDoc(
+          doc(db, "summary_harian", tanggal),
+          { labaBersih: hasil.labaBersih, totalHpp: hasil.totalHppTerjual },
+          { merge: true },
+        ),
+      )
+      .catch(() => {
+        // Diamkan — kartu Laba Bersih cukup menampilkan nilai lama/0.
+      });
   }, []);
 
   const komposisiHariIni = useMemo(() => {

@@ -64,6 +64,8 @@ import { useAuth } from "@/shared/lib/auth-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
+import { ambilResepMenu, terapkanPerubahanStok } from "@/shared/lib/resep";
+import type { ResepItem } from "@/shared/types/inventaris";
 
 interface MenuHarga {
   id: string;
@@ -223,20 +225,38 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
   const [menuList, setMenuList] = useState<MenuHarga[]>([]);
   const [penjualan, setPenjualan] = useState<PenjualanItem[]>([]);
   const [kasKeluar, setKasKeluar] = useState<KasKeluarItem[]>([]);
+  // Resep (bahan + takaran) per menu, di-cache begitu daftar menu
+  // dimuat — dipakai untuk mengurangi/mengembalikan stok gudang
+  // otomatis setiap qty penjualan berubah (lihat ubahQty di bawah).
+  // Kasir HANYA membaca takaran di sini, TIDAK PERNAH harga bahan
+  // (lihat src/shared/lib/resep.ts).
+  const [resepPerMenu, setResepPerMenu] = useState<Map<string, ResepItem[]>>(new Map());
 
   useEffect(() => {
     const unsubMenu = onSnapshot(
       query(collection(db, "menu_harga"), where("aktif", "==", true)),
       (snap) => {
-        setMenuList(
-          snap.docs.map((d) => ({
-            id: d.id,
-            nama: d.data().nama ?? "",
-            kategori: d.data().kategori ?? "Umum",
-            hargaJual: d.data().hargaJual ?? 0,
-            aktif: true,
-          })),
-        );
+        const daftar = snap.docs.map((d) => ({
+          id: d.id,
+          nama: d.data().nama ?? "",
+          kategori: d.data().kategori ?? "Umum",
+          hargaJual: d.data().hargaJual ?? 0,
+          aktif: true,
+        }));
+        setMenuList(daftar);
+
+        // Ambil resep tiap menu sekali saat daftar menu berubah
+        // (bukan tiap render) — gagal-lunak per menu, satu menu tanpa
+        // resep tidak menghentikan menu lain.
+        Promise.all(
+          daftar.map(async (m) => {
+            try {
+              return [m.id, await ambilResepMenu(m.id)] as [string, ResepItem[]];
+            } catch {
+              return [m.id, [] as ResepItem[]] as [string, ResepItem[]];
+            }
+          }),
+        ).then((hasil) => setResepPerMenu(new Map(hasil)));
       },
     );
 
@@ -300,24 +320,38 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
           hargaJualSnapshot: item.hargaJual,
           subtotal: item.hargaJual * delta,
         });
-        return;
+      } else {
+        const qtyBaru = existing.qty + delta;
+        if (qtyBaru <= 0) {
+          await setDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            menuId: item.id,
+            menuNama: item.nama,
+            kategori: item.kategori,
+            qty: 0,
+            hargaJualSnapshot: item.hargaJual,
+            subtotal: 0,
+          });
+        } else {
+          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            qty: increment(delta),
+            subtotal: increment(item.hargaJual * delta),
+          });
+        }
       }
-      const qtyBaru = existing.qty + delta;
-      if (qtyBaru <= 0) {
-        await setDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
-          menuId: item.id,
-          menuNama: item.nama,
-          kategori: item.kategori,
-          qty: 0,
-          hargaJualSnapshot: item.hargaJual,
-          subtotal: 0,
+
+      // Kurangi (atau kembalikan, bila delta negatif) stok gudang
+      // otomatis lewat Resep menu ini — gagal-lunak: kalau menu belum
+      // punya resep (Owner belum menyusunnya), stok gudang cukup
+      // diabaikan, penjualan tetap tercatat normal.
+      const resep = resepPerMenu.get(item.id);
+      if (resep && resep.length > 0) {
+        terapkanPerubahanStok(resep, delta).catch(() => {
+          showToast(
+            "error",
+            `Penjualan tercatat, tapi stok gudang untuk "${item.nama}" gagal diperbarui otomatis.`,
+          );
         });
-        return;
       }
-      await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
-        qty: increment(delta),
-        subtotal: increment(item.hargaJual * delta),
-      });
     } catch (error) {
       showToast(
         "error",
@@ -573,9 +607,10 @@ function TutupShiftKartu({
   totalKasKeluar: number;
 }) {
   const { showToast } = useToast();
-  const { user } = useAuth();
+  const { user, profil } = useAuth();
   const [omsetNonTunai, setOmsetNonTunai] = useState(0);
   const [kasFisik, setKasFisik] = useState(0);
+  const [keteranganSelisih, setKeteranganSelisih] = useState("");
   const [sedangTutup, setSedangTutup] = useState(false);
 
   const omsetTunai = Math.max(totalOmset - omsetNonTunai, 0);
@@ -583,7 +618,16 @@ function TutupShiftKartu({
   const selisihKas = kasFisik - kasSeharusnya;
 
   async function handleTutupShift() {
-    if (!user) return;
+    if (!user || !profil) return;
+    // Selisih Kas BOLEH minus (Kasir tetap bisa menutup shift), tapi
+    // WAJIB diberi keterangan — atas permintaan pemilik cafe, ini jadi
+    // dasar tuntutan ganti rugi bila kekurangan (lihat tanggungan_kasir
+    // di bawah).
+    if (selisihKas !== 0 && !keteranganSelisih.trim()) {
+      showToast("error", "Ada selisih kas — wajib isi keterangan sebelum menutup shift.");
+      return;
+    }
+
     setSedangTutup(true);
     try {
       await updateDoc(doc(db, "shift", shiftId), {
@@ -594,6 +638,7 @@ function TutupShiftKartu({
         kasSeharusnya,
         kasFisik,
         selisihKas,
+        keteranganSelisih: keteranganSelisih.trim(),
         status: "tutup",
         waktuTutup: serverTimestamp(),
       });
@@ -601,7 +646,8 @@ function TutupShiftKartu({
       // Pola "tulis tanpa baca" (lihat firestore.rules bagian
       // summary_harian) — Kasir boleh menulis increment tanpa perlu
       // izin baca dokumen ringkasan. HPP/laba SENGAJA tidak
-      // diikutsertakan di sini (lihat catatan arsitektur di atas).
+      // diikutsertakan di sini — dihitung otomatis di sisi Owner
+      // (lihat src/shared/lib/laba-harian.ts & Dashboard).
       const tanggal = tanggalHariIni();
       await setDoc(
         doc(db, "summary_harian", tanggal),
@@ -615,6 +661,22 @@ function TutupShiftKartu({
         },
         { merge: true },
       );
+
+      // Selisih Kas negatif (kekurangan) -> catat sebagai tanggungan
+      // Kasir, supaya Owner/Finance punya jejak untuk tuntutan ganti
+      // rugi (di luar aplikasi). Owner menandai lunas dari Riwayat.
+      if (selisihKas < 0) {
+        await addDoc(collection(db, "tanggungan_kasir"), {
+          shiftId,
+          tanggal,
+          kasirUid: user.uid,
+          kasirNama: profil.nama,
+          nominal: Math.abs(selisihKas),
+          keterangan: keteranganSelisih.trim(),
+          status: "belum_lunas",
+          waktu: serverTimestamp(),
+        });
+      }
 
       showToast("success", "Shift ditutup dan terkunci. Terima kasih!");
     } catch (error) {
@@ -675,10 +737,30 @@ function TutupShiftKartu({
       {selisihKas !== 0 ? (
         <div
           role="alert"
-          className="mt-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+          className="mt-3 flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
         >
-          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <p>Ada selisih kas. Periksa kembali sebelum menutup shift bila memungkinkan.</p>
+          <div className="flex items-start gap-2">
+            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <p>
+              Ada selisih kas. Periksa kembali sebelum menutup shift bila memungkinkan.
+              {selisihKas < 0
+                ? " Kekurangan ini akan tercatat sebagai tanggungan yang perlu diganti."
+                : ""}
+            </p>
+          </div>
+          <div>
+            <label htmlFor="keterangan-selisih" className="block text-xs font-semibold text-amber-900">
+              Keterangan Selisih (wajib)
+            </label>
+            <input
+              id="keterangan-selisih"
+              type="text"
+              value={keteranganSelisih}
+              onChange={(event) => setKeteranganSelisih(event.target.value)}
+              placeholder="misalnya: kembalian kurang teliti, uang jatuh, dll."
+              className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-100"
+            />
+          </div>
         </div>
       ) : null}
 
