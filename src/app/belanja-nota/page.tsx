@@ -43,14 +43,18 @@ import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah, formatRupiahSatuan } from "@/shared/lib/format";
 import { uploadNotaImage } from "@/shared/lib/cloudinary";
+import { setMirrorStokKasir } from "@/shared/lib/resep";
 import type { SatuanBahan } from "@/shared/types/inventaris";
 
 interface BahanBaku {
   id: string;
   nama: string;
+  kategori: string;
   satuan: SatuanBahan;
   hargaSatuanTerakhir: number;
   stokSaatIni: number;
+  batasMinimalStok: number;
+  aktif: boolean;
 }
 
 interface ItemBelanja {
@@ -219,9 +223,12 @@ function BelanjaBerjalan({ belanjaId, modalDiberikan }: { belanjaId: string; mod
         snap.docs.map((d) => ({
           id: d.id,
           nama: d.data().nama ?? "",
+          kategori: d.data().kategori ?? "Umum",
           satuan: d.data().satuan === "pcs" ? "pcs" : "gram",
           hargaSatuanTerakhir: d.data().hargaSatuanTerakhir ?? 0,
           stokSaatIni: d.data().stokSaatIni ?? 0,
+          batasMinimalStok: d.data().batasMinimalStok ?? 0,
+          aktif: d.data().aktif ?? true,
         })),
       );
     });
@@ -287,6 +294,8 @@ function BelanjaBerjalan({ belanjaId, modalDiberikan }: { belanjaId: string; mod
         />
 
         <PenyesuaianStokKartu daftarBahan={daftarBahan} />
+
+        <BatasMinimalStokKartu daftarBahan={daftarBahan} />
 
         <NotaKartu belanjaId={belanjaId} notaList={notaList} />
 
@@ -392,17 +401,38 @@ function TambahItemKartu({
           stokSaatIni: increment(qty),
           updatedAt: serverTimestamp(),
         });
+        // Cermin stok_kasir ikut diperbarui (TANPA hargaSatuanTerakhir)
+        // supaya Dashboard Kasir menampilkan stok yang benar — lihat
+        // komentar keamanan di src/shared/lib/resep.ts.
+        await setMirrorStokKasir(bahanCocok.id, {
+          nama: bahanCocok.nama,
+          kategori: bahanCocok.kategori,
+          satuan,
+          stokSaatIni: bahanCocok.stokSaatIni + qty,
+          batasMinimalStok: bahanCocok.batasMinimalStok,
+          aktif: true,
+        });
       } else {
         // Bahan baru -> buat dokumen inventaris, stok awal = qty yang
         // baru saja dibeli (bukan 0 seperti sebelumnya).
-        await setDoc(doc(collection(db, "bahan_baku")), {
+        const bahanBaruRef = doc(collection(db, "bahan_baku"));
+        await setDoc(bahanBaruRef, {
           nama: namaBahan.trim(),
           kategori: "Umum",
           satuan,
           hargaSatuanTerakhir: hargaSatuan,
           stokSaatIni: qty,
+          batasMinimalStok: 0,
           aktif: true,
           updatedAt: serverTimestamp(),
+        });
+        await setMirrorStokKasir(bahanBaruRef.id, {
+          nama: namaBahan.trim(),
+          kategori: "Umum",
+          satuan,
+          stokSaatIni: qty,
+          batasMinimalStok: 0,
+          aktif: true,
         });
       }
 
@@ -629,6 +659,14 @@ function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
         stokSaatIni: increment(-jumlah),
         updatedAt: serverTimestamp(),
       });
+      await setMirrorStokKasir(bahan.id, {
+        nama: bahan.nama,
+        kategori: bahan.kategori,
+        satuan: bahan.satuan,
+        stokSaatIni: bahan.stokSaatIni - jumlah,
+        batasMinimalStok: bahan.batasMinimalStok,
+        aktif: bahan.aktif,
+      });
       showToast(
         "success",
         `${jumlah} ${bahan.satuan} ${bahan.nama} dikeluarkan dari stok (${alasan}).`,
@@ -751,6 +789,95 @@ function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
           disabled={sedangSimpan || daftarBahan.length === 0}
         />
       </label>
+    </section>
+  );
+}
+
+/**
+ * Batas Minimal Stok — kriteria "hampir habis" DITENTUKAN MANUAL per
+ * bahan (mis. Ayam = 1 kg), atas permintaan pemilik cafe. Begitu
+ * stokSaatIni turun sampai atau di bawah angka ini, banner peringatan
+ * otomatis muncul di Dashboard (Owner/Finance melihat lewat bahan_baku
+ * langsung; Purchasing & Kasir lewat cermin stok_kasir yang ditulis di
+ * sini juga). 0 = belum diatur, tidak ada peringatan untuk bahan itu.
+ */
+function BatasMinimalStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
+  const { showToast } = useToast();
+  const [sedangSimpan, setSedangSimpan] = useState<string | null>(null);
+  const [draf, setDraf] = useState<Record<string, number>>({});
+
+  async function simpan(bahan: BahanBaku) {
+    const nilai = draf[bahan.id] ?? bahan.batasMinimalStok;
+    if (nilai === bahan.batasMinimalStok) return;
+    setSedangSimpan(bahan.id);
+    try {
+      await updateDoc(doc(db, "bahan_baku", bahan.id), {
+        batasMinimalStok: nilai,
+        updatedAt: serverTimestamp(),
+      });
+      await setMirrorStokKasir(bahan.id, {
+        nama: bahan.nama,
+        kategori: bahan.kategori,
+        satuan: bahan.satuan,
+        stokSaatIni: bahan.stokSaatIni,
+        batasMinimalStok: nilai,
+        aktif: bahan.aktif,
+      });
+      showToast("success", `Batas warning "${bahan.nama}" disimpan: ${nilai} ${bahan.satuan}.`);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal menyimpan: ${error.message}` : "Gagal menyimpan.",
+      );
+    } finally {
+      setSedangSimpan(null);
+    }
+  }
+
+  if (daftarBahan.length === 0) return null;
+
+  return (
+    <section
+      aria-labelledby="bagian-batas-stok"
+      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2 id="bagian-batas-stok" className="text-base font-semibold text-slate-900">
+        Batas Minimal Stok (Peringatan Stok Menipis)
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Atur batas warning per bahan (mis. Ayam = 1 kg). Begitu stok turun
+        sampai atau di bawah angka ini, banner peringatan otomatis muncul di
+        Dashboard. Kosongkan/0 bila belum ingin diatur.
+      </p>
+      <ul className="mt-4 flex flex-col divide-y divide-slate-100">
+        {daftarBahan.map((b) => (
+          <li key={b.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
+            <div>
+              <p className="font-medium text-slate-900">{b.nama}</p>
+              <p className="text-xs text-slate-500">
+                Stok saat ini: {b.stokSaatIni} {b.satuan}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                aria-label={`Batas minimal stok ${b.nama}`}
+                value={draf[b.id] ?? b.batasMinimalStok}
+                onChange={(event) =>
+                  setDraf((prev) => ({ ...prev, [b.id]: Number(event.target.value) || 0 }))
+                }
+                onBlur={() => simpan(b)}
+                className="w-20 rounded-lg border border-slate-300 px-2 py-1.5 text-right text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              />
+              <span className="w-8 text-xs text-slate-500">{b.satuan}</span>
+              {sedangSimpan === b.id ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-hidden="true" />
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

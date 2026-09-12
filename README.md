@@ -116,7 +116,21 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
   - "Tutup Shift" BUKAN menu terpisah di sidebar — itu kartu di bagian bawah halaman `/shift` (setelah Buka Shift + input penjualan), muncul otomatis begitu Kasir sudah membuka shift hari itu.
   - Bisa masuk pakai Email ATAU Username (lihat koleksi `usernames/{username}` di firestore.rules), tombol Masuk dengan Google, dan Lupa Kata Sandi
   - **Wajib diaktifkan manual di Firebase Console** sebelum dipakai: Authentication → Sign-in method → aktifkan **Email/Password** dan **Google**
-- [x] Kalkulator HPP + **Resep otomatis** (`/kalkulator-hpp`)
+- [x] **Kelola Produk** (dulu "Kalkulator HPP", `/kalkulator-hpp`) + **Resep otomatis**
+  - Nama menu di sidebar diganti jadi "Kelola Produk". Tampilan AWAL kini
+    katalog produk dikelompokkan per kategori (bukan langsung form) — tekan
+    sebuah produk untuk mengubah resep/harganya, atau tombol "+ Tambah Menu
+    Baru" di kanan atas untuk menu kosong.
+  - **Tambah Bahan/Item Baru tanpa menunggu stok ada**: di kartu Resep ada
+    tombol "+ Bahan/Item Baru" — Owner bisa membuat bahan_baku (stok &
+    harga = 0) langsung dari sini dan menyusun resep duluan, TANPA perlu
+    menunggu Purchasing membelinya lebih dulu. Tetap tersambung penuh ke
+    inventaris yang sama: begitu Purchasing membelinya (dicocokkan dari
+    nama), harga & stok terisi normal seperti bahan lain.
+  - **Batas Minimal Stok** (kriteria "hampir habis", DITENTUKAN MANUAL per
+    bahan, mis. Ayam = 1 kg) diatur dari Belanja & Nota (kartu "Batas
+    Minimal Stok") — begitu `stokSaatIni` turun sampai/di bawah angka ini,
+    banner peringatan otomatis muncul di Dashboard.
   - HPP Bahan per porsi TIDAK LAGI diinput manual — dihitung otomatis dari
     Resep (bahan + takaran, satuan gram/pcs) × harga bahan terkini di
     `bahan_baku`. Resep tersimpan di `menu/{menuId}/resep/{bahanId}` (lihat
@@ -125,11 +139,38 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
   - Logika breakdown biaya (susut/utilitas/tenaga kerja/overhead) tetap
     fungsi murni & teruji: `src/shared/lib/hpp-calculator.ts` (14 unit test)
   - **Tersambung Firestore**: menulis `menu_harga/{menuId}` (publik) + `menu/{menuId}` (privat, breakdown biaya) + `menu/{menuId}/resep/{bahanId}` (bahan+takaran, boleh dibaca Kasir) sekaligus, sesuai pemisahan keamanan PRD 6.3
-  - Belum ada halaman "edit menu yang sudah ada" — hanya bisa membuat menu
-    baru dari form ini (batasan lama, bukan baru di pass ini).
-- [x] Dashboard Analitik (`/dashboard`) — kartu Omset & **Laba Bersih OTOMATIS** hari ini + ringkasan bulan berjalan, dibaca dari `summary_harian`/`summary_bulanan`
-  - Laba Bersih & HPP Terjual dihitung OTOMATIS setiap Dashboard dibuka
-    (bukan manual lagi) — lihat `src/shared/lib/laba-harian.ts`: jumlahkan
+  - Dropdown "Buat Baru atau Ubah Menu yang Ada" — resep & Packaging Cost
+    menu yang sudah ada bisa dimuat lalu ditimpa (bukan hanya bisa buat
+    menu baru terus-menerus).
+  - **Packaging Cost** (cup, sedotan, sumpit sekali pakai, dll., dulu
+    disebut "Biaya Kemasan") kini ITEM-BASED seperti Resep, bukan angka
+    Rupiah manual: pilih item dari Bahan Baku (satuan pcs — beli satu
+    pack/ball, harga per pcs dihitung otomatis di Belanja & Nota), atur
+    jumlah per porsi, tombol "+ Tambah" untuk menambah baris (menu yang
+    cuma pakai gelas tanpa sedotan cukup tidak menambahkan baris
+    sedotannya). Disimpan di subkoleksi `resep` YANG SAMA dengan Bahan
+    Baku (dibedakan lewat field `jenis: "bahan" | "kemasan"`), sehingga
+    stok packaging JUGA ikut berkurang otomatis dari inventaris saat menu
+    ini terjual — persis seperti bahan baku, lewat mekanisme yang sama
+    (`src/shared/lib/resep.ts`), tanpa kode terpisah.
+- [x] Dashboard (`/dashboard`) — SEKARANG DIBAGI PER PERAN, bukan cuma satu tampilan:
+  - **Owner/Finance**: Dashboard Analitik lama tetap utuh — kartu Omset &
+    **Laba Bersih OTOMATIS** hari ini + ringkasan bulan berjalan + Tren 7
+    Hari, PLUS banner baru "Stok bahan menipis" (dari Batas Minimal Stok).
+    Ini "zona privasi otoritas tinggi" atas permintaan pemilik cafe — data
+    finansial & Analitik Tren TIDAK PERNAH dirender untuk peran lain,
+    percabangannya di komponen paling luar (`DashboardRouter`), bukan
+    sekadar disembunyikan lewat CSS.
+  - **Kasir & Purchasing**: Dashboard yang SAMA SEKALI BERBEDA — rincian
+    stok bahan baku per kategori + banner stok menipis, TANPA Omset/Laba/
+    Tren apa pun. Purchasing membaca `bahan_baku` langsung (sudah py akses
+    penuh); Kasir membaca `stok_kasir`, salinan `bahan_baku` TANPA field
+    harga sama sekali (Kasir tidak pernah diberi izin baca `bahan_baku` —
+    lihat firestore.rules), ditulis ulang otomatis setiap kali stok/nama/
+    kategori/Batas Minimal Stok berubah (lihat `setMirrorStokKasir` di
+    `src/shared/lib/resep.ts`).
+  - Laba Bersih & HPP Terjual dihitung OTOMATIS setiap Dashboard Owner/
+    Finance dibuka — lihat `src/shared/lib/laba-harian.ts`: jumlahkan
     qty terjual per menu dari semua shift hari itu, kalikan HPP per porsi
     TERKINI (dari Resep + harga bahan sekarang), kurangi Total Kas Keluar.
     Kasir/Purchasing SAMA SEKALI tidak terlibat dalam kalkulasi ini —

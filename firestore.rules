@@ -153,6 +153,28 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------
+    // SECTION: stok_kasir — CERMIN bahan_baku TANPA hargaSatuanTerakhir
+    // (nama, kategori, satuan, stokSaatIni, batasMinimalStok, aktif).
+    // Dashboard Kasir menampilkan rincian stok gudang (atas permintaan
+    // pemilik cafe) — Kasir tidak boleh diberi `read` ke bahan_baku
+    // sama sekali karena itu akan membocorkan harga, jadi dokumen
+    // TERPISAH ini yang dibaca Kasir, ditulis ulang oleh Purchasing/
+    // Owner/Finance setiap kali field non-harga bahan_baku berubah
+    // (lihat setMirrorStokKasir() di src/shared/lib/resep.ts).
+    // ------------------------------------------------------------
+
+    match /stok_kasir/{bahanId} {
+      allow read: if isSuperadmin() || isPurchasing() || isKasir();
+      allow create, update, delete: if isSuperadmin() || isPurchasing();
+
+      // Kasir hanya boleh menulis stokSaatIni (dikurangi otomatis lewat
+      // Resep saat penjualan tercatat) — pola "tulis tanpa baca" yang
+      // sama seperti bahan_baku di atas, TIDAK PERNAH field lain.
+      allow update: if isKasir()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["stokSaatIni"]);
+    }
+
+    // ------------------------------------------------------------
     // SECTION: menu_harga — nama, kategori, harga jual (PUBLIK)
     // Kasir boleh baca (butuh ini untuk input penjualan per menu).
     // Purchasing TIDAK punya akses (matriks 6.2: baris menu = "-").

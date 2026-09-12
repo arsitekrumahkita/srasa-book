@@ -15,7 +15,7 @@
 // ============================================================
 
 import { useEffect, useMemo, useState } from "react";
-import { Info, Loader2, Save, TriangleAlert, Trash2 } from "lucide-react";
+import { Info, Loader2, Plus, Save, TriangleAlert, Trash2 } from "lucide-react";
 import {
   collection,
   deleteDoc,
@@ -39,6 +39,7 @@ import {
   PROFIL_HPP_DEFAULT_AWAL,
 } from "@/shared/lib/hpp-calculator";
 import { formatPersen, formatRupiah, formatRupiahSatuan } from "@/shared/lib/format";
+import { setMirrorStokKasir } from "@/shared/lib/resep";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import type { ProfilHppDefault } from "@/shared/types/hpp";
@@ -63,11 +64,13 @@ interface BarisResep {
   hargaSatuanBahan: number;
 }
 
-/** Menu yang sudah tersimpan, untuk dropdown "edit menu". */
+/** Menu yang sudah tersimpan, untuk daftar produk & dropdown "edit menu". */
 interface MenuTersimpan {
   id: string;
   nama: string;
   kategori: string;
+  hargaJual: number;
+  aktif: boolean;
 }
 
 /** Nilai khusus di dropdown menu = sedang membuat menu baru. */
@@ -92,7 +95,6 @@ function KalkulatorHppForm() {
   // --- Input dasar menu ---
   const [namaMenu, setNamaMenu] = useState("");
   const [kategoriMenu, setKategoriMenu] = useState("");
-  const [biayaKemasan, setBiayaKemasan] = useState(0);
 
   // --- Resep (bahan + takaran) — HPP Bahan TIDAK LAGI diinput
   // manual, melainkan dihitung otomatis dari baris-baris ini
@@ -103,6 +105,20 @@ function KalkulatorHppForm() {
   const [resepRows, setResepRows] = useState<BarisResep[]>([]);
   const [bahanDipilih, setBahanDipilih] = useState("");
   const [takaranInput, setTakaranInput] = useState(0);
+
+  // --- Packaging Cost (cup, sedotan, sumpit, dll.) — SAMA PERSIS
+  // arsitekturnya dengan Resep di atas: dipilih dari Bahan Baku
+  // (satuannya pcs, dibeli per pack/ball lalu otomatis dibagi jadi
+  // harga per pcs di Belanja & Nota), ditakar per porsi, dan ikut
+  // tersimpan ke subkoleksi menu/{menuId}/resep supaya stoknya JUGA
+  // otomatis berkurang saat menu ini terjual — bukan cuma angka Rupiah
+  // statis seperti dulu. Baris-baris ini berbeda dari Resep (Bahan
+  // Baku) hanya lewat tag `jenis: "kemasan"`, dipisah supaya menu yang
+  // hanya pakai gelas tanpa sedotan (atau sebaliknya) bisa diatur bebas
+  // per menu — cukup jangan tambahkan barisnya. ---
+  const [kemasanRows, setKemasanRows] = useState<BarisResep[]>([]);
+  const [kemasanDipilih, setKemasanDipilih] = useState("");
+  const [takaranKemasanInput, setTakaranKemasanInput] = useState(1);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -142,6 +158,13 @@ function KalkulatorHppForm() {
   // mengurangi stok gudang diam-diam).
   const [resepIdTersimpan, setResepIdTersimpan] = useState<string[]>([]);
 
+  // --- Tampilan: daftar produk (default) vs form Kalkulator HPP ---
+  // Atas permintaan pemilik cafe: halaman ini dibuka dulu sebagai daftar
+  // produk per kategori (seperti katalog), form hanya muncul saat "+
+  // Tambah Menu Baru" ditekan atau saat memilih produk yang sudah ada
+  // untuk diedit.
+  const [tampilan, setTampilan] = useState<"daftar" | "form">("daftar");
+
   useEffect(() => {
     const unsub = onSnapshot(
       query(collection(db, "menu_harga"), orderBy("nama")),
@@ -151,6 +174,8 @@ function KalkulatorHppForm() {
             id: d.id,
             nama: d.data().nama ?? "",
             kategori: d.data().kategori ?? "Umum",
+            hargaJual: d.data().hargaJual ?? 0,
+            aktif: d.data().aktif ?? true,
           })),
         );
       },
@@ -173,6 +198,17 @@ function KalkulatorHppForm() {
     [resepRows, daftarBahan],
   );
 
+  // Packaging Cost per porsi — DIHITUNG OTOMATIS sama seperti HPP
+  // Bahan, dari harga bahan_baku terkini × takaran per porsi.
+  const biayaKemasanOtomatis = useMemo(
+    () =>
+      kemasanRows.reduce((total, row) => {
+        const bahan = daftarBahan.find((b) => b.id === row.bahanId);
+        return total + row.takaran * (bahan?.hargaSatuanTerakhir ?? row.hargaSatuanBahan);
+      }, 0),
+    [kemasanRows, daftarBahan],
+  );
+
   function tambahBarisResep() {
     const bahan = daftarBahan.find((b) => b.id === bahanDipilih);
     if (!bahan) {
@@ -183,8 +219,8 @@ function KalkulatorHppForm() {
       showToast("error", "Takaran harus lebih besar dari 0.");
       return;
     }
-    if (resepRows.some((r) => r.bahanId === bahan.id)) {
-      showToast("error", `${bahan.nama} sudah ada di resep ini.`);
+    if (resepRows.some((r) => r.bahanId === bahan.id) || kemasanRows.some((r) => r.bahanId === bahan.id)) {
+      showToast("error", `${bahan.nama} sudah ada di daftar menu ini.`);
       return;
     }
     setResepRows((prev) => [
@@ -203,6 +239,107 @@ function KalkulatorHppForm() {
 
   function hapusBarisResep(bahanId: string) {
     setResepRows((prev) => prev.filter((r) => r.bahanId !== bahanId));
+  }
+
+  /** Tambah satu baris Packaging Cost (cup, sedotan, sumpit, dll.) —
+   *  cek ganda terhadap resepRows JUGA, supaya satu bahan tidak
+   *  ke-input dobel sebagai bahan baku sekaligus kemasan. */
+  function tambahBarisKemasan() {
+    const bahan = daftarBahan.find((b) => b.id === kemasanDipilih);
+    if (!bahan) {
+      showToast("error", "Pilih item packaging terlebih dahulu.");
+      return;
+    }
+    if (takaranKemasanInput <= 0) {
+      showToast("error", "Jumlah harus lebih besar dari 0.");
+      return;
+    }
+    if (kemasanRows.some((r) => r.bahanId === bahan.id) || resepRows.some((r) => r.bahanId === bahan.id)) {
+      showToast("error", `${bahan.nama} sudah ada di daftar menu ini.`);
+      return;
+    }
+    setKemasanRows((prev) => [
+      ...prev,
+      {
+        bahanId: bahan.id,
+        bahanNama: bahan.nama,
+        satuan: bahan.satuan,
+        takaran: takaranKemasanInput,
+        hargaSatuanBahan: bahan.hargaSatuanTerakhir,
+      },
+    ]);
+    setKemasanDipilih("");
+    setTakaranKemasanInput(1);
+  }
+
+  function hapusBarisKemasan(bahanId: string) {
+    setKemasanRows((prev) => prev.filter((r) => r.bahanId !== bahanId));
+  }
+
+  // --- Tambah Bahan/Item Baru TANPA menunggu stok ada — atas permintaan
+  // pemilik cafe: Owner bisa menyusun resep menu duluan (mis. bahan
+  // musiman yang belum dibeli Purchasing), sebelum ada pembelian sama
+  // sekali. Dibuat dengan harga & stok 0 — tetap TERSAMBUNG ke
+  // inventaris yang sama (bahan_baku + cermin stok_kasir), jadi begitu
+  // Purchasing membeli lewat Belanja & Nota (dicocokkan dari NAMA,
+  // sama seperti alur normal), harga & stoknya otomatis terisi normal.
+  // Selama belum dibeli, bahan ini akan selalu tampil "hampir habis"
+  // di Dashboard bila Batas Minimal Stok diisi > 0 — sengaja begitu,
+  // supaya jadi pengingat bagi Purchasing untuk segera membelinya. ---
+  const [tampilkanTambahBahan, setTampilkanTambahBahan] = useState(false);
+  const [namaBahanBaru, setNamaBahanBaru] = useState("");
+  const [satuanBahanBaru, setSatuanBahanBaru] = useState<SatuanBahan>("gram");
+  const [batasBahanBaru, setBatasBahanBaru] = useState(0);
+  const [sedangTambahBahan, setSedangTambahBahan] = useState(false);
+
+  async function tambahBahanBaru() {
+    const nama = namaBahanBaru.trim();
+    if (!nama) {
+      showToast("error", "Nama bahan/item wajib diisi.");
+      return;
+    }
+    if (daftarBahan.some((b) => b.nama.trim().toLowerCase() === nama.toLowerCase())) {
+      showToast("error", `"${nama}" sudah ada di Bahan Baku.`);
+      return;
+    }
+    setSedangTambahBahan(true);
+    try {
+      const ref = doc(collection(db, "bahan_baku"));
+      const data = {
+        nama,
+        kategori: "Umum",
+        satuan: satuanBahanBaru,
+        hargaSatuanTerakhir: 0,
+        stokSaatIni: 0,
+        batasMinimalStok: batasBahanBaru,
+        aktif: true,
+        updatedAt: serverTimestamp(),
+      };
+      await setDoc(ref, data);
+      await setMirrorStokKasir(ref.id, {
+        nama,
+        kategori: "Umum",
+        satuan: satuanBahanBaru,
+        stokSaatIni: 0,
+        batasMinimalStok: batasBahanBaru,
+        aktif: true,
+      });
+      showToast(
+        "success",
+        `"${nama}" ditambahkan ke Bahan Baku (stok 0 — belum dibeli Purchasing). Sekarang bisa dipilih di Resep/Packaging Cost.`,
+      );
+      setNamaBahanBaru("");
+      setSatuanBahanBaru("gram");
+      setBatasBahanBaru(0);
+      setTampilkanTambahBahan(false);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal menambah bahan: ${error.message}` : "Gagal menambah bahan.",
+      );
+    } finally {
+      setSedangTambahBahan(false);
+    }
   }
 
   // --- Default persentase dari Profil Cafe (bisa diubah di halaman ini
@@ -249,7 +386,7 @@ function KalkulatorHppForm() {
     return hitungKalkulatorHpp(
       {
         hppBahan,
-        biayaKemasan,
+        biayaKemasan: biayaKemasanOtomatis,
         overridePersenSusut: pakaiOverrideSusut ? persenKeFraksi(overrideSusut) : null,
       },
       defaults,
@@ -261,7 +398,7 @@ function KalkulatorHppForm() {
     );
   }, [
     hppBahan,
-    biayaKemasan,
+    biayaKemasanOtomatis,
     pakaiOverrideSusut,
     overrideSusut,
     defaults,
@@ -278,15 +415,15 @@ function KalkulatorHppForm() {
     setNamaMenu("");
     setKategoriMenu("");
     setResepRows([]);
+    setKemasanRows([]);
     setResepIdTersimpan([]);
-    setBiayaKemasan(0);
     setHargaJual(0);
     setPakaiOverrideSusut(false);
     setOverrideSusut(PROFIL_AWAL.persenSusut);
   }
 
-  /** Muat menu tersimpan ke dalam form untuk diedit (resep, biaya
-   *  kemasan, harga jual, dan override susutnya). */
+  /** Muat menu tersimpan ke dalam form untuk diedit (resep, Packaging
+   *  Cost, harga jual, dan override susutnya). */
   async function pilihMenu(menuId: string) {
     setMenuDiedit(menuId);
     if (menuId === MENU_BARU) {
@@ -308,26 +445,33 @@ function KalkulatorHppForm() {
       setHargaJual(hargaSnap.data()?.hargaJual ?? 0);
 
       const rahasia = rahasiaSnap.data();
-      setBiayaKemasan(rahasia?.biayaKemasanManual ?? 0);
       const overrideTersimpan = rahasia?.overridePersenSusut ?? null;
       setPakaiOverrideSusut(overrideTersimpan !== null);
       setOverrideSusut(
         overrideTersimpan !== null ? overrideTersimpan * 100 : PROFIL_AWAL.persenSusut,
       );
 
-      const baris: BarisResep[] = resepSnap.docs.map((d) => {
+      // Satu subkoleksi (menu/{menuId}/resep) dipisah jadi dua daftar di
+      // form berdasarkan field `jenis` per baris — data lama yang belum
+      // punya field ini otomatis dianggap "bahan" (lihat resep.ts).
+      const bahanRows: BarisResep[] = [];
+      const kemasanRowsBaru: BarisResep[] = [];
+      for (const d of resepSnap.docs) {
         const data = d.data();
         const bahanId: string = data.bahanId ?? d.id;
         const bahan = daftarBahan.find((b) => b.id === bahanId);
-        return {
+        const baris: BarisResep = {
           bahanId,
           bahanNama: bahan?.nama ?? data.bahanNama ?? "",
           satuan: (data.satuan === "pcs" ? "pcs" : "gram") as SatuanBahan,
           takaran: data.takaran ?? 0,
           hargaSatuanBahan: bahan?.hargaSatuanTerakhir ?? 0,
         };
-      });
-      setResepRows(baris);
+        if (data.jenis === "kemasan") kemasanRowsBaru.push(baris);
+        else bahanRows.push(baris);
+      }
+      setResepRows(bahanRows);
+      setKemasanRows(kemasanRowsBaru);
       setResepIdTersimpan(resepSnap.docs.map((d) => d.id));
     } catch (error) {
       showToast(
@@ -383,8 +527,14 @@ function KalkulatorHppForm() {
       await setDoc(doc(db, "menu", menuId), {
         hppCache: hasil.breakdown.hppTotal,
         foodCostPersen: hasil.evaluasi?.foodCostPersen ?? null,
+        // Kedua field harga di bawah ini murni CACHE untuk ditampilkan
+        // lagi saat menu ini dibuka untuk diedit — angka yang benar-benar
+        // dipakai untuk Laba Bersih otomatis SELALU dihitung ulang dari
+        // subkoleksi resep + harga bahan_baku terkini (lihat laba-harian.ts),
+        // bukan dari sini, supaya kenaikan harga bahan/kemasan langsung
+        // tercermin tanpa Owner perlu membuka Kalkulator HPP lagi.
         hppBahanOtomatis: hppBahan,
-        biayaKemasanManual: biayaKemasan,
+        biayaKemasanOtomatis,
         overridePersenSusut: pakaiOverrideSusut ? persenKeFraksi(overrideSusut) : null,
         overridePersenUtilitas: null,
         overridePersenTenagaKerja: null,
@@ -392,22 +542,41 @@ function KalkulatorHppForm() {
         updatedAt: serverTimestamp(),
       });
 
-      await Promise.all(
-        resepRows.map((row) =>
+      // Resep (Bahan Baku) dan Packaging Cost ditulis ke subkoleksi YANG
+      // SAMA (menu/{menuId}/resep) — hanya dibedakan lewat field `jenis`.
+      // Ini supaya pengurangan stok gudang otomatis (resep.ts) berlaku
+      // SAMA PERSIS untuk keduanya tanpa kode terpisah: begitu menu ini
+      // terjual, cup/sedotan/sumpit ikut berkurang dari inventaris persis
+      // seperti bahan baku.
+      await Promise.all([
+        ...resepRows.map((row) =>
           setDoc(doc(db, "menu", menuId, "resep", row.bahanId), {
             bahanId: row.bahanId,
             bahanNama: row.bahanNama,
             takaran: row.takaran,
             satuan: row.satuan,
+            jenis: "bahan",
           }),
         ),
-      );
+        ...kemasanRows.map((row) =>
+          setDoc(doc(db, "menu", menuId, "resep", row.bahanId), {
+            bahanId: row.bahanId,
+            bahanNama: row.bahanNama,
+            takaran: row.takaran,
+            satuan: row.satuan,
+            jenis: "kemasan",
+          }),
+        ),
+      ]);
 
-      // Bahan yang dibuang Owner dari resep HARUS ikut dihapus di
+      // Bahan/kemasan yang dibuang Owner HARUS ikut dihapus di
       // Firestore. Kalau hanya hilang dari layar, dokumennya tetap ada
-      // dan Kasir akan terus mengurangi stok bahan itu setiap menu ini
+      // dan Kasir akan terus mengurangi stok item itu setiap menu ini
       // terjual — stok menyusut tanpa sebab yang terlihat.
-      const idDipakai = new Set(resepRows.map((row) => row.bahanId));
+      const idDipakai = new Set([
+        ...resepRows.map((row) => row.bahanId),
+        ...kemasanRows.map((row) => row.bahanId),
+      ]);
       const idDihapus = resepIdTersimpan.filter((id) => !idDipakai.has(id));
       await Promise.all(
         idDihapus.map((id) => deleteDoc(doc(db, "menu", menuId, "resep", id))),
@@ -421,6 +590,7 @@ function KalkulatorHppForm() {
       );
       setMenuDiedit(MENU_BARU);
       kosongkanForm();
+      setTampilan("daftar");
     } catch (error) {
       showToast(
         "error",
@@ -437,16 +607,46 @@ function KalkulatorHppForm() {
   // SECTION: Render
   // ------------------------------------------------------------
 
+  // Tampilan daftar produk (default) — atas permintaan pemilik cafe,
+  // halaman ini dibuka sebagai katalog produk per kategori dulu, BUKAN
+  // langsung form. Form (di bawah) hanya muncul lewat tombol "+ Tambah
+  // Menu Baru" atau saat menekan salah satu produk untuk diedit.
+  if (tampilan === "daftar") {
+    return (
+      <DaftarProdukIsi
+        daftarMenu={daftarMenu}
+        onTambahBaru={() => {
+          setMenuDiedit(MENU_BARU);
+          kosongkanForm();
+          setTampilan("form");
+        }}
+        onEditMenu={(id) => {
+          pilihMenu(id);
+          setTampilan("form");
+        }}
+      />
+    );
+  }
+
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6">
+        <button
+          type="button"
+          onClick={() => setTampilan("daftar")}
+          className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-emerald-700 hover:text-emerald-800"
+        >
+          ← Kembali ke Daftar Produk
+        </button>
         <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          SRASA BOOK
+          SRASA BOOK — Kelola Produk
         </p>
-        <h1 className="text-2xl font-bold text-slate-900">Kalkulator HPP</h1>
+        <h1 className="text-2xl font-bold text-slate-900">
+          {menuDiedit !== MENU_BARU ? "Ubah Menu" : "Tambah Menu Baru"}
+        </h1>
         <p className="mt-1 text-sm text-slate-600">
-          Versi manual dengan komponen persentase (Sprint 1) — isi HPP bahan per
-          porsi, sisanya dihitung otomatis.
+          Isi Resep dan Packaging Cost — HPP, harga jual, dan pengurangan
+          stok gudang dihitung otomatis.
         </p>
       </header>
 
@@ -524,17 +724,6 @@ function KalkulatorHppForm() {
               />
             </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <NumberField
-                id="biaya-kemasan"
-                label="Biaya Kemasan per Porsi"
-                value={biayaKemasan}
-                onChange={setBiayaKemasan}
-                prefix="Rp"
-                hint="Cup, sedotan, kotak, dll. Boleh dikosongkan (0)."
-              />
-            </div>
-
             <div className="flex items-start gap-2 rounded-lg bg-slate-50 p-3">
               <input
                 id="pakai-override-susut"
@@ -576,14 +765,87 @@ function KalkulatorHppForm() {
           aria-labelledby="bagian-resep"
           className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
         >
-          <h2 id="bagian-resep" className="text-base font-semibold text-slate-900">
-            Resep (Bahan + Takaran)
-          </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            HPP Bahan per porsi DIHITUNG OTOMATIS dari sini — takaran ×
-            harga bahan terkini. Resep ini juga yang dipakai untuk
-            mengurangi stok gudang otomatis saat Kasir mencatat penjualan.
-          </p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 id="bagian-resep" className="text-base font-semibold text-slate-900">
+                Resep (Bahan + Takaran)
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                HPP Bahan per porsi DIHITUNG OTOMATIS dari sini — takaran ×
+                harga bahan terkini. Resep ini juga yang dipakai untuk
+                mengurangi stok gudang otomatis saat Kasir mencatat penjualan.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTampilkanTambahBahan((v) => !v)}
+              className="shrink-0 whitespace-nowrap text-xs font-semibold text-emerald-700 hover:text-emerald-800"
+            >
+              {tampilkanTambahBahan ? "Batal" : "+ Bahan/Item Baru"}
+            </button>
+          </div>
+
+          {tampilkanTambahBahan ? (
+            <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <p className="text-xs text-emerald-900">
+                Belum dibeli Purchasing? Tidak masalah — buat dulu di sini
+                dengan stok 0, susun resepnya sekarang, dan begitu
+                Purchasing membelinya lewat Belanja &amp; Nota (nama harus
+                sama persis), harga &amp; stoknya otomatis terisi.
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr_1fr_auto]">
+                <div>
+                  <label htmlFor="nama-bahan-baru" className="block text-xs font-semibold text-slate-700">
+                    Nama
+                  </label>
+                  <input
+                    id="nama-bahan-baru"
+                    type="text"
+                    value={namaBahanBaru}
+                    onChange={(event) => setNamaBahanBaru(event.target.value)}
+                    placeholder="misalnya: Daun Mint"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="satuan-bahan-baru" className="block text-xs font-semibold text-slate-700">
+                    Satuan
+                  </label>
+                  <select
+                    id="satuan-bahan-baru"
+                    value={satuanBahanBaru}
+                    onChange={(event) => setSatuanBahanBaru(event.target.value as SatuanBahan)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                  >
+                    <option value="gram">gram</option>
+                    <option value="pcs">pcs</option>
+                  </select>
+                </div>
+                <NumberField
+                  id="batas-bahan-baru"
+                  label="Batas Warning"
+                  value={batasBahanBaru}
+                  onChange={setBatasBahanBaru}
+                  hint="Opsional"
+                />
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={tambahBahanBaru}
+                    disabled={sedangTambahBahan}
+                    aria-busy={sedangTambahBahan}
+                    className="inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-emerald-400 sm:w-auto"
+                  >
+                    {sedangTambahBahan ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      "Tambah"
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {resepRows.length > 0 ? (
             <ul className="mt-4 divide-y divide-slate-100 rounded-lg bg-slate-50 p-3">
@@ -669,6 +931,114 @@ function KalkulatorHppForm() {
           </div>
         </section>
 
+        {/* --- Kartu: Packaging Cost --- */}
+        <section
+          aria-labelledby="bagian-kemasan"
+          className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+        >
+          <h2 id="bagian-kemasan" className="text-base font-semibold text-slate-900">
+            Packaging Cost
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Cup, sedotan, sumpit sekali pakai, tutup, kresek, dan sejenisnya
+            — DIHITUNG OTOMATIS sama seperti Resep di atas (takaran × harga
+            terkini), dan stoknya JUGA ikut berkurang otomatis dari
+            inventaris saat menu ini terjual. Tambahkan hanya item yang
+            benar-benar dipakai menu ini — misalnya menu yang cuma pakai
+            gelas tanpa sedotan cukup tambahkan gelasnya saja.
+          </p>
+
+          {kemasanRows.length > 0 ? (
+            <ul className="mt-4 divide-y divide-slate-100 rounded-lg bg-slate-50 p-3">
+              {kemasanRows.map((row) => (
+                <li key={row.bahanId} className="flex items-center justify-between gap-3 py-2 text-sm">
+                  <span className="text-slate-700">
+                    {row.bahanNama} · {row.takaran} {row.satuan}
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="font-medium tabular-nums text-slate-900">
+                      {formatRupiah(
+                        row.takaran *
+                          (daftarBahan.find((b) => b.id === row.bahanId)?.hargaSatuanTerakhir ??
+                            row.hargaSatuanBahan),
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => hapusBarisKemasan(row.bahanId)}
+                      aria-label={`Hapus ${row.bahanNama} dari Packaging Cost`}
+                      className="text-slate-400 hover:text-rose-600"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-4 text-sm text-slate-500">
+              Belum ada item packaging untuk menu ini.
+            </p>
+          )}
+
+          {daftarBahan.length === 0 ? (
+            <p className="mt-4 text-sm text-amber-700">
+              Belum ada Bahan Baku. Tambahkan dulu lewat Belanja & Nota
+              (Purchasing) — termasuk item packaging seperti cup/sedotan,
+              dicatat dengan satuan pcs (harga per pack ÷ isi per pack).
+            </p>
+          ) : (
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr_auto]">
+              <div>
+                <label htmlFor="kemasan-item" className="block text-sm font-semibold text-slate-800">
+                  Item Packaging
+                </label>
+                <select
+                  id="kemasan-item"
+                  value={kemasanDipilih}
+                  onChange={(event) => setKemasanDipilih(event.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                >
+                  <option value="">Pilih item...</option>
+                  {daftarBahan
+                    .filter(
+                      (b) =>
+                        !kemasanRows.some((r) => r.bahanId === b.id) &&
+                        !resepRows.some((r) => r.bahanId === b.id),
+                    )
+                    .map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.nama} ({formatRupiahSatuan(b.hargaSatuanTerakhir)}/{b.satuan})
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <NumberField
+                id="takaran-kemasan"
+                label="Jumlah (pcs)"
+                value={takaranKemasanInput}
+                onChange={setTakaranKemasanInput}
+              />
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={tambahBarisKemasan}
+                  className="inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] sm:w-auto"
+                >
+                  + Tambah
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-4 flex justify-between rounded-lg bg-emerald-50 px-3 py-2.5 text-sm">
+            <span className="font-medium text-emerald-900">Packaging Cost per Porsi (otomatis)</span>
+            <span className="font-bold tabular-nums text-emerald-900">
+              {formatRupiah(biayaKemasanOtomatis)}
+            </span>
+          </div>
+        </section>
+
         {/* --- Kartu: Default Profil Cafe --- */}
         <section
           aria-labelledby="bagian-profil"
@@ -740,7 +1110,7 @@ function KalkulatorHppForm() {
           <div className="mt-3 divide-y divide-slate-100">
             <ResultRow label="HPP Bahan" value={formatRupiah(hasil.breakdown.hppBahan)} />
             <ResultRow
-              label="Biaya Kemasan"
+              label="Packaging Cost"
               value={formatRupiah(hasil.breakdown.biayaKemasan)}
             />
             <ResultRow
@@ -911,6 +1281,98 @@ function KalkulatorHppForm() {
           </button>
         </div>
       </div>
+    </main>
+  );
+}
+
+/**
+ * Tampilan Awal Kelola Produk: katalog produk dikelompokkan per
+ * kategori (atas permintaan pemilik cafe, mengganti tampilan lama yang
+ * langsung membuka form Kalkulator HPP). Menekan sebuah produk membuka
+ * form untuk mengedit resep/harganya; tombol "+ Tambah Menu Baru" di
+ * kanan atas membuka form kosong.
+ */
+function DaftarProdukIsi({
+  daftarMenu,
+  onTambahBaru,
+  onEditMenu,
+}: {
+  daftarMenu: MenuTersimpan[];
+  onTambahBaru: () => void;
+  onEditMenu: (id: string) => void;
+}) {
+  const perKategori = useMemo(() => {
+    const map = new Map<string, MenuTersimpan[]>();
+    for (const m of daftarMenu) {
+      const list = map.get(m.kategori) ?? [];
+      list.push(m);
+      map.set(m.kategori, list);
+    }
+    return map;
+  }, [daftarMenu]);
+
+  return (
+    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+      <header className="mb-6 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+            SRASA BOOK
+          </p>
+          <h1 className="text-2xl font-bold text-slate-900">Kelola Produk</h1>
+          <p className="mt-1 text-sm text-slate-600">
+            Semua menu, dikelompokkan per kategori. Tekan salah satu untuk
+            mengubah resep/harganya.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onTambahBaru}
+          className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98]"
+        >
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          Tambah Menu Baru
+        </button>
+      </header>
+
+      {daftarMenu.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
+          Belum ada produk. Tekan &quot;Tambah Menu Baru&quot; untuk membuat
+          menu pertama.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-6">
+          {[...perKategori.entries()].map(([kategori, items]) => (
+            <section key={kategori}>
+              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {kategori}
+              </h2>
+              <ul className="flex flex-col divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white shadow-sm">
+                {items.map((m) => (
+                  <li key={m.id}>
+                    <button
+                      type="button"
+                      onClick={() => onEditMenu(m.id)}
+                      className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left motion-safe:transition motion-safe:duration-150 hover:bg-emerald-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-emerald-700"
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium text-slate-900">
+                        {m.nama}
+                        {!m.aktif ? (
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                            Nonaktif
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="text-sm font-semibold tabular-nums text-emerald-700">
+                        {formatRupiah(m.hargaJual)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      )}
     </main>
   );
 }

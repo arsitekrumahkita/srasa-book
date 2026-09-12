@@ -41,6 +41,7 @@ import {
   ArrowUpRight,
   Bell,
   Loader2,
+  TriangleAlert,
   Wallet,
 } from "lucide-react";
 import {
@@ -57,6 +58,7 @@ import {
 } from "recharts";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
+import { useAuth } from "@/shared/lib/auth-context";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { useNotifikasiGabungan } from "@/shared/lib/notifikasi";
@@ -94,12 +96,30 @@ function bulanIni(): string {
 
 export default function DashboardPage() {
   return (
-    <RequireAuth peranDiizinkan={["superadmin", "finance"]}>
+    <RequireAuth peranDiizinkan={["superadmin", "finance", "kasir", "purchasing"]}>
       <AppShell>
-        <DashboardIsi />
+        <DashboardRouter />
       </AppShell>
     </RequireAuth>
   );
+}
+
+/**
+ * Dashboard dibagi berdasarkan peran: Owner/Finance melihat Analitik
+ * Tren + Laba Bersih (data finansial, "zona privasi otoritas tinggi"
+ * atas permintaan pemilik cafe — TIDAK boleh terlihat Kasir/Purchasing
+ * sama sekali, bukan cuma disembunyikan tombolnya, makanya percabangan
+ * dilakukan di sini SEBELUM komponen finansial di bawah pernah
+ * dirender). Kasir/Purchasing mendapat Dashboard yang sama sekali
+ * berbeda: rincian stok bahan baku (lihat DashboardStokIsi di bawah).
+ */
+function DashboardRouter() {
+  const { profil } = useAuth();
+  if (!profil) return null;
+  if (profil.peran === "kasir" || profil.peran === "purchasing") {
+    return <DashboardStokIsi peran={profil.peran} />;
+  }
+  return <DashboardIsi />;
 }
 
 function DashboardIsi() {
@@ -110,6 +130,29 @@ function DashboardIsi() {
   const [memuat, setMemuat] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { daftar: notifikasi, memuat: memuatNotifikasi } = useNotifikasiGabungan();
+
+  // Banner Stok Menipis — kriteria "Batas Minimal Stok" ditentukan
+  // manual per bahan (lihat Belanja & Nota / Kelola Produk). Owner/
+  // Finance sudah punya akses baca penuh ke bahan_baku, jadi dibaca
+  // langsung di sini (bukan lewat cermin stok_kasir yang dipakai
+  // Kasir/Purchasing).
+  const [bahanMenipis, setBahanMenipis] = useState<{ id: string; nama: string; stokSaatIni: number; satuan: string; batasMinimalStok: number }[]>([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "bahan_baku"), (snap) => {
+      setBahanMenipis(
+        snap.docs
+          .map((d) => ({
+            id: d.id,
+            nama: d.data().nama ?? "",
+            stokSaatIni: d.data().stokSaatIni ?? 0,
+            satuan: d.data().satuan ?? "gram",
+            batasMinimalStok: d.data().batasMinimalStok ?? 0,
+          }))
+          .filter((b) => b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok),
+      );
+    });
+    return unsub;
+  }, []);
 
   useEffect(() => {
     const idHarian = tanggalKe(0);
@@ -227,6 +270,26 @@ function DashboardIsi() {
         </div>
       ) : (
         <div className="flex flex-col gap-6">
+          {bahanMenipis.length > 0 ? (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <div>
+                <p className="font-semibold">Stok bahan menipis — perlu segera dibeli:</p>
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {bahanMenipis.map((b) => (
+                    <li key={b.id}>
+                      {b.nama}: tersisa {b.stokSaatIni} {b.satuan} (batas warning{" "}
+                      {b.batasMinimalStok} {b.satuan})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          ) : null}
+
           {!ringkasanHarian ? (
             <p className="rounded-xl border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-600">
               Belum ada shift yang ditutup hari ini. Ringkasan akan muncul di
@@ -512,5 +575,150 @@ function MiniAngka({ label, nilai }: { label: string; nilai: string }) {
       <p className="text-xs text-slate-500">{label}</p>
       <p className="text-lg font-bold tabular-nums text-slate-900">{nilai}</p>
     </div>
+  );
+}
+
+// ============================================================
+// SECTION: Dashboard Kasir & Purchasing — rincian stok bahan baku
+// (atas permintaan pemilik cafe), SAMA SEKALI TIDAK menampilkan Omset,
+// Laba Bersih, atau Analitik Tren apa pun — itu "zona privasi otoritas
+// tinggi" khusus Owner/Finance.
+//
+// Purchasing SUDAH diberi akses baca penuh ke `bahan_baku` (termasuk
+// harga) di firestore.rules — jadi dashboard Purchasing membaca
+// koleksi itu langsung, tapi kartu di bawah SENGAJA tidak menampilkan
+// kolom harga sama sekali (tetap bukan urusan dashboard ini).
+//
+// Kasir TIDAK PERNAH diberi izin baca `bahan_baku` (harga harus rahasia
+// darinya, lihat src/shared/lib/resep.ts) — jadi dashboard Kasir
+// membaca `stok_kasir`, cermin bahan_baku TANPA field harga sama
+// sekali, ditulis ulang setiap kali stok/nama/kategori bahan berubah.
+// ============================================================
+
+interface BarisStok {
+  id: string;
+  nama: string;
+  kategori: string;
+  satuan: string;
+  stokSaatIni: number;
+  batasMinimalStok: number;
+}
+
+function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
+  const [daftar, setDaftar] = useState<BarisStok[]>([]);
+  const [memuat, setMemuat] = useState(true);
+
+  useEffect(() => {
+    const koleksi = peran === "purchasing" ? "bahan_baku" : "stok_kasir";
+    const unsub = onSnapshot(
+      collection(db, koleksi),
+      (snap) => {
+        setDaftar(
+          snap.docs.map((d) => ({
+            id: d.id,
+            nama: d.data().nama ?? "",
+            kategori: d.data().kategori ?? "Umum",
+            satuan: d.data().satuan ?? "gram",
+            stokSaatIni: d.data().stokSaatIni ?? 0,
+            batasMinimalStok: d.data().batasMinimalStok ?? 0,
+          })),
+        );
+        setMemuat(false);
+      },
+      () => setMemuat(false),
+    );
+    return unsub;
+  }, [peran]);
+
+  const menipis = useMemo(
+    () => daftar.filter((b) => b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok),
+    [daftar],
+  );
+
+  const perKategori = useMemo(() => {
+    const map = new Map<string, BarisStok[]>();
+    for (const b of daftar) {
+      const list = map.get(b.kategori) ?? [];
+      list.push(b);
+      map.set(b.kategori, list);
+    }
+    return map;
+  }, [daftar]);
+
+  if (memuat) {
+    return (
+      <main className="flex min-h-[60vh] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
+        <span className="sr-only">Memuat dashboard...</span>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
+      <header className="mb-6">
+        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+          SRASA BOOK
+        </p>
+        <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
+        <p className="mt-1 text-sm text-slate-600">Rincian stok bahan baku gudang.</p>
+      </header>
+
+      {menipis.length > 0 ? (
+        <div
+          role="alert"
+          className="mb-6 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+        >
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div>
+            <p className="font-semibold">Stok menipis — perlu segera dibeli:</p>
+            <ul className="mt-1 flex flex-col gap-0.5">
+              {menipis.map((b) => (
+                <li key={b.id}>
+                  {b.nama}: tersisa {b.stokSaatIni} {b.satuan} (batas warning {b.batasMinimalStok}{" "}
+                  {b.satuan})
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      ) : null}
+
+      {daftar.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-600">
+          Belum ada Bahan Baku tercatat.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-5">
+          {[...perKategori.entries()].map(([kategori, items]) => (
+            <section
+              key={kategori}
+              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+            >
+              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {kategori}
+              </h2>
+              <ul className="flex flex-col divide-y divide-slate-100">
+                {items.map((b) => {
+                  const rendah = b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok;
+                  return (
+                    <li key={b.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                      <span className={rendah ? "font-medium text-amber-800" : "text-slate-700"}>
+                        {b.nama}
+                      </span>
+                      <span
+                        className={`tabular-nums ${rendah ? "font-semibold text-amber-800" : "text-slate-900"}`}
+                      >
+                        {b.stokSaatIni} {b.satuan}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
+      )}
+    </main>
   );
 }

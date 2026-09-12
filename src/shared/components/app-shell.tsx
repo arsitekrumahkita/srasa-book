@@ -25,11 +25,11 @@ import { usePathname, useRouter } from "next/navigation";
 import { signOut } from "firebase/auth";
 import {
   Bell,
-  Calculator,
   History,
   LayoutDashboard,
   LogOut,
   Menu,
+  Package,
   ShoppingBasket,
   Users,
   Wallet,
@@ -47,7 +47,16 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, peran: ["superadmin", "finance"] },
+  {
+    href: "/dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    // Dulu khusus Owner/Finance. Sekarang Kasir & Purchasing juga
+    // dapat Dashboard mereka sendiri (rincian stok bahan baku) — lihat
+    // komentar kepala src/app/dashboard/page.tsx untuk pembagian
+    // tampilannya per peran.
+    peran: ["superadmin", "finance", "kasir", "purchasing"],
+  },
   { href: "/shift", label: "Shift", icon: Wallet, peran: ["kasir"] },
   {
     href: "/belanja-nota",
@@ -57,8 +66,8 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/kalkulator-hpp",
-    label: "Kalkulator HPP",
-    icon: Calculator,
+    label: "Kelola Produk",
+    icon: Package,
     peran: ["superadmin", "finance"],
   },
   { href: "/riwayat", label: "Riwayat", icon: History, peran: ["superadmin", "finance"] },

@@ -27,6 +27,31 @@ export interface BahanBaku {
    *  penjualan (lewat Resep), dan bisa dikurangi manual (rusak/
    *  expired) lewat Penyesuaian Stok. */
   stokSaatIni: number;
+  /** Batas Warning Stok Menipis — DITENTUKAN MANUAL oleh Owner/Finance/
+   *  Purchasing (mis. batas warning Ayam = 1 kg). Begitu `stokSaatIni`
+   *  turun sampai atau di bawah angka ini, banner peringatan otomatis
+   *  muncul di Dashboard. 0 atau tidak diisi = tidak ada peringatan
+   *  untuk bahan ini (dianggap belum diatur). */
+  batasMinimalStok?: number;
+  aktif: boolean;
+}
+
+/** Salinan bahan_baku TANPA harga — dibaca Kasir di Dashboard untuk
+ *  melihat rincian stok gudang. Kasir SENGAJA tidak diberi izin `read`
+ *  langsung ke bahan_baku (harga harus tetap rahasia dari Kasir, lihat
+ *  komentar di src/shared/lib/resep.ts) — jadi dokumen ini adalah
+ *  "cermin" yang ditulis ulang setiap kali field non-harga bahan_baku
+ *  berubah (nama/kategori/satuan/stok/batasMinimalStok/aktif), sama
+ *  seperti pola menu_harga vs menu. Firestore Security Rules bekerja
+ *  di level dokumen, jadi pemisahan fisik inilah yang benar-benar
+ *  menegakkan kerahasiaan harga, bukan sekadar menyembunyikannya di UI. */
+export interface StokKasir {
+  id: string;
+  nama: string;
+  kategori: string;
+  satuan: SatuanBahan;
+  stokSaatIni: number;
+  batasMinimalStok?: number;
   aktif: boolean;
 }
 
@@ -44,6 +69,14 @@ export interface ResepItem {
   /** Ikut satuan bahan_baku terkait (ditentukan otomatis saat bahan
    *  dipilih, bukan diketik ulang manual — mencegah salah satuan). */
   satuan: SatuanBahan;
+  /** "bahan" (default bila tidak ada — data lama sebelum field ini ada)
+   *  = bahan baku yang masuk komponen HPP Bahan; "kemasan" = cup,
+   *  sedotan, sumpit, dll. yang masuk komponen Packaging Cost. Keduanya
+   *  disimpan di subkoleksi yang SAMA dan dikurangi dari stok gudang
+   *  dengan cara yang SAMA PERSIS (lihat resep.ts) — field ini hanya
+   *  dipakai untuk memisahkan mana yang dijumlahkan ke HPP Bahan vs ke
+   *  Packaging Cost saat menghitung breakdown HPP. */
+  jenis?: "bahan" | "kemasan";
 }
 
 /** Penyesuaian stok manual TANPA approval — untuk bahan rusak/
