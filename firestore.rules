@@ -65,6 +65,27 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------
+    // SECTION: usernames — pemetaan "username publik" -> email asli,
+    // KHUSUS supaya Login bisa menerima Username selain Email (PRD
+    // 9.7 lanjutan). Firebase Auth sendiri TIDAK PUNYA konsep
+    // username, hanya email/password — jadi halaman Login membaca
+    // dokumen ini DULU (sebelum request.auth ada sama sekali, karena
+    // proses ini terjadi SEBELUM sign-in berhasil) untuk menerjemahkan
+    // username -> email, baru memanggil signInWithEmailAndPassword
+    // dengan email hasil terjemahan itu.
+    //
+    // Isinya SENGAJA minimal (cuma uid + email, bukan salinan profil
+    // lengkap) supaya aman dibaca publik tanpa membocorkan data lain.
+    // Hanya Owner yang menulis (dibuat bersamaan saat akun staff baru
+    // dibuat di Kelola Akun, atau manual untuk akun Owner pertama).
+    // ------------------------------------------------------------
+
+    match /usernames/{username} {
+      allow read: if true;
+      allow write: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
     // SECTION: profil_cafe — pengaturan umum (termasuk default % HPP)
     // Semua peran aktif perlu baca (ambang notifikasi dsb), hanya
     // Owner yang boleh mengubah.

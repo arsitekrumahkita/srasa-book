@@ -57,10 +57,42 @@ npm run dev
 
 Buka http://localhost:3000 — akan diarahkan otomatis ke `/login`, lalu ke
 beranda sesuai peran akun (Owner → `/dashboard`, Kasir → `/shift`,
-Purchasing → `/belanja-nota`). Buat akun Owner pertama secara manual di
-Firebase Console (Authentication + dokumen `users/{uid}` dengan
-`peran: "superadmin"`, `aktif: true`) — staff berikutnya dibuat lewat
-`/kelola-akun`.
+Purchasing → `/belanja-nota`). Staff berikutnya (setelah Owner pertama ada)
+dibuat lewat `/kelola-akun` — TIDAK perlu lagi lewat Firebase Console manual.
+
+## Membuat Akun Owner Pertama (WAJIB, manual, sekali saja)
+
+Akun pertama tidak bisa dibuat lewat `/kelola-akun` (halaman itu sendiri
+mensyaratkan sudah login sebagai Owner). Jadi khusus akun PERTAMA ini, buat
+langsung di Firebase Console:
+
+1. **Authentication → Sign-in method** → aktifkan provider **Email/Password**
+   dan **Google** (untuk tombol "Masuk dengan Google" di halaman Login).
+2. **Authentication → Users → Add user** → isi Email & Password akun Owner
+   → simpan → salin **User UID** yang muncul.
+3. **Firestore Database → Data → Start collection** → Collection ID: `users`
+   → Document ID: **tempel UID dari langkah 2** → isi field:
+   | Field       | Tipe    | Nilai                          |
+   | ----------- | ------- | ------------------------------- |
+   | `nama`      | string  | nama Owner                      |
+   | `email`     | string  | sama seperti langkah 2          |
+   | `username`  | string  | username pilihan (huruf kecil, tanpa spasi) |
+   | `nomorHp`   | string  | boleh dikosongkan, isi menyusul |
+   | `peran`     | string  | `superadmin`                    |
+   | `aktif`     | boolean | `true`                          |
+4. **Firestore Database → Data → Start collection** (dari root, sejajar
+   dengan `users`) → Collection ID: `usernames` → Document ID: **username
+   yang sama seperti langkah 3** → isi field:
+   | Field   | Tipe   | Nilai                   |
+   | ------- | ------ | ------------------------ |
+   | `uid`   | string | UID dari langkah 2       |
+   | `email` | string | sama seperti langkah 2   |
+5. **Firestore Database → Rules** → tempel isi `firestore.rules` dari
+   proyek ini → **Publish**.
+
+Setelah ini, akun Owner bisa login lewat Email ATAU Username yang baru
+dibuat. Staff (Kasir/Purchasing) berikutnya semuanya dibuat lewat halaman
+`/kelola-akun` di aplikasi — tidak perlu ulangi langkah manual ini lagi.
 
 ## Skrip yang Tersedia
 
@@ -78,7 +110,9 @@ Seluruh halaman P0 (dasar) sudah ada dan saling terhubung lewat Login +
 peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
 
 - [x] Sprint 0 — Fondasi proyek (Next.js, TypeScript, Tailwind, struktur folder)
-- [x] Autentikasi (`/login`) & konteks peran (`src/shared/lib/auth-context.tsx`, `RequireAuth`, `Nav`) — SUPERADMIN/Kasir/Purchasing
+- [x] Autentikasi (`/login`) & konteks peran (`src/shared/lib/auth-context.tsx`, `RequireAuth`, `AppShell`) — SUPERADMIN/Kasir/Purchasing
+  - Bisa masuk pakai Email ATAU Username (lihat koleksi `usernames/{username}` di firestore.rules), tombol Masuk dengan Google, dan Lupa Kata Sandi
+  - **Wajib diaktifkan manual di Firebase Console** sebelum dipakai: Authentication → Sign-in method → aktifkan **Email/Password** dan **Google**
 - [x] Kalkulator HPP versi manual + komponen persentase (`/kalkulator-hpp`)
   - Logika murni & teruji: `src/shared/lib/hpp-calculator.ts` (14 unit test)
   - **Tersambung Firestore**: menulis `menu_harga/{menuId}` (publik) + `menu/{menuId}` (privat) sekaligus, sesuai pemisahan keamanan PRD 6.3

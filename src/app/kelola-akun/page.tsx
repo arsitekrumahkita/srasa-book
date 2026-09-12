@@ -18,7 +18,7 @@
 import { useEffect, useState } from "react";
 import { deleteApp, initializeApp } from "firebase/app";
 import { createUserWithEmailAndPassword, getAuth } from "firebase/auth";
-import { collection, doc, onSnapshot, orderBy, query, setDoc, updateDoc } from "firebase/firestore";
+import { collection, doc, getDoc, onSnapshot, orderBy, query, setDoc, updateDoc } from "firebase/firestore";
 import { Loader2, ShieldCheck, ShieldOff, UserPlus } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
@@ -30,8 +30,20 @@ interface AkunStaff {
   uid: string;
   nama: string;
   email: string;
+  username: string;
   peran: PeranPengguna;
   aktif: boolean;
+}
+
+/** username hanya huruf kecil/angka/titik/underscore, TANPA spasi —
+ *  jadi enak diketik di form Login (lihat src/app/login/page.tsx)
+ *  dan aman dipakai sebagai document ID koleksi `usernames`. */
+function bersihkanUsername(nilai: string): string {
+  return nilai
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ".")
+    .replace(/[^a-z0-9._]/g, "");
 }
 
 const LABEL_PERAN: Record<PeranPengguna, string> = {
@@ -63,6 +75,7 @@ function KelolaAkunIsi() {
             uid: d.id,
             nama: d.data().nama ?? "",
             email: d.data().email ?? "",
+            username: d.data().username ?? "",
             peran: d.data().peran,
             aktif: d.data().aktif === true,
           })),
@@ -119,16 +132,19 @@ function KelolaAkunIsi() {
 function BuatAkunKartu() {
   const { showToast } = useToast();
   const [nama, setNama] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
+  const [nomorHp, setNomorHp] = useState("");
   const [password, setPassword] = useState("");
   const [peran, setPeran] = useState<PeranPengguna>("kasir");
   const [sedangMembuat, setSedangMembuat] = useState(false);
 
   async function handleBuatAkun() {
-    if (!nama.trim() || !email.trim() || password.length < 6) {
+    const usernameBersih = bersihkanUsername(username);
+    if (!nama.trim() || !usernameBersih || !email.trim() || password.length < 6) {
       showToast(
         "error",
-        "Nama dan email wajib diisi, kata sandi minimal 6 karakter.",
+        "Nama, username, dan email wajib diisi, kata sandi minimal 6 karakter.",
       );
       return;
     }
@@ -137,6 +153,14 @@ function BuatAkunKartu() {
     const namaAppSementara = `staff-creation-${Date.now()}`;
     const appSementara = initializeApp(firebaseConfig, namaAppSementara);
     try {
+      // Cek username belum dipakai SEBELUM membuat akun Auth — supaya
+      // tidak ada akun Auth "yatim" kalau ternyata usernamenya bentrok.
+      const usernameSnap = await getDoc(doc(db, "usernames", usernameBersih));
+      if (usernameSnap.exists()) {
+        showToast("error", `Username "${usernameBersih}" sudah dipakai akun lain.`);
+        return;
+      }
+
       const authSementara = getAuth(appSementara);
       const kredensial = await createUserWithEmailAndPassword(
         authSementara,
@@ -147,14 +171,29 @@ function BuatAkunKartu() {
       await setDoc(doc(db, "users", kredensial.user.uid), {
         nama: nama.trim(),
         email: email.trim(),
+        username: usernameBersih,
+        nomorHp: nomorHp.trim() || null,
         peran,
         aktif: true,
         dibuatPada: new Date().toISOString(),
       });
 
-      showToast("success", `Akun ${nama.trim()} (${LABEL_PERAN[peran]}) berhasil dibuat.`);
+      // Dokumen publik "username -> email", dipakai halaman Login
+      // (src/app/login/page.tsx) untuk menerjemahkan username sebelum
+      // signInWithEmailAndPassword — lihat firestore.rules.
+      await setDoc(doc(db, "usernames", usernameBersih), {
+        uid: kredensial.user.uid,
+        email: email.trim(),
+      });
+
+      showToast(
+        "success",
+        `Akun ${nama.trim()} (${LABEL_PERAN[peran]}) berhasil dibuat — username: ${usernameBersih}.`,
+      );
       setNama("");
+      setUsername("");
       setEmail("");
+      setNomorHp("");
       setPassword("");
     } catch (error) {
       showToast("error", pesanErrorBuatAkun(error));
@@ -206,6 +245,21 @@ function BuatAkunKartu() {
           </select>
         </div>
         <div>
+          <label htmlFor="username-staff" className="block text-sm font-semibold text-slate-800">
+            Username
+          </label>
+          <input
+            id="username-staff"
+            type="text"
+            autoComplete="off"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="huruf kecil, tanpa spasi"
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+          <p className="mt-1 text-xs text-slate-500">Dipakai untuk masuk selain Email.</p>
+        </div>
+        <div>
           <label htmlFor="email-staff" className="block text-sm font-semibold text-slate-800">
             Email
           </label>
@@ -215,6 +269,21 @@ function BuatAkunKartu() {
             autoComplete="off"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+        <div>
+          <label htmlFor="nomor-hp-staff" className="block text-sm font-semibold text-slate-800">
+            Nomor HP
+            <span className="ml-1 font-normal text-slate-400">(opsional)</span>
+          </label>
+          <input
+            id="nomor-hp-staff"
+            type="tel"
+            autoComplete="off"
+            value={nomorHp}
+            onChange={(event) => setNomorHp(event.target.value)}
+            placeholder="boleh diisi menyusul"
             className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
           />
         </div>
@@ -291,7 +360,8 @@ function BarisAkun({ akun }: { akun: AkunStaff }) {
       <div>
         <p className="text-sm font-medium text-slate-900">{akun.nama}</p>
         <p className="text-xs text-slate-500">
-          {akun.email} · {LABEL_PERAN[akun.peran] ?? akun.peran}
+          {akun.email}
+          {akun.username ? ` · @${akun.username}` : ""} · {LABEL_PERAN[akun.peran] ?? akun.peran}
         </p>
       </div>
       {akun.peran === "superadmin" ? (
