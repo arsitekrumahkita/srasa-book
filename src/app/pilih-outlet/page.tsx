@@ -27,7 +27,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
-import { Building2, Loader2 } from "lucide-react";
+import { Building2, Loader2, WifiOff } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutlet } from "@/shared/lib/outlet-context";
@@ -56,6 +56,13 @@ function PilihOutletIsi() {
   // riwayat proyek ini). Menampilkan pesan asli jauh lebih membantu
   // ditelusuri daripada teks generik "sebentar lagi muncul".
   const [errorBuatPertama, setErrorBuatPertama] = useState<string | null>(null);
+  // true kalau setDoc() TIDAK kunjung selesai (bukan ditolak, bukan
+  // berhasil — cuma menggantung) setelah beberapa detik. Ini kasus
+  // BERBEDA dari errorBuatPertama: permission-denied dari
+  // firestore.rules biasanya ditolak CEPAT (hitungan detik), jadi
+  // spinner yang menggantung lama justru lebih mengarah ke koneksi/
+  // firewall yang memblokir Firestore, bukan aturan yang salah.
+  const [macet, setMacet] = useState(false);
   const [percobaanKe, setPercobaanKe] = useState(0);
   const sudahDicobaRef = useRef(false);
 
@@ -72,8 +79,19 @@ function PilihOutletIsi() {
       if (!dibatalkan) {
         setSedangMembuatPertama(true);
         setErrorBuatPertama(null);
+        setMacet(false);
       }
     });
+
+    // Kalau setDoc() belum selesai (resolve MAUPUN reject) sesudah 10
+    // detik, jangan biarkan spinner menggantung tanpa penjelasan —
+    // tampilkan pesan koneksi/firewall. Kalau setDoc() akhirnya
+    // resolve/reject belakangan, hasilnya tetap ditangani normal di
+    // bawah (timer ini cuma menambah pesan, tidak membatalkan setDoc).
+    const timer = window.setTimeout(() => {
+      if (!dibatalkan) setMacet(true);
+    }, 10000);
+
     setDoc(doc(db, "outlets", ID_OUTLET_PERTAMA), {
       nama: NAMA_OUTLET_PERTAMA,
       alamat: "",
@@ -88,10 +106,15 @@ function PilihOutletIsi() {
         }
       })
       .finally(() => {
-        if (!dibatalkan) setSedangMembuatPertama(false);
+        window.clearTimeout(timer);
+        if (!dibatalkan) {
+          setSedangMembuatPertama(false);
+          setMacet(false);
+        }
       });
     return () => {
       dibatalkan = true;
+      window.clearTimeout(timer);
     };
     // `percobaanKe` SENGAJA masuk deps — satu-satunya cara memicu efek
     // ini lari lagi lewat tombol "Coba Lagi" di bawah tanpa reload
@@ -101,6 +124,7 @@ function PilihOutletIsi() {
   function cobaLagi() {
     sudahDicobaRef.current = false;
     setErrorBuatPertama(null);
+    setMacet(false);
     setPercobaanKe((n) => n + 1);
   }
 
@@ -122,7 +146,30 @@ function PilihOutletIsi() {
         </p>
       </header>
 
-      {memuat || sedangMembuatPertama ? (
+      {sedangMembuatPertama && macet ? (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-6 text-center shadow-sm">
+          <WifiOff className="mx-auto h-6 w-6 text-amber-700" aria-hidden="true" />
+          <p className="mt-2 text-sm font-semibold text-amber-900">
+            Sudah lebih dari 10 detik, belum ada balasan dari server.
+          </p>
+          <p className="mt-1.5 text-xs text-amber-800">
+            Ini BEDA dari sekadar aturan (Rules) salah — kalau Rules yang
+            menolak, biasanya muncul pesan error dalam hitungan detik, bukan
+            menggantung begini. Kemungkinan besar penyebabnya koneksi
+            internet terputus-putus, jaringan kantor/WiFi memblokir Firebase,
+            atau ada ekstensi browser (ad-blocker/VPN) yang mengganggu.
+            Coba: periksa internet, matikan sementara ekstensi browser yang
+            mencurigakan, atau coba jaringan lain (mis. data seluler).
+          </p>
+          <button
+            type="button"
+            onClick={cobaLagi}
+            className="mt-3 inline-flex items-center justify-center rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-700 active:scale-[0.98]"
+          >
+            Coba Lagi
+          </button>
+        </div>
+      ) : memuat || sedangMembuatPertama ? (
         <div className="flex items-center justify-center gap-2 py-8 text-sm text-slate-500">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           {sedangMembuatPertama ? `Menyiapkan Outlet pertama (${NAMA_OUTLET_PERTAMA})...` : "Memuat daftar Outlet..."}
