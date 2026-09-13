@@ -148,6 +148,34 @@ interface ShiftAktif {
   id: string;
   modalKasAwal: number;
   status: "buka" | "tutup" | "terkunci";
+  // Slot Shift (opsional — permintaan pemilik cafe: "Finance juga yang
+  // atur pembagian shift"). undefined kalau shift dibuat sebelum fitur
+  // ini ada, atau kalau saat itu tidak ada/cuma satu slot aktif
+  // (auto-pilih diam-diam, lihat efek resolusi slot di bawah) — hanya
+  // untuk tampilan (mis. "Shift 1 (08.00-17.00)" di header), TIDAK
+  // memengaruhi modalKasAwal (tetap flat) atau kalkulasi apa pun.
+  slotNama?: string;
+  slotJamMulai?: string;
+  slotJamSelesai?: string;
+}
+
+/** Slot Shift — dikelola Finance/Owner lewat /kelola-jadwal-shift.
+ *  Kasir hanya membaca daftar yang aktif untuk memilih sendiri saat
+ *  shift belum ada untuk hari ini (self-service, bukan penugasan
+ *  manual per tanggal — lihat komentar di /kelola-jadwal-shift). */
+interface SlotShift {
+  id: string;
+  nama: string;
+  jamMulai: string;
+  jamSelesai: string;
+}
+
+interface SerahTerimaKas {
+  id: string;
+  dariNama: string;
+  nominal: number;
+  keterangan: string;
+  waktuMs: number;
 }
 
 // "Wifi"/"Listrik"/"PDAM (Air)" SENGAJA eksplisit (bukan cuma "Utilitas"
@@ -201,6 +229,44 @@ function ShiftIsi() {
   // berjalan — lihat efek auto-provisioning di bawah.
   const sedangMenyiapkanRef = useRef(false);
 
+  // --- Slot Shift (permintaan pemilik cafe: "Finance juga yang atur
+  // pembagian shift") ---
+  // Kalau slot aktif 0 atau 1, TIDAK ADA perubahan perilaku sama sekali
+  // — auto-pilih diam-diam, persis seperti sebelum fitur ini ada. Kalau
+  // slot aktif >= 2, Kasir WAJIB menyentuh satu slot dulu sebelum shift
+  // dibuat (lihat layar "pilih slot" di bawah) — supaya jelas Kasir ini
+  // masuk sebagai "Shift 1" atau "Shift 2" saat masa transisi (jam-jam
+  // yang beririsan, laci kas fisik dipakai bersama).
+  const [memuatSlot, setMemuatSlot] = useState(true);
+  const [daftarSlotAktif, setDaftarSlotAktif] = useState<SlotShift[]>([]);
+  const [slotDipilihManual, setSlotDipilihManual] = useState<SlotShift | null>(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "slot_shift"), where("aktif", "==", true)),
+      (snap) => {
+        setDaftarSlotAktif(
+          snap.docs.map((d) => ({
+            id: d.id,
+            nama: d.data().nama ?? "",
+            jamMulai: d.data().jamMulai ?? "",
+            jamSelesai: d.data().jamSelesai ?? "",
+          })),
+        );
+        setMemuatSlot(false);
+      },
+      () => setMemuatSlot(false),
+    );
+    return unsub;
+  }, []);
+
+  // Slot efektif yang dipakai untuk membuat shift: kalau cuma ada 0/1
+  // slot aktif, dipilih otomatis (tidak perlu Kasir menyentuh apa pun).
+  // Kalau >= 2, harus menunggu slotDipilihManual (hasil tap Kasir).
+  const perluPilihSlot = daftarSlotAktif.length >= 2 && !slotDipilihManual;
+  const slotEfektif: SlotShift | null =
+    daftarSlotAktif.length >= 2 ? slotDipilihManual : (daftarSlotAktif[0] ?? null);
+
   // --- Cari shift milik kasir ini untuk HARI INI, apa pun statusnya ---
   //
   // PENTING: dulu query ini menyaring `status == "buka"`, dan itu bug
@@ -236,6 +302,9 @@ function ShiftIsi() {
             id: d.id,
             modalKasAwal: d.data().modalKasAwal ?? 0,
             status: (d.data().status ?? "buka") as ShiftAktif["status"],
+            slotNama: d.data().slotNama || undefined,
+            slotJamMulai: d.data().slotJamMulai || undefined,
+            slotJamSelesai: d.data().slotJamSelesai || undefined,
           });
         }
         setMemuatShiftAktif(false);
@@ -246,10 +315,12 @@ function ShiftIsi() {
   }, [user]);
 
   // --- Auto-provisioning: TIDAK ADA lagi tombol "Buka Shift". Begitu
-  // dipastikan belum ada shift hari ini, langsung buat sendiri dengan
-  // modal flat, tanpa keterlibatan Kasir sama sekali. ---
+  // dipastikan belum ada shift hari ini (dan slot sudah bisa
+  // ditentukan — lihat perluPilihSlot di atas), langsung buat sendiri
+  // dengan modal flat. ---
   useEffect(() => {
     if (memuatShiftAktif || shiftAktif || !user || !profil) return;
+    if (memuatSlot || perluPilihSlot) return;
     if (sedangMenyiapkanRef.current) return;
     sedangMenyiapkanRef.current = true;
 
@@ -264,6 +335,13 @@ function ShiftIsi() {
       totalKasKeluar: 0,
       status: "buka",
       waktuBuka: serverTimestamp(),
+      ...(slotEfektif
+        ? {
+            slotNama: slotEfektif.nama,
+            slotJamMulai: slotEfektif.jamMulai,
+            slotJamSelesai: slotEfektif.jamSelesai,
+          }
+        : {}),
     }).catch((error) => {
       sedangMenyiapkanRef.current = false;
       setGagalMenyiapkan(true);
@@ -274,9 +352,53 @@ function ShiftIsi() {
           : "Gagal menyiapkan shift hari ini.",
       );
     });
-  }, [memuatShiftAktif, shiftAktif, user, profil, showToast]);
+  }, [
+    memuatShiftAktif,
+    shiftAktif,
+    user,
+    profil,
+    memuatSlot,
+    perluPilihSlot,
+    slotEfektif,
+    showToast,
+  ]);
 
-  if (memuatShiftAktif || (!shiftAktif && !gagalMenyiapkan)) {
+  // Layar "pilih slot" — HANYA muncul kalau ada >= 2 slot aktif dan
+  // Kasir belum menyentuh salah satunya. Kalau 0/1 slot aktif, layar
+  // ini tidak pernah muncul (langsung ke spinner lalu shift berjalan,
+  // persis seperti sebelum fitur ini ada).
+  if (!memuatShiftAktif && !shiftAktif && !memuatSlot && perluPilihSlot) {
+    return (
+      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h1 className="text-base font-semibold text-slate-900">
+            Pilih Slot Shift Kamu Hari Ini
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Ada lebih dari satu slot shift aktif. Pilih salah satu supaya
+            tercatat jelas kamu masuk shift yang mana.
+          </p>
+          <div className="mt-4 flex flex-col gap-2">
+            {daftarSlotAktif.map((slot) => (
+              <button
+                key={slot.id}
+                type="button"
+                onClick={() => setSlotDipilihManual(slot)}
+                className="flex items-center justify-between rounded-lg border border-slate-300 px-4 py-3 text-left text-sm motion-safe:transition hover:border-emerald-600 hover:bg-emerald-50 active:scale-[0.98]"
+              >
+                <span className="font-medium text-slate-900">{slot.nama}</span>
+                <span className="text-xs text-slate-500">
+                  {slot.jamMulai} – {slot.jamSelesai}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (memuatShiftAktif || memuatSlot || (!shiftAktif && !gagalMenyiapkan)) {
     return (
       <main className="flex min-h-[50vh] items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
@@ -317,10 +439,30 @@ function ShiftIsi() {
     );
   }
 
-  return <ShiftBerjalan shiftId={shiftAktif.id} modalKasAwal={shiftAktif.modalKasAwal} />;
+  return (
+    <ShiftBerjalan
+      shiftId={shiftAktif.id}
+      modalKasAwal={shiftAktif.modalKasAwal}
+      slotNama={shiftAktif.slotNama}
+      slotJamMulai={shiftAktif.slotJamMulai}
+      slotJamSelesai={shiftAktif.slotJamSelesai}
+    />
+  );
 }
 
-function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwal: number }) {
+function ShiftBerjalan({
+  shiftId,
+  modalKasAwal,
+  slotNama,
+  slotJamMulai,
+  slotJamSelesai,
+}: {
+  shiftId: string;
+  modalKasAwal: number;
+  slotNama?: string;
+  slotJamMulai?: string;
+  slotJamSelesai?: string;
+}) {
   const { showToast } = useToast();
   const [menuList, setMenuList] = useState<MenuHarga[]>([]);
   const [penjualan, setPenjualan] = useState<PenjualanItem[]>([]);
@@ -699,7 +841,14 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
             SRASA BOOK
           </p>
-          <h1 className="text-2xl font-bold text-slate-900">Shift Berjalan</h1>
+          <h1 className="text-2xl font-bold text-slate-900">
+            Shift Berjalan{slotNama ? ` — ${slotNama}` : ""}
+          </h1>
+          {slotNama && slotJamMulai && slotJamSelesai ? (
+            <p className="text-xs text-slate-500">
+              {slotJamMulai} – {slotJamSelesai}
+            </p>
+          ) : null}
         </div>
         <div className="text-right">
           <p className="text-xs text-slate-500">Total Omset Berjalan</p>
@@ -711,6 +860,10 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
           </p>
         </div>
       </header>
+
+      <div className="mb-6">
+        <SerahTerimaKasKartu shiftId={shiftId} />
+      </div>
 
       <div className="flex flex-col gap-6">
         <section
@@ -1072,6 +1225,179 @@ function KasKeluarKartu({
           className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
         />
       </div>
+    </section>
+  );
+}
+
+/**
+ * Serah Terima Kas — jejak audit untuk masa transisi pergantian shift
+ * (permintaan pemilik cafe: "Shift 2 sudah bisa buka shift meskipun
+ * Shift 1 belum closing shift"). Laci kas fisik dipakai BERSAMA saat
+ * jam-jam transisi beririsan (jawaban eksplisit pemilik cafe), jadi
+ * saat menyerahkan laci ke rekan shift berikutnya, siapa pun yang
+ * SEDANG menyerahkan (dariUid = akun yang login) mencatat nominal &
+ * catatan singkat di sini.
+ *
+ * SENGAJA TIDAK ditargetkan ke satu Kasir penerima tertentu (uid
+ * tujuan) — Kasir tidak punya akses `list` ke koleksi users untuk
+ * memilih nama rekan dari daftar (lihat firestore.rules), jadi cukup
+ * dicatat "dari siapa, jam berapa, berapa", dan SEMUA Kasir aktif hari
+ * ini bisa membaca daftar ini (bukan cuma yang membuatnya) supaya
+ * siapa pun yang baru mulai shift bisa langsung lihat riwayat serah
+ * terima hari ini.
+ *
+ * MURNI CATATAN AUDIT/INFORMASIONAL — TIDAK memengaruhi Modal Kas Awal
+ * (tetap flat Rp500.000, tidak diwariskan dari shift lain) maupun
+ * perhitungan Kas Seharusnya/Selisih Kas di TutupShiftKartu. Bisa
+ * dicatat kapan saja selama shift berjalan (tidak harus menunggu Tutup
+ * Shift), karena serah terima biasanya terjadi DI TENGAH shift, saat
+ * jam transisi, bukan di akhir.
+ */
+function SerahTerimaKasKartu({ shiftId }: { shiftId: string }) {
+  const { user, profil } = useAuth();
+  const { showToast } = useToast();
+  const [daftar, setDaftar] = useState<SerahTerimaKas[]>([]);
+  const [nominal, setNominal] = useState(0);
+  const [keterangan, setKeterangan] = useState("");
+  const [sedangSimpan, setSedangSimpan] = useState(false);
+  const [terbuka, setTerbuka] = useState(false);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "serah_terima_kas"), where("tanggal", "==", tanggalHariIni())),
+      (snap) => {
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          dariNama: d.data().dariNama ?? "",
+          nominal: d.data().nominal ?? 0,
+          keterangan: d.data().keterangan ?? "",
+          waktuMs: d.data().waktu?.toMillis?.() ?? 0,
+        }));
+        list.sort((a, b) => b.waktuMs - a.waktuMs);
+        setDaftar(list);
+      },
+    );
+    return unsub;
+  }, []);
+
+  async function catatSerahTerima() {
+    if (!user || !profil) return;
+    if (nominal <= 0) {
+      showToast("error", "Nominal serah terima kas harus lebih dari 0.");
+      return;
+    }
+    setSedangSimpan(true);
+    try {
+      await addDoc(collection(db, "serah_terima_kas"), {
+        tanggal: tanggalHariIni(),
+        shiftIdAsal: shiftId,
+        dariUid: user.uid,
+        dariNama: profil.nama,
+        nominal,
+        keterangan: keterangan.trim(),
+        waktu: serverTimestamp(),
+      });
+      setNominal(0);
+      setKeterangan("");
+      showToast("success", "Serah terima kas dicatat.");
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error
+          ? `Gagal mencatat serah terima kas: ${error.message}`
+          : "Gagal mencatat serah terima kas.",
+      );
+    } finally {
+      setSedangSimpan(false);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <button
+        type="button"
+        onClick={() => setTerbuka((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 text-left"
+      >
+        <span className="text-sm font-semibold text-slate-900">
+          Serah Terima Kas Hari Ini{daftar.length > 0 ? ` (${daftar.length})` : ""}
+        </span>
+        <ChevronDown
+          className={`h-4 w-4 text-slate-400 motion-safe:transition-transform ${terbuka ? "rotate-180" : ""}`}
+          aria-hidden="true"
+        />
+      </button>
+
+      {terbuka ? (
+        <div className="mt-3 flex flex-col gap-3">
+          <p className="text-xs text-slate-500">
+            Catat kalau kamu baru saja menyerahkan laci kas ke rekan shift
+            berikutnya (masa transisi pergantian shift). Ini catatan audit
+            saja — tidak memengaruhi Modal Kas Awal atau Kas Seharusnya.
+          </p>
+
+          {daftar.length > 0 ? (
+            <ul className="flex flex-col divide-y divide-slate-100 rounded-lg bg-slate-50 p-2">
+              {daftar.map((d) => (
+                <li key={d.id} className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-slate-800">{d.dariNama}</p>
+                    {d.keterangan ? (
+                      <p className="truncate text-slate-500">{d.keterangan}</p>
+                    ) : null}
+                  </div>
+                  <span className="shrink-0 font-medium tabular-nums text-slate-700">
+                    {formatRupiah(d.nominal)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-slate-400">Belum ada serah terima kas hari ini.</p>
+          )}
+
+          <div>
+            <NumberField
+              id="nominal-serah-terima"
+              label="Nominal Diserahkan"
+              value={nominal}
+              onChange={setNominal}
+              prefix="Rp"
+            />
+            <label htmlFor="keterangan-serah-terima" className="mt-2 block text-xs font-medium text-slate-600">
+              Keterangan (opsional)
+            </label>
+            <input
+              id="keterangan-serah-terima"
+              type="text"
+              value={keterangan}
+              onChange={(event) => setKeterangan(event.target.value)}
+              placeholder="mis. serah terima ke shift 2"
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={catatSerahTerima}
+            disabled={sedangSimpan}
+            className={[
+              "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm",
+              "motion-safe:transition motion-safe:duration-150",
+              sedangSimpan
+                ? "cursor-not-allowed bg-emerald-400"
+                : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+            ].join(" ")}
+          >
+            {sedangSimpan ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Save className="h-4 w-4" aria-hidden="true" />
+            )}
+            {sedangSimpan ? "Menyimpan..." : "Catat Serah Terima Kas"}
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }

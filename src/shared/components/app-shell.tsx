@@ -26,6 +26,7 @@ import { signOut } from "firebase/auth";
 import {
   Bell,
   History,
+  CalendarClock,
   Landmark,
   LayoutDashboard,
   LogOut,
@@ -84,6 +85,12 @@ const NAV_ITEMS: NavItem[] = [
     peran: ["superadmin", "finance"],
   },
   { href: "/riwayat", label: "Riwayat", icon: History, peran: ["superadmin", "finance"] },
+  {
+    href: "/kelola-jadwal-shift",
+    label: "Jadwal Shift",
+    icon: CalendarClock,
+    peran: ["superadmin", "finance"],
+  },
   {
     href: "/transaksi-finance",
     label: "Transaksi Finance",

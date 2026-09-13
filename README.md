@@ -546,6 +546,56 @@ lewat menu baru **Transaksi Finance** (`/transaksi-finance`).
   Finance tetap tercatat & bisa dipantau Owner di halaman Transaksi
   Finance, hanya belum digabung ke satu angka Laba Bersih.
 
+**Jadwal Shift (Slot Shift) & Serah Terima Kas (permintaan pemilik
+cafe: "Finance juga yang atur pembagian shift", termasuk strategi
+transisi pergantian shift yang jam-nya beririsan):**
+
+- **Menu baru "Jadwal Shift"** (`/kelola-jadwal-shift`, peran
+  superadmin & finance — akses SAMA RATA seperti pola biasa di app ini,
+  BUKAN domain uang masuk/keluar seperti Saldo Deposito Finance)
+  mengelola daftar **Slot Shift**: nama + jam mulai/selesai (mis.
+  "Shift 1: 08.00–17.00", "Shift 2: 15.00–24.00"), bisa
+  diaktifkan/nonaktifkan atau dihapus.
+- **Bentuk yang dipilih (jawaban eksplisit pemilik cafe)**: daftar Slot
+  Shift saja — BUKAN roster penugasan per tanggal/per Kasir. Kasir
+  sendiri yang memilih slot mana secara self-service saat shift belum
+  ada untuk hari itu (`src/app/shift/page.tsx`). Kalau slot aktif cuma
+  0 atau 1, Kasir tidak perlu memilih apa-apa sama sekali — perilaku
+  identik dengan sebelum fitur ini ada (auto-provisioning diam-diam).
+  Layar pilih slot hanya muncul kalau ada >= 2 slot aktif.
+- **Transisi pergantian shift**: skema `shift` (dokumen per
+  kasirUid+tanggal) SUDAH otomatis mendukung Shift 2 membuka shift
+  sendiri meski Shift 1 belum menutup shift-nya — dua Kasir berbeda =
+  dua dokumen independen, tanpa perubahan apa pun. Yang ditambahkan
+  supaya masa transisi (jam-jam yang beririsan, mis. 2 jam semua shift
+  bertemu) tetap rapi adalah:
+  - **Serah Terima Kas** (koleksi `serah_terima_kas`, kartu baru di
+    halaman Shift) — jejak audit untuk laci kas fisik yang **dipakai
+    bersama** saat transisi (jawaban eksplisit pemilik cafe: "Laci
+    sama, perlu serah terima kas"). Kasir yang sedang menyerahkan laci
+    mencatat nominal & keterangan singkat kapan saja selama shift
+    berjalan (tidak harus menunggu Tutup Shift, karena serah terima
+    biasanya terjadi DI TENGAH shift, saat jam transisi).
+  - **Sengaja TIDAK ditargetkan ke satu Kasir penerima tertentu** (uid
+    tujuan) — Kasir tidak punya akses `list` ke koleksi `users` untuk
+    memilih nama rekan dari daftar (lihat firestore.rules). Cukup
+    dicatat "dari siapa, jam berapa, berapa", dan SEMUA Kasir aktif
+    boleh membaca daftar hari ini (bukan cuma pembuatnya).
+  - **Murni catatan audit/informasional** — TIDAK memengaruhi Modal Kas
+    Awal maupun perhitungan Kas Seharusnya/Selisih Kas di manapun.
+- **Modal Kas Awal tetap FLAT Rp500.000 untuk SEMUA slot** (jawaban
+  eksplisit pemilik cafe) — `MODAL_KAS_AWAL_HARIAN` di
+  `src/app/shift/page.tsx` tidak berubah sama sekali oleh fitur ini;
+  field `slotNama`/`slotJamMulai`/`slotJamSelesai` di dokumen shift
+  murni untuk tampilan (mis. label "Shift 1 (08.00–17.00)" di header
+  halaman Shift), bukan input keuangan.
+- **Batasan yang disengaja**: tidak ada penugasan/roster per tanggal
+  ("siapa masuk shift apa hari ini" ditentukan Kasir sendiri saat
+  membuka aplikasi, bukan dijadwalkan Finance di muka), dan tidak ada
+  validasi otomatis bahwa Kasir hanya boleh pilih slot yang jamnya
+  memang sedang berlangsung — keduanya sesuai jawaban pemilik cafe yang
+  memilih opsi paling ringan (P2 kalau nanti ternyata dibutuhkan).
+
 **Batasan lain yang masih P1/P2 (lihat PRD bagian 13 untuk roadmap lengkap):**
 
 - Riwayat belum ada filter tanggal, laporan bulanan/tahunan.

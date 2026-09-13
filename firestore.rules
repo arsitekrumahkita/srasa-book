@@ -461,6 +461,42 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------
+    // SECTION: slot_shift — Jadwal Shift (permintaan pemilik cafe:
+    // "Finance juga yang atur pembagian shift"). Daftar SLOT (nama +
+    // jam mulai/selesai, mis. "Shift 1: 08.00-17.00") yang dikelola
+    // Finance/Owner — Kasir sendiri yang memilih slot mana saat buka
+    // shift (self-service, bukan penugasan manual per tanggal). Ini
+    // domain PENJADWALAN, bukan uang masuk/keluar, jadi TIDAK memakai
+    // nuansa "Owner tidak bisa" seperti saldo_finance — Owner & Finance
+    // sama-sama boleh kelola, seperti pola biasa di seluruh app ini.
+    // ------------------------------------------------------------
+
+    match /slot_shift/{slotId} {
+      // Semua peran aktif boleh baca (Kasir WAJIB baca ini untuk
+      // memilih slot saat buka shift).
+      allow read: if isActiveUser();
+      allow write: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: serah_terima_kas — jejak audit serah terima kas fisik
+    // antar Kasir saat transisi pergantian shift yang lacinya masih
+    // sama/tumpang tindih jam (permintaan pemilik cafe). SENGAJA
+    // TIDAK ditargetkan ke satu Kasir penerima tertentu (uid tujuan) —
+    // Kasir tidak punya akses `list` ke koleksi users untuk memilih
+    // nama, jadi cukup dicatat "dari siapa, jam berapa, berapa" dan
+    // SEMUA Kasir aktif boleh membaca daftar ini (bukan cuma
+    // pembuatnya) supaya siapa pun yang baru mulai shift bisa lihat
+    // riwayat serah terima hari ini tanpa perlu penargetan uid.
+    // ------------------------------------------------------------
+
+    match /serah_terima_kas/{id} {
+      allow read: if isSuperadmin() || isKasir();
+      allow create: if isKasir() && request.resource.data.dariUid == request.auth.uid;
+      allow update, delete: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
     // SECTION: catatan_owner & backup_log — Owner-only sepenuhnya
     // ------------------------------------------------------------
 
