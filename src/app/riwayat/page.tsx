@@ -15,16 +15,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  addDoc,
   collection,
   doc,
+  getDocs,
+  increment,
   onSnapshot,
   orderBy,
   query,
+  serverTimestamp,
   setDoc,
   updateDoc,
   where,
 } from "firebase/firestore";
 import {
+  AlertTriangle,
   Calculator,
   ChevronDown,
   ChevronUp,
@@ -32,9 +37,11 @@ import {
   FileSpreadsheet,
   FileText,
   Loader2,
+  Lock,
 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { useOutletId } from "@/shared/lib/outlet-context";
+import { useAuth } from "@/shared/lib/auth-context";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
@@ -43,12 +50,15 @@ import { formatRupiah } from "@/shared/lib/format";
 import { hitungLabaHarian } from "@/shared/lib/laba-harian";
 import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
+import { NumberField } from "@/shared/components/number-field";
 import type { TanggunganKasir } from "@/shared/types/inventaris";
 
 interface RiwayatShift {
   id: string;
   tanggal: string;
+  kasirUid: string;
   kasirNama: string;
+  modalKasAwal: number;
   totalOmset: number;
   totalKasKeluar: number;
   selisihKas: number;
@@ -79,7 +89,9 @@ function RiwayatIsi() {
           snap.docs.map((d) => ({
             id: d.id,
             tanggal: d.data().tanggal ?? "",
+            kasirUid: d.data().kasirUid ?? "",
             kasirNama: d.data().kasirNama ?? "",
+            modalKasAwal: d.data().modalKasAwal ?? 0,
             totalOmset: d.data().totalOmset ?? 0,
             totalKasKeluar: d.data().totalKasKeluar ?? 0,
             selisihKas: d.data().selisihKas ?? 0,
@@ -177,12 +189,241 @@ function RiwayatIsi() {
                     </div>
                   </dl>
                 ) : null}
+                {terbuka && shift.status === "buka" ? <TutupPaksaShiftKartu shift={shift} /> : null}
               </li>
             );
           })}
         </ul>
       )}
     </main>
+  );
+}
+
+/**
+ * Tutup Paksa Shift — fitur "Force Close" (permintaan pemilik cafe,
+ * dobel sebagai perbaikan bug: shift yang tersangkut berstatus "buka"
+ * selamanya, mis. Kasir lupa menutupnya atau akunnya keburu
+ * dinonaktifkan sebelum sempat Tutup Shift). Dulu shift seperti ini
+ * TIDAK ADA jalan keluarnya sama sekali dari sisi aplikasi — sekarang
+ * Owner/Finance bisa menutupnya dari Riwayat, memakai pola tulis yang
+ * SAMA PERSIS dengan Tutup Shift oleh Kasir sendiri (lihat
+ * TutupShiftKartu di src/app/shift/page.tsx: update shift ke
+ * "terkunci" + increment summary_harian + catat tanggungan_kasir bila
+ * kurang) — supaya ringkasan harian & tanggungan tetap konsisten,
+ * hanya field ditutupPaksaOlehUid/Nama yang menandai ini penutupan
+ * admin, bukan penutupan normal oleh Kasir yang bersangkutan.
+ *
+ * Firestore Rules (lihat firestore.rules bagian shift & tanggungan_kasir):
+ * Owner/Finance (isManagerOutlet) sudah punya izin admin override untuk
+ * MENGUBAH shift kapan pun (tidak dibatasi status seperti Kasir), dan
+ * SEKARANG juga diberi izin MEMBUAT tanggungan_kasir (sebelumnya hanya
+ * Kasir sendiri boleh) supaya jalur ini bisa mencatat tanggungan atas
+ * nama Kasir asli shift tsb.
+ */
+function TutupPaksaShiftKartu({ shift }: { shift: RiwayatShift }) {
+  const outletId = useOutletId();
+  const { showToast } = useToast();
+  const { user, profil } = useAuth();
+  const [memuatTotal, setMemuatTotal] = useState(true);
+  const [totalOmsetTunai, setTotalOmsetTunai] = useState(0);
+  const [totalOmsetNonTunai, setTotalOmsetNonTunai] = useState(0);
+  const [totalKasKeluarDihitung, setTotalKasKeluarDihitung] = useState(0);
+  const [kasFisik, setKasFisik] = useState(0);
+  const [keterangan, setKeterangan] = useState("");
+  const [sedangTutup, setSedangTutup] = useState(false);
+
+  useEffect(() => {
+    let dibatalkan = false;
+    async function muat() {
+      setMemuatTotal(true);
+      const [penjualanSnap, kasKeluarSnap] = await Promise.all([
+        getDocs(collection(db, "outlets", outletId, "shift", shift.id, "penjualan")),
+        getDocs(collection(db, "outlets", outletId, "shift", shift.id, "kas_keluar")),
+      ]);
+      if (dibatalkan) return;
+      let tunai = 0;
+      let nonTunai = 0;
+      for (const item of penjualanSnap.docs) {
+        const d = item.data();
+        if (d.subtotalTunai !== undefined || d.subtotalNonTunai !== undefined) {
+          tunai += d.subtotalTunai ?? 0;
+          nonTunai += d.subtotalNonTunai ?? 0;
+        } else {
+          // Item lama dari sebelum rincian metode bayar per-item ada —
+          // shift ini tidak pernah ditutup jadi tidak ada tebakan manual
+          // omsetNonTunai untuk dijadikan fallback (beda dari
+          // hitungLabaHarian). Diasumsikan tunai semua supaya Kas
+          // Seharusnya di bawah tetap masuk akal untuk dicocokkan Owner
+          // dengan laci fisik, BUKAN diam-diam hilang dari perhitungan.
+          tunai += d.subtotal ?? 0;
+        }
+      }
+      let kasKeluar = 0;
+      for (const k of kasKeluarSnap.docs) kasKeluar += k.data().nominal ?? 0;
+      setTotalOmsetTunai(tunai);
+      setTotalOmsetNonTunai(nonTunai);
+      setTotalKasKeluarDihitung(kasKeluar);
+      setMemuatTotal(false);
+    }
+    muat();
+    return () => {
+      dibatalkan = true;
+    };
+  }, [outletId, shift.id]);
+
+  const totalOmset = totalOmsetTunai + totalOmsetNonTunai;
+  const kasSeharusnya = shift.modalKasAwal + totalOmsetTunai - totalKasKeluarDihitung;
+  const selisihKas = kasFisik - kasSeharusnya;
+
+  async function handleTutupPaksa() {
+    if (!user || !profil) return;
+    if (selisihKas !== 0 && !keterangan.trim()) {
+      showToast("error", "Ada selisih kas — wajib isi keterangan sebelum menutup paksa shift ini.");
+      return;
+    }
+    setSedangTutup(true);
+    try {
+      await updateDoc(doc(db, "outlets", outletId, "shift", shift.id), {
+        totalOmset,
+        omsetTunai: totalOmsetTunai,
+        omsetNonTunai: totalOmsetNonTunai,
+        totalKasKeluar: totalKasKeluarDihitung,
+        kasSeharusnya,
+        kasFisik,
+        selisihKas,
+        keteranganSelisih: keterangan.trim(),
+        status: "terkunci",
+        waktuTutup: serverTimestamp(),
+        ditutupPaksaOlehUid: user.uid,
+        ditutupPaksaOlehNama: profil.nama,
+      });
+
+      await setDoc(
+        doc(db, "outlets", outletId, "summary_harian", shift.tanggal),
+        {
+          totalOmset: increment(totalOmset),
+          omsetTunai: increment(totalOmsetTunai),
+          omsetNonTunai: increment(totalOmsetNonTunai),
+          totalKasKeluar: increment(totalKasKeluarDihitung),
+          selisihKas: increment(selisihKas),
+          jumlahShift: increment(1),
+        },
+        { merge: true },
+      );
+
+      if (selisihKas < 0) {
+        await addDoc(collection(db, "outlets", outletId, "tanggungan_kasir"), {
+          shiftId: shift.id,
+          tanggal: shift.tanggal,
+          kasirUid: shift.kasirUid,
+          kasirNama: shift.kasirNama,
+          nominal: Math.abs(selisihKas),
+          keterangan: keterangan.trim(),
+          status: "belum_lunas",
+          waktu: serverTimestamp(),
+        });
+      }
+
+      showToast("success", `Shift ${shift.tanggal} (${shift.kasirNama}) berhasil ditutup paksa.`);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal menutup paksa: ${error.message}` : "Gagal menutup paksa shift.",
+      );
+    } finally {
+      setSedangTutup(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-amber-200 bg-amber-50 px-5 py-4">
+      <div className="flex items-start gap-2 text-sm text-amber-900">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        <p>
+          Shift ini masih berstatus <span className="font-semibold">Sedang Berjalan</span> — kemungkinan
+          Kasir lupa menutupnya, atau akunnya sudah dinonaktifkan sebelum sempat Tutup Shift. Owner/Finance
+          bisa menutupnya paksa dari sini, dihitung otomatis dari data penjualan &amp; kas keluar shift ini.
+        </p>
+      </div>
+
+      {memuatTotal ? (
+        <div className="mt-3 flex items-center gap-2 text-xs text-amber-800">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> Menghitung data shift...
+        </div>
+      ) : (
+        <>
+          <dl className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-white p-3 text-sm sm:grid-cols-4">
+            <div>
+              <dt className="text-xs text-slate-500">Omset Tunai</dt>
+              <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(totalOmsetTunai)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Omset Non-Tunai</dt>
+              <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(totalOmsetNonTunai)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Kas Keluar</dt>
+              <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(totalKasKeluarDihitung)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Kas Seharusnya</dt>
+              <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(kasSeharusnya)}</dd>
+            </div>
+          </dl>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_2fr_auto] sm:items-end">
+            <NumberField
+              id={`kas-fisik-paksa-${shift.id}`}
+              label="Kas Fisik (bila diketahui)"
+              value={kasFisik}
+              onChange={setKasFisik}
+              prefix="Rp"
+              hint="Isi 0 bila kas fisik sudah tidak bisa dihitung ulang."
+            />
+            <div>
+              <label htmlFor={`keterangan-paksa-${shift.id}`} className="block text-sm font-semibold text-slate-800">
+                Keterangan
+              </label>
+              <input
+                id={`keterangan-paksa-${shift.id}`}
+                type="text"
+                value={keterangan}
+                onChange={(event) => setKeterangan(event.target.value)}
+                placeholder="mis. Kasir lupa menutup shift, ditutup paksa oleh Owner"
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleTutupPaksa}
+              disabled={sedangTutup}
+              aria-busy={sedangTutup}
+              className={[
+                "inline-flex h-[42px] items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold text-white shadow-sm",
+                "motion-safe:transition motion-safe:duration-150",
+                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700",
+                sedangTutup ? "cursor-not-allowed bg-amber-400" : "bg-amber-600 hover:bg-amber-700 active:scale-[0.98]",
+              ].join(" ")}
+            >
+              {sedangTutup ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <>
+                  <Lock className="h-4 w-4" aria-hidden="true" />
+                  Tutup Paksa
+                </>
+              )}
+            </button>
+          </div>
+          {selisihKas !== 0 ? (
+            <p className="mt-2 text-xs text-amber-800">
+              Selisih kas: <span className="font-semibold tabular-nums">{formatRupiah(selisihKas)}</span>
+              {selisihKas < 0 ? " — akan tercatat sebagai tanggungan Kasir yang bersangkutan." : ""}
+            </p>
+          ) : null}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -584,7 +825,6 @@ function HitungUlangLabaKartu() {
   async function handleHitung() {
     setSedangHitung(true);
     try {
-      const hasil = await hitungLabaHarian(outletId, tanggal);
       // Ringkasan harian ditulis ULANG dari sumber aslinya (dokumen shift
       // + subkoleksi penjualan), bukan sekadar menambah labaBersih.
       // summary_harian normalnya dibentuk lewat increment() oleh Kasir
@@ -594,6 +834,43 @@ function HitungUlangLabaKartu() {
       // bisa "diperbaiki" tanpa tahu nilai benarnya. Tombol ini jadi
       // pemulihannya: menimpa semua angka hari itu dengan hasil hitung
       // ulang yang otoritatif.
+      //
+      // MITIGASI RACE CONDITION (bug: shift lain menutup di tengah proses
+      // hitung ulang): hitungLabaHarian() membaca banyak dokumen shift
+      // lewat beberapa query TERPISAH (bukan satu transaksi atomik —
+      // Firestore transaction tidak bisa meng-query koleksi yang jumlah
+      // dokumennya belum diketahui di awal, jadi atomik penuh TIDAK
+      // mungkin dicapai murni dari sisi client tanpa Cloud Functions).
+      // Kalau ADA Kasir lain yang menutup shift (menulis increment() ke
+      // summary_harian tanggal yang sama) tepat di antara pembacaan di
+      // sini dan penimpaan absolut di bawah, kontribusi shift itu akan
+      // hilang dari ringkasan — walau dokumen shift aslinya sendiri tetap
+      // benar, sehingga akan otomatis terkoreksi lagi pada Hitung Ulang
+      // berikutnya untuk tanggal yang sama.
+      //
+      // Supaya jendela race ini SEMPIT (bukan nol, tapi jauh lebih kecil
+      // dari sekali baca), hitung ulang dilakukan berkali-kali sampai DUA
+      // hasil BERTURUT-TURUT persis sama — artinya tidak ada shift yang
+      // menutup di antara kedua pembacaan terakhir itu — baru hasilnya
+      // ditulis. Kalau setelah beberapa kali percobaan belum juga
+      // konvergen (kemungkinan besar karena memang sedang ramai Kasir
+      // menutup shift beruntun), hasil PALING TERAKHIR tetap dipakai
+      // supaya tombol ini tidak macet menunggu selamanya.
+      let hasil = await hitungLabaHarian(outletId, tanggal);
+      const MAKS_PERCOBAAN_KONVERGENSI = 4;
+      for (let percobaan = 0; percobaan < MAKS_PERCOBAAN_KONVERGENSI; percobaan++) {
+        const hasilBerikutnya = await hitungLabaHarian(outletId, tanggal);
+        const konvergen =
+          hasilBerikutnya.totalOmset === hasil.totalOmset &&
+          hasilBerikutnya.omsetTunai === hasil.omsetTunai &&
+          hasilBerikutnya.omsetNonTunai === hasil.omsetNonTunai &&
+          hasilBerikutnya.totalKasKeluar === hasil.totalKasKeluar &&
+          hasilBerikutnya.selisihKas === hasil.selisihKas &&
+          hasilBerikutnya.jumlahShift === hasil.jumlahShift &&
+          hasilBerikutnya.totalHppTerjual === hasil.totalHppTerjual;
+        hasil = hasilBerikutnya;
+        if (konvergen) break;
+      }
       await setDoc(
         doc(db, "outlets", outletId, "summary_harian", tanggal),
         {

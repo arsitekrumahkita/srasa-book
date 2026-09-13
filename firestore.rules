@@ -403,7 +403,15 @@ service cloud.firestore {
       match /tanggungan_kasir/{tanggunganId} {
         allow read: if isManagerOutlet(outletId)
           || (isKasirOutlet(outletId) && resource.data.kasirUid == request.auth.uid);
-        allow create: if isKasirOutlet(outletId) && request.resource.data.kasirUid == request.auth.uid;
+        // Owner/Finance JUGA boleh membuat dokumen ini (bukan cuma Kasir
+        // sendiri) — dibutuhkan untuk fitur "Tutup Paksa Shift" di
+        // Riwayat: Owner/Finance menutup shift yang tersangkut terbuka
+        // (mis. Kasir-nya sudah dinonaktifkan) atas nama Kasir ASLI yang
+        // tercatat di shift itu, bukan atas nama Owner/Finance sendiri —
+        // makanya tidak disyaratkan kasirUid == request.auth.uid untuk
+        // jalur admin ini.
+        allow create: if (isKasirOutlet(outletId) && request.resource.data.kasirUid == request.auth.uid)
+          || isManagerOutlet(outletId);
         allow update, delete: if isManagerOutlet(outletId);
       }
 
@@ -416,6 +424,14 @@ service cloud.firestore {
           || (isKasirOutlet(outletId) && resource.data.kasirUid == request.auth.uid);
         allow create: if isKasirOutlet(outletId) && request.resource.data.kasirUid == request.auth.uid;
         allow update, delete: if isManagerOutlet(outletId);
+      }
+
+      // Penghitung qty Nota Refund per shift+menu (perbaikan bug over-
+      // refund race — lihat komentar runTransaction() di
+      // src/app/refund/page.tsx). Hanya berisi qty, tidak ada Rupiah/
+      // harga, jadi aman dibaca Kasir juga.
+      match /nota_refund_counter/{counterId} {
+        allow read, write: if isManagerOutlet(outletId) || isKasirOutlet(outletId);
       }
 
       // --------------------------------------------------------

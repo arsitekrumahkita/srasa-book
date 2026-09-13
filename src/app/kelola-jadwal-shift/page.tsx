@@ -31,7 +31,7 @@
 // Top-level components, tidak bersarang.
 // ============================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   addDoc,
   collection,
@@ -41,6 +41,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
 import { CalendarClock, Loader2, Plus, Trash2 } from "lucide-react";
@@ -50,6 +51,20 @@ import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
 import { useOutletId } from "@/shared/lib/outlet-context";
 import { db } from "@/shared/lib/firebase";
+
+/** Default Slot Shift SRASA BOOK (jawaban eksplisit pemilik cafe atas
+ *  pertanyaan "bagaimana penerapannya" untuk pola shift yang sudah
+ *  berjalan lisan/manual selama ini) — dipakai HANYA sebagai starting
+ *  point begitu Outlet belum punya Slot Shift sama sekali. Owner/
+ *  Finance tetap bebas mengubah nama/jam atau menghapusnya lewat
+ *  kartu Daftar Slot Shift, sama seperti slot yang dibuat manual —
+ *  ini bukan nilai yang "dikunci". ID dokumen SENGAJA tetap (bukan
+ *  addDoc/id acak) supaya penulisannya idempotent: berapa kali pun
+ *  effect di bawah ini re-run, tidak akan pernah membuat duplikat. */
+const SLOT_DEFAULT: { id: string; nama: string; jamMulai: string; jamSelesai: string }[] = [
+  { id: "default-shift-1", nama: "Shift 1", jamMulai: "08:00", jamSelesai: "16:00" },
+  { id: "default-shift-2", nama: "Shift 2", jamMulai: "15:00", jamSelesai: "23:00" },
+];
 
 interface SlotShift {
   id: string;
@@ -73,6 +88,7 @@ function KelolaJadwalShiftIsi() {
   const outletId = useOutletId();
   const [memuat, setMemuat] = useState(true);
   const [daftarSlot, setDaftarSlot] = useState<SlotShift[]>([]);
+  const sudahDicobaSeedRef = useRef(false);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -94,6 +110,44 @@ function KelolaJadwalShiftIsi() {
     return unsub;
   }, [outletId]);
 
+  // Outlet baru (belum ada Slot Shift sama sekali) -> isikan default
+  // Shift 1/Shift 2 SRASA BOOK sekali saja, supaya Owner/Finance
+  // tinggal menyesuaikan (atau menghapus) daripada mengetik dari nol.
+  // Idempotent lewat ID dokumen tetap (lihat SLOT_DEFAULT) + ref
+  // guard di sini supaya tidak berulang kali menulis di render yang
+  // sama sebelum snapshot pertama selesai memberi tahu sudah terisi.
+  useEffect(() => {
+    if (memuat || daftarSlot.length > 0) return;
+    if (sudahDicobaSeedRef.current) return;
+    sudahDicobaSeedRef.current = true;
+
+    let dibatalkan = false;
+    Promise.resolve().then(async () => {
+      if (dibatalkan) return;
+      try {
+        await Promise.all(
+          SLOT_DEFAULT.map((slot) =>
+            setDoc(doc(db, "outlets", outletId, "slot_shift", slot.id), {
+              nama: slot.nama,
+              jamMulai: slot.jamMulai,
+              jamSelesai: slot.jamSelesai,
+              aktif: true,
+              dibuatPada: serverTimestamp(),
+            }),
+          ),
+        );
+      } catch {
+        // Diamkan — kalau gagal (mis. Rules belum ter-Publish), Owner
+        // tetap bisa mengisi Slot Shift manual lewat form di bawah
+        // seperti biasa, jadi tidak perlu toast error yang mengganggu.
+        sudahDicobaSeedRef.current = false;
+      }
+    });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [memuat, daftarSlot.length, outletId]);
+
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
       <header className="mb-6">
@@ -104,6 +158,14 @@ function KelolaJadwalShiftIsi() {
           memilih salah satu slot ini sendiri saat membuka shift di halaman
           Shift — kalau cuma ada satu slot aktif (atau belum ada sama
           sekali), Kasir tidak perlu memilih apa-apa.
+        </p>
+        <p className="mt-1 text-xs text-slate-400">
+          Sudah diisikan default &ldquo;Shift 1 (08.00–16.00)&rdquo; dan
+          &ldquo;Shift 2 (15.00–23.00)&rdquo; sesuai pola SRASA BOOK selama
+          ini — ubah atau hapus sesuai kebutuhan kapan saja lewat kartu di
+          bawah. Jam kerja Purchasing (split pagi/malam mengikuti awal
+          Shift 1 & akhir Shift 2) belum punya jadwal terpisah di
+          aplikasi ini, jadi tetap diatur di luar sistem seperti sekarang.
         </p>
       </header>
 

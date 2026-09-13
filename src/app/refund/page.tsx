@@ -51,6 +51,7 @@ import {
   getDocs,
   increment,
   query,
+  runTransaction,
   serverTimestamp,
   updateDoc,
   where,
@@ -239,20 +240,72 @@ function RefundIsi() {
       const totalRefund = jumlah * itemDipilih.hargaSatuan;
       const tanggalRefund = tanggalHariIni();
 
-      await addDoc(collection(db, "outlets", outletId, "nota_refund"), {
-        shiftId: shiftDipilih.id,
-        tanggalTransaksiAsal: shiftDipilih.tanggal,
-        menuId: itemDipilih.menuId,
-        menuNama: itemDipilih.menuNama,
-        qty: jumlah,
-        hargaSatuanSaatTransaksi: itemDipilih.hargaSatuan,
-        totalRefund,
-        alasan: alasan === "Lainnya" ? alasanLainnya.trim() : alasan,
-        metode,
-        kasirUid: user.uid,
-        kasirNama: profil.nama,
-        tanggalRefund,
-        waktuDibuat: serverTimestamp(),
+      // Perbaikan bug: validasi "jumlah <= sisa" di atas HANYA memakai
+      // `sudahDirefund` dari state (hasil getDocs sesaat sebelumnya) —
+      // kalau ADA refund lain untuk menu & shift yang SAMA tersimpan
+      // tepat di antara pembacaan itu dan addDoc di sini (mis. dua tab
+      // terbuka, atau dua Kasir berbeda kebetulan memproses refund untuk
+      // shift yang sama), qty yang direfund bisa melebihi qty yang
+      // sungguh dibayar tanpa terdeteksi — karena addDoc lama TIDAK
+      // PERNAH membaca ulang total refund sebelum menyimpan.
+      //
+      // Diperbaiki dengan runTransaction() ke SATU dokumen counter yang
+      // diketahui sebelumnya (nota_refund_counter/{shiftId}__{menuId}) —
+      // BUKAN meng-query ulang koleksi nota_refund (Firestore transaction
+      // tidak bisa membaca hasil query, hanya dokumen yang refnya sudah
+      // diketahui). Counter ini dibaca DAN ditulis di transaksi yang
+      // sama dengan pembuatan nota_refund-nya, jadi dua penyimpanan yang
+      // beririsan waktu dijamin Firestore tidak akan saling menimpa —
+      // salah satu akan otomatis diulang oleh SDK, atau gagal dengan
+      // pesan jelas di bawah kalau total sudah kepenuhan.
+      //
+      // Migrasi data lama: dokumen counter belum tentu ada untuk shift
+      // yang sudah punya riwayat Nota Refund dari SEBELUM perbaikan ini
+      // — kalau belum ada, dasarnya diambil dari `itemDipilih.sudahDirefund`
+      // (hasil getDocs saat memuat daftar menu) alih-alih dianggap 0,
+      // supaya refund lama tidak "hilang" dari hitungan sekali saja saat
+      // migrasi. Setelah itu counter menjadi satu-satunya sumber
+      // kebenaran yang otoritatif.
+      const counterRef = doc(
+        db,
+        "outlets",
+        outletId,
+        "nota_refund_counter",
+        `${shiftDipilih.id}__${itemDipilih.menuId}`,
+      );
+      const notaRefundRef = doc(collection(db, "outlets", outletId, "nota_refund"));
+
+      await runTransaction(db, async (tx) => {
+        const counterSnap = await tx.get(counterRef);
+        const sudahDirefundTerkini = counterSnap.exists()
+          ? (counterSnap.data().qtyDirefund ?? 0)
+          : itemDipilih.sudahDirefund;
+        const totalBaru = sudahDirefundTerkini + jumlah;
+        if (totalBaru > itemDipilih.qtyAsli) {
+          throw new Error(
+            `Refund melebihi batas — saat ini sudah ${sudahDirefundTerkini} dari ${itemDipilih.qtyAsli} "${itemDipilih.menuNama}" direfund (kemungkinan ada refund lain yang baru saja tersimpan). Muat ulang halaman untuk melihat sisa terkini.`,
+          );
+        }
+        tx.set(
+          counterRef,
+          { shiftId: shiftDipilih.id, menuId: itemDipilih.menuId, qtyDirefund: totalBaru },
+          { merge: true },
+        );
+        tx.set(notaRefundRef, {
+          shiftId: shiftDipilih.id,
+          tanggalTransaksiAsal: shiftDipilih.tanggal,
+          menuId: itemDipilih.menuId,
+          menuNama: itemDipilih.menuNama,
+          qty: jumlah,
+          hargaSatuanSaatTransaksi: itemDipilih.hargaSatuan,
+          totalRefund,
+          alasan: alasan === "Lainnya" ? alasanLainnya.trim() : alasan,
+          metode,
+          kasirUid: user.uid,
+          kasirNama: profil.nama,
+          tanggalRefund,
+          waktuDibuat: serverTimestamp(),
+        });
       });
 
       if (metode === "tunai") {

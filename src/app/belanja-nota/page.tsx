@@ -544,11 +544,16 @@ function TambahItemKartu({
         // Cermin stok_kasir ikut diperbarui (TANPA hargaSatuanTerakhir)
         // supaya Dashboard Kasir menampilkan stok yang benar — lihat
         // komentar keamanan di src/shared/lib/resep.ts.
+        // Pakai increment(qty) di sini (BUKAN bahanCocok.stokSaatIni + qty)
+        // supaya cermin ini tidak pernah meleset akibat state `bahanCocok`
+        // yang basi (mis. dua kali tambah stok bahan yang sama berturut-
+        // turut sebelum layar sempat disegarkan) — lihat catatan perbaikan
+        // di src/shared/lib/resep.ts.
         await setMirrorStokKasir(outletId, bahanCocok.id, {
           nama: bahanCocok.nama,
           kategori: bahanCocok.kategori,
           satuan,
-          stokSaatIni: bahanCocok.stokSaatIni + qty,
+          stokSaatIni: increment(qty),
           batasMinimalStok: bahanCocok.batasMinimalStok,
           aktif: true,
         });
@@ -802,11 +807,13 @@ function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
         stokSaatIni: increment(-jumlah),
         updatedAt: serverTimestamp(),
       });
+      // increment(-jumlah), bukan bahan.stokSaatIni - jumlah — lihat
+      // catatan perbaikan drift cermin stok di src/shared/lib/resep.ts.
       await setMirrorStokKasir(outletId, bahan.id, {
         nama: bahan.nama,
         kategori: bahan.kategori,
         satuan: bahan.satuan,
-        stokSaatIni: bahan.stokSaatIni - jumlah,
+        stokSaatIni: increment(-jumlah),
         batasMinimalStok: bahan.batasMinimalStok,
         aktif: bahan.aktif,
       });
@@ -959,11 +966,14 @@ function BatasMinimalStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
         batasMinimalStok: nilai,
         updatedAt: serverTimestamp(),
       });
+      // stokSaatIni SENGAJA tidak disertakan — kartu ini tidak pernah
+      // mengubah stok, jadi tidak boleh ikut menimpa cermin stok dengan
+      // nilai `bahan.stokSaatIni` yang mungkin sudah basi (lihat catatan
+      // di src/shared/lib/resep.ts).
       await setMirrorStokKasir(outletId, bahan.id, {
         nama: bahan.nama,
         kategori: bahan.kategori,
         satuan: bahan.satuan,
-        stokSaatIni: bahan.stokSaatIni,
         batasMinimalStok: nilai,
         aktif: bahan.aktif,
       });

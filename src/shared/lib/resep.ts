@@ -33,7 +33,7 @@
 // diubah di luar alur penjualan.
 // ============================================================
 
-import { collection, doc, getDocs, increment, setDoc, writeBatch } from "firebase/firestore";
+import { collection, doc, getDocs, increment, setDoc, writeBatch, type FieldValue } from "firebase/firestore";
 import { db } from "./firebase";
 import type { ResepItem, SatuanBahan } from "@/shared/types/inventaris";
 
@@ -92,6 +92,17 @@ export async function terapkanPerubahanStok(
  * belanja menambah stok, penyesuaian stok rusak/kedaluwarsa, atau
  * mengubah Batas Minimal Stok). TIDAK menyertakan hargaSatuanTerakhir
  * — itulah inti kerahasiaannya dari Kasir.
+ *
+ * PENTING (perbaikan bug drift cermin stok): `stokSaatIni` menerima
+ * NILAI ABSOLUT (number) HANYA untuk kasus yang memang tidak mengubah
+ * stok (mis. sekadar mengubah Batas Minimal Stok) atau membuat dokumen
+ * baru. Untuk pemanggil yang menambah/mengurangi stok akibat sebuah
+ * transaksi (Belanja menambah stok, Penyesuaian Stok mengurangi), WAJIB
+ * kirim hasil increment()/FieldValue di sini juga — SAMA seperti
+ * bahan_baku.stokSaatIni ditulis di baris sebelumnya — supaya cerminnya
+ * ikut "tulis tanpa baca" dan tidak pernah meleset akibat state lokal
+ * yang basi (mis. dua kali tambah stok cepat berurutan sebelum
+ * onSnapshot sempat menyegarkan data di layar).
  */
 export async function setMirrorStokKasir(
   outletId: string,
@@ -100,7 +111,12 @@ export async function setMirrorStokKasir(
     nama: string;
     kategori: string;
     satuan: SatuanBahan;
-    stokSaatIni: number;
+    // Opsional: pemanggil yang TIDAK mengubah stok (mis. hanya mengedit
+    // Batas Minimal Stok) sebaiknya tidak menyertakan field ini sama
+    // sekali, supaya setDoc({merge:true}) di bawah tidak pernah menimpa
+    // nilai stokSaatIni di cermin dengan angka basi — lihat pemanggil
+    // BatasMinimalStokKartu di src/app/belanja-nota/page.tsx.
+    stokSaatIni?: number | FieldValue;
     batasMinimalStok?: number;
     aktif: boolean;
   },
