@@ -40,6 +40,7 @@ import {
   bacaAlasanLogoutServer,
   langgananAlasanLogout,
 } from "@/shared/components/auto-logout";
+import { LatarInteraktif } from "@/shared/components/interactive-background";
 import { useAuth } from "@/shared/lib/auth-context";
 import { halamanBerandaPeran } from "@/shared/lib/role-home";
 import { useToast } from "@/shared/components/toast";
@@ -188,6 +189,7 @@ export default function LoginPage() {
   if (!loading && user && (!profil || !profil.aktif)) {
     return (
       <main className="mx-auto flex min-h-full max-w-sm flex-1 flex-col items-center justify-center px-4 py-16 text-center">
+        <LatarInteraktif />
         <p className="text-sm text-slate-700">
           Akun Anda berhasil masuk, tapi profil pengguna belum diaktifkan Owner
           di Archimax. Hubungi Owner untuk mengaktifkan akses Anda.
@@ -204,29 +206,30 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-700 to-emerald-500 text-lg font-bold text-white shadow-sm">
+    <main className="mx-auto flex h-dvh max-w-sm flex-col justify-center overflow-y-auto px-4 py-4">
+      <LatarInteraktif />
+      <div className="rounded-2xl border border-slate-200 bg-white/90 p-5 shadow-lg backdrop-blur-sm sm:p-6">
+        <div className="mb-5 text-center">
+          <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-700 to-emerald-500 text-base font-bold text-white shadow-sm">
             A
           </div>
           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
             ARCHIMAX
           </p>
           <p className="text-[11px] text-slate-400">Food n Beverages Lifestyle Accounting</p>
-          <h1 className="mt-1 text-2xl font-bold text-slate-900">Masuk Aplikasi</h1>
+          <h1 className="mt-0.5 text-xl font-bold text-slate-900">Masuk Aplikasi</h1>
         </div>
 
         {alasanLogout ? (
           <div
             role="status"
-            className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900"
+            className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900"
           >
             {alasanLogout}
           </div>
         ) : null}
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <div>
             <label htmlFor="pengenal" className="block text-sm font-semibold text-slate-800">
               Email atau Username
@@ -238,7 +241,7 @@ export default function LoginPage() {
               required
               value={pengenal}
               onChange={(event) => setPengenal(event.target.value)}
-              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
             />
           </div>
 
@@ -268,7 +271,7 @@ export default function LoginPage() {
               required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
             />
           </div>
 
@@ -277,7 +280,7 @@ export default function LoginPage() {
             disabled={sedangMasuk}
             aria-busy={sedangMasuk}
             className={[
-              "mt-1 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm",
+              "mt-1 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm",
               "motion-safe:transition motion-safe:duration-150",
               "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
               sedangMasuk
@@ -294,7 +297,7 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="my-5 flex items-center gap-3" role="separator" aria-label="atau">
+        <div className="my-4 flex items-center gap-3" role="separator" aria-label="atau">
           <span className="h-px flex-1 bg-slate-200" />
           <span className="text-xs font-medium text-slate-400">atau</span>
           <span className="h-px flex-1 bg-slate-200" />
@@ -306,7 +309,7 @@ export default function LoginPage() {
           disabled={sedangGoogle}
           aria-busy={sedangGoogle}
           className={[
-            "inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm",
+            "inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm",
             "motion-safe:transition motion-safe:duration-150 hover:bg-slate-50",
             "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
             sedangGoogle ? "cursor-not-allowed opacity-60" : "",
@@ -320,7 +323,7 @@ export default function LoginPage() {
           {sedangGoogle ? "Menghubungkan..." : "Masuk dengan Google"}
         </button>
 
-        <p className="mt-6 text-center text-xs text-slate-500">
+        <p className="mt-4 text-center text-xs text-slate-500">
           Akun dibuat oleh Owner lewat menu Kelola Akun — belum ada pendaftaran
           mandiri.
         </p>
