@@ -113,6 +113,12 @@ function KelolaAkunIsi() {
           <h2 id="bagian-daftar-akun" className="text-base font-semibold text-slate-900">
             Daftar Akun
           </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Kata sandi TIDAK ditampilkan di sini demi keamanan (tersimpan
+            terenkripsi, tidak bisa dibaca ulang oleh siapa pun termasuk
+            Owner) — kalau staff lupa kata sandi, gunakan tombol &quot;Lupa
+            Kata Sandi&quot; di halaman Login.
+          </p>
 
           {memuat ? (
             <div className="flex justify-center py-8">
@@ -361,16 +367,41 @@ function BarisAkun({ akun }: { akun: AkunStaff }) {
   }
 
   return (
-    <li className="flex items-center justify-between gap-3 py-3">
-      <div>
-        <p className="text-sm font-medium text-slate-900">{akun.nama}</p>
-        <p className="text-xs text-slate-500">
-          {akun.email}
-          {akun.username ? ` · @${akun.username}` : ""} · {LABEL_PERAN[akun.peran] ?? akun.peran}
-        </p>
+    <li className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-semibold text-slate-900">{akun.nama}</p>
+          <span
+            className={[
+              "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold",
+              akun.aktif ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600",
+            ].join(" ")}
+          >
+            {akun.aktif ? "Aktif" : "Nonaktif"}
+          </span>
+        </div>
+
+        {/* Setiap keterangan diberi label eksplisit (Email/Username/
+            Peran) — jangan digabung dengan "·" saja supaya jelas
+            fieldnya apa, terutama buat pengguna yang belum akrab
+            istilah teknis (permintaan pemilik cafe). */}
+        <dl className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-3">
+          <div className="flex gap-1.5">
+            <dt className="font-medium text-slate-400">Email:</dt>
+            <dd className="truncate">{akun.email}</dd>
+          </div>
+          <div className="flex gap-1.5">
+            <dt className="font-medium text-slate-400">Username:</dt>
+            <dd className="truncate">{akun.username ? `@${akun.username}` : "—"}</dd>
+          </div>
+          <div className="flex gap-1.5">
+            <dt className="font-medium text-slate-400">Peran:</dt>
+            <dd>{LABEL_PERAN[akun.peran] ?? akun.peran}</dd>
+          </div>
+        </dl>
       </div>
       {akun.peran === "superadmin" ? (
-        <span className="text-xs text-slate-400">Akun Owner</span>
+        <span className="shrink-0 text-xs text-slate-400">Akun Owner</span>
       ) : (
         <button
           type="button"
@@ -378,7 +409,7 @@ function BarisAkun({ akun }: { akun: AkunStaff }) {
           disabled={sedangUbah}
           aria-busy={sedangUbah}
           className={[
-            "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-sm",
+            "inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg px-3 py-1.5 text-xs font-semibold shadow-sm",
             "motion-safe:transition motion-safe:duration-150",
             "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2",
             akun.aktif

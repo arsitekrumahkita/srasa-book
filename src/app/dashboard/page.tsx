@@ -30,9 +30,13 @@ import {
   AlertTriangle,
   ArrowDownRight,
   ArrowUpRight,
+  Banknote,
   Bell,
   CalendarRange,
+  CreditCard,
   Loader2,
+  TrendingDown,
+  TrendingUp,
   TriangleAlert,
   Wallet,
 } from "lucide-react";
@@ -56,6 +60,7 @@ import { formatRupiah } from "@/shared/lib/format";
 import { useNotifikasiGabungan } from "@/shared/lib/notifikasi";
 import { hitungLabaHarian } from "@/shared/lib/laba-harian";
 import { ambilTren, LABEL_PERIODE_TREN, type PeriodeTren, type TitikTren } from "@/shared/lib/tren";
+import { ambilRingkasanPeriode, type RingkasanPeriode } from "@/shared/lib/produk-terlaris";
 
 interface SummaryHarian {
   totalOmset?: number;
@@ -134,14 +139,22 @@ function DashboardIsi() {
   const [memuatTren, setMemuatTren] = useState(true);
   const [errorTren, setErrorTren] = useState<string | null>(null);
 
-  useEffect(() => {
-    let dibatalkan = false;
-    const opsi =
+  // Opsi rentang custom dipakai BERSAMA oleh grafik Analitik Tren (di
+  // atas) DAN Rekap Metode Bayar + Best Seller/Slow Moving (baru) di
+  // bawah — supaya keduanya selalu menampilkan periode yang SAMA persis
+  // begitu Owner mengganti toggle Harian/Mingguan/Bulanan/Custom.
+  const opsiTren = useMemo(
+    () =>
       periodeTren === "custom-tanggal"
         ? { tanggalMulai: tanggalMulaiInput, tanggalSelesai: tanggalSelesaiInput }
         : periodeTren === "custom-bulan"
           ? { bulanMulai: bulanMulaiInput, bulanSelesai: bulanSelesaiInput }
-          : {};
+          : {},
+    [periodeTren, tanggalMulaiInput, tanggalSelesaiInput, bulanMulaiInput, bulanSelesaiInput],
+  );
+
+  useEffect(() => {
+    let dibatalkan = false;
     // setState "mulai memuat" SENGAJA ditunda satu microtask (bukan
     // dipanggil langsung di badan efek) — pola yang sama seperti
     // ambilDrafAsync di src/shared/lib/draf.ts, supaya dianggap
@@ -153,7 +166,7 @@ function DashboardIsi() {
         setErrorTren(null);
       }
     });
-    ambilTren(periodeTren, opsi)
+    ambilTren(periodeTren, opsiTren)
       .then((hasil) => {
         if (!dibatalkan) setDataTren(hasil);
       })
@@ -166,7 +179,37 @@ function DashboardIsi() {
     return () => {
       dibatalkan = true;
     };
-  }, [periodeTren, tanggalMulaiInput, tanggalSelesaiInput, bulanMulaiInput, bulanSelesaiInput]);
+  }, [periodeTren, opsiTren]);
+
+  // --- Rekap Metode Bayar (Tunai/Non-Tunai) + Best Seller/Slow Moving,
+  // untuk rentang PeriodeTren yang sama dengan grafik di atas (atas
+  // permintaan pemilik cafe: "diatur di grafik analitik tren"). ---
+  const [ringkasanPeriode, setRingkasanPeriode] = useState<RingkasanPeriode | null>(null);
+  const [memuatRingkasanPeriode, setMemuatRingkasanPeriode] = useState(true);
+  const [errorRingkasanPeriode, setErrorRingkasanPeriode] = useState<string | null>(null);
+
+  useEffect(() => {
+    let dibatalkan = false;
+    Promise.resolve().then(() => {
+      if (!dibatalkan) {
+        setMemuatRingkasanPeriode(true);
+        setErrorRingkasanPeriode(null);
+      }
+    });
+    ambilRingkasanPeriode(periodeTren, opsiTren)
+      .then((hasil) => {
+        if (!dibatalkan) setRingkasanPeriode(hasil);
+      })
+      .catch(() => {
+        if (!dibatalkan) setErrorRingkasanPeriode("Gagal memuat rekap metode bayar & produk untuk periode ini.");
+      })
+      .finally(() => {
+        if (!dibatalkan) setMemuatRingkasanPeriode(false);
+      });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [periodeTren, opsiTren]);
 
   // Banner Stok Menipis — kriteria "Batas Minimal Stok" ditentukan
   // manual per bahan (lihat Belanja & Nota / Kelola Produk). Owner/
@@ -275,7 +318,7 @@ function DashboardIsi() {
         </p>
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Ringkasan hari ini, tren 7 hari terakhir, dan aktivitas terbaru.
+          Ringkasan hari ini, analitik tren, dan aktivitas terbaru.
         </p>
       </header>
 
@@ -550,6 +593,108 @@ function DashboardIsi() {
                   </li>
                 ))}
               </ul>
+            </section>
+          </div>
+
+          {/* --- Rekap Metode Bayar + Best Seller/Slow Moving, mengikuti
+              periode yang sama dengan Analitik Tren di atas. --- */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h2 className="text-sm font-semibold text-slate-900">Rekap Metode Bayar</h2>
+              <p className="text-xs text-slate-500">{LABEL_PERIODE_TREN[periodeTren]}.</p>
+              {errorRingkasanPeriode ? (
+                <p className="mt-4 text-sm text-rose-600">{errorRingkasanPeriode}</p>
+              ) : memuatRingkasanPeriode ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
+                </div>
+              ) : (
+                <div className="mt-4 flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-3 rounded-lg bg-emerald-50 px-3 py-2.5">
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-emerald-800">
+                      <Banknote className="h-4 w-4" aria-hidden="true" />
+                      Tunai
+                    </span>
+                    <span className="font-semibold tabular-nums text-emerald-900">
+                      {formatRupiah(ringkasanPeriode?.omsetTunai ?? 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 rounded-lg bg-sky-50 px-3 py-2.5">
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-sky-800">
+                      <CreditCard className="h-4 w-4" aria-hidden="true" />
+                      Non-Tunai
+                    </span>
+                    <span className="font-semibold tabular-nums text-sky-900">
+                      {formatRupiah(ringkasanPeriode?.omsetNonTunai ?? 0)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Otomatis dari metode bayar yang Kasir pilih per item saat Input Penjualan. Rekap Omset
+                    total di kartu lain TIDAK terpengaruh — ini murni rincian tambahan.
+                  </p>
+                </div>
+              )}
+            </section>
+
+            <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+                <h2 className="text-sm font-semibold text-slate-900">Produk Terlaris</h2>
+              </div>
+              <p className="text-xs text-slate-500">{LABEL_PERIODE_TREN[periodeTren]}.</p>
+              {memuatRingkasanPeriode ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
+                </div>
+              ) : !ringkasanPeriode || ringkasanPeriode.terlaris.every((p) => p.qtyTerjual === 0) ? (
+                <p className="mt-4 text-sm text-slate-500">Belum ada penjualan di periode ini.</p>
+              ) : (
+                <ol className="mt-3 flex flex-col divide-y divide-slate-100">
+                  {ringkasanPeriode.terlaris.map((p, i) => (
+                    <li key={p.menuId} className="flex items-center justify-between gap-3 py-2 text-sm">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-[11px] font-semibold text-emerald-700">
+                          {i + 1}
+                        </span>
+                        <span className="truncate text-slate-800">{p.menuNama}</span>
+                      </span>
+                      <span className="shrink-0 font-medium tabular-nums text-slate-900">
+                        {p.qtyTerjual} pcs
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+
+            <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-center gap-2">
+                <TrendingDown className="h-4 w-4 text-amber-700" aria-hidden="true" />
+                <h2 className="text-sm font-semibold text-slate-900">Produk Kurang Laris</h2>
+              </div>
+              <p className="text-xs text-slate-500">{LABEL_PERIODE_TREN[periodeTren]}.</p>
+              {memuatRingkasanPeriode ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
+                </div>
+              ) : !ringkasanPeriode || ringkasanPeriode.kurangLaris.length === 0 ? (
+                <p className="mt-4 text-sm text-slate-500">Belum ada data menu untuk periode ini.</p>
+              ) : (
+                <ul className="mt-3 flex flex-col divide-y divide-slate-100">
+                  {ringkasanPeriode.kurangLaris.map((p) => (
+                    <li key={p.menuId} className="flex items-center justify-between gap-3 py-2 text-sm">
+                      <span className="truncate text-slate-800">{p.menuNama}</span>
+                      <span
+                        className={`shrink-0 font-medium tabular-nums ${
+                          p.qtyTerjual === 0 ? "text-amber-700" : "text-slate-900"
+                        }`}
+                      >
+                        {p.qtyTerjual === 0 ? "Tidak laku" : `${p.qtyTerjual} pcs`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
           </div>
 

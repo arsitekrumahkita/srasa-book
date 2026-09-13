@@ -84,8 +84,13 @@ interface NotaItem {
 interface BelanjaAktif {
   id: string;
   modalDiberikan: number;
+  sumberDana: "kas_resto" | "saldo_finance";
   status: "terbuka" | "selesai" | "terkunci";
 }
+
+/** ID dokumen tunggal Saldo Deposito Finance — sama dengan
+ *  src/app/transaksi-finance/page.tsx (ID_SALDO_FINANCE). */
+const ID_SALDO_FINANCE = "utama";
 
 const AMBANG_KENAIKAN_HARGA = 0.1; // 10%, sesuai PRD 9.3
 
@@ -113,7 +118,20 @@ function BelanjaNotaIsi() {
   const [memuat, setMemuat] = useState(true);
   const [belanjaAktif, setBelanjaAktif] = useState<BelanjaAktif | null>(null);
   const [modalDiberikan, setModalDiberikan] = useState(0);
+  const [sumberDana, setSumberDana] = useState<"kas_resto" | "saldo_finance">("kas_resto");
   const [sedangMulai, setSedangMulai] = useState(false);
+
+  // Saldo Deposito Finance TERKINI — dibaca di sini supaya Purchasing
+  // tahu sisa saldo SEBELUM memilih "Saldo Finance" sebagai sumber dana
+  // (lihat firestore.rules bagian saldo_finance: Purchasing sengaja
+  // diberi baca, bukan Kasir, khusus untuk kebutuhan ini).
+  const [saldoFinance, setSaldoFinance] = useState(0);
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "saldo_finance", ID_SALDO_FINANCE), (snap) => {
+      setSaldoFinance(snap.exists() ? (snap.data().saldo ?? 0) : 0);
+    });
+    return unsub;
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -133,6 +151,7 @@ function BelanjaNotaIsi() {
           setBelanjaAktif({
             id: d.id,
             modalDiberikan: d.data().modalDiberikan ?? 0,
+            sumberDana: (d.data().sumberDana ?? "kas_resto") as "kas_resto" | "saldo_finance",
             status: "terbuka",
           });
         }
@@ -145,6 +164,19 @@ function BelanjaNotaIsi() {
 
   async function handleMulaiBelanja() {
     if (!user || !profil) return;
+    // Sumber dana "Saldo Finance" (deposito di luar Omset — permintaan
+    // pemilik cafe) WAJIB cukup SEBELUM belanja dimulai, supaya saldo
+    // tidak pernah minus. firestore.rules menegakkan ini juga di level
+    // database (saldo_finance.saldo >= 0), pengecekan di sini murni
+    // supaya Purchasing dapat pesan error yang jelas lebih dulu.
+    if (sumberDana === "saldo_finance" && modalDiberikan > saldoFinance) {
+      showToast(
+        "error",
+        `Saldo Finance tidak cukup — sisa saldo ${formatRupiah(saldoFinance)}, kurang dari ${formatRupiah(modalDiberikan)} yang diminta.`,
+      );
+      return;
+    }
+
     setSedangMulai(true);
     try {
       await addDoc(collection(db, "kas_belanja"), {
@@ -152,11 +184,26 @@ function BelanjaNotaIsi() {
         purchasingUid: user.uid,
         purchasingNama: profil.nama,
         modalDiberikan,
+        sumberDana,
         totalBelanja: 0,
         sisaKas: modalDiberikan,
         status: "terbuka",
       });
-      showToast("success", `Belanja hari ini dimulai dengan kas ${formatRupiah(modalDiberikan)}.`);
+
+      if (sumberDana === "saldo_finance") {
+        await setDoc(
+          doc(db, "saldo_finance", ID_SALDO_FINANCE),
+          { saldo: increment(-modalDiberikan) },
+          { merge: true },
+        );
+      }
+
+      showToast(
+        "success",
+        `Belanja hari ini dimulai dengan kas ${formatRupiah(modalDiberikan)} (${
+          sumberDana === "saldo_finance" ? "Saldo Finance" : "Kas Resto/Outlet"
+        }).`,
+      );
     } catch (error) {
       showToast(
         "error",
@@ -191,6 +238,39 @@ function BelanjaNotaIsi() {
             onChange={setModalDiberikan}
             prefix="Rp"
           />
+
+          <div className="mt-4">
+            <span className="block text-sm font-semibold text-slate-800">Sumber Dana</span>
+            <div className="mt-1.5 grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                onClick={() => setSumberDana("kas_resto")}
+                className={`min-h-11 rounded-lg border px-3 text-left text-sm font-medium motion-safe:transition active:scale-[0.99] ${
+                  sumberDana === "kas_resto"
+                    ? "border-emerald-600 bg-emerald-50 text-emerald-900"
+                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                Kas Resto / Outlet
+              </button>
+              <button
+                type="button"
+                onClick={() => setSumberDana("saldo_finance")}
+                className={`min-h-11 rounded-lg border px-3 text-left text-sm font-medium motion-safe:transition active:scale-[0.99] ${
+                  sumberDana === "saldo_finance"
+                    ? "border-emerald-600 bg-emerald-50 text-emerald-900"
+                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                Saldo Finance <span className="font-normal text-slate-500">(sisa {formatRupiah(saldoFinance)})</span>
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-slate-500">
+              Saldo Finance adalah dana khusus dari Owner di luar Omset penjualan — dikelola Finance lewat
+              menu Transaksi Finance.
+            </p>
+          </div>
+
           <button
             type="button"
             onClick={handleMulaiBelanja}
@@ -217,10 +297,24 @@ function BelanjaNotaIsi() {
     );
   }
 
-  return <BelanjaBerjalan belanjaId={belanjaAktif.id} modalDiberikan={belanjaAktif.modalDiberikan} />;
+  return (
+    <BelanjaBerjalan
+      belanjaId={belanjaAktif.id}
+      modalDiberikan={belanjaAktif.modalDiberikan}
+      sumberDana={belanjaAktif.sumberDana}
+    />
+  );
 }
 
-function BelanjaBerjalan({ belanjaId, modalDiberikan }: { belanjaId: string; modalDiberikan: number }) {
+function BelanjaBerjalan({
+  belanjaId,
+  modalDiberikan,
+  sumberDana,
+}: {
+  belanjaId: string;
+  modalDiberikan: number;
+  sumberDana: "kas_resto" | "saldo_finance";
+}) {
   const [daftarBahan, setDaftarBahan] = useState<BahanBaku[]>([]);
   const [itemBelanja, setItemBelanja] = useState<ItemBelanja[]>([]);
   const [notaList, setNotaList] = useState<NotaItem[]>([]);
@@ -283,6 +377,9 @@ function BelanjaBerjalan({ belanjaId, modalDiberikan }: { belanjaId: string; mod
             SRASA BOOK
           </p>
           <h1 className="text-2xl font-bold text-slate-900">Belanja & Nota</h1>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Sumber dana: {sumberDana === "saldo_finance" ? "Saldo Finance" : "Kas Resto/Outlet"}
+          </p>
         </div>
         <div className="text-right">
           <p className="text-xs text-slate-500">Sisa Kas</p>

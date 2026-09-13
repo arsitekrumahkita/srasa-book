@@ -383,6 +383,84 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------
+    // SECTION: nota_refund — refund lintas hari/shift yang SUDAH
+    // ditutup/terkunci (beda dengan qtyRefund cepat di
+    // shift/{id}/penjualan yang hanya untuk shift hari ini yang
+    // masih berjalan — lihat komentar src/app/shift/page.tsx).
+    //
+    // Dipakai saat customer baru komplain setelah shift asalnya
+    // ditutup (bisa beda hari). Bahan baku TIDAK disentuh sama
+    // sekali di sini (sudah terpakai & tidak dikembalikan ke stok,
+    // sama seperti qtyRefund) — dokumen ini murni catatan finansial
+    // + jejak audit yang merujuk ke shift/menu asal, dibaca
+    // hitungLabaHarian() untuk mengurangi Omset pada TANGGAL REFUND
+    // terjadi (bukan mengedit ulang laporan hari transaksi asli yang
+    // sudah final).
+    //
+    // Kasir boleh MEMBUAT sendiri (atas permintaan pemilik cafe:
+    // tanpa approval Owner, supaya operasional tetap cepat), tapi
+    // TIDAK BOLEH mengubah/menghapusnya lagi setelah dibuat — jaga
+    // integritas jejak audit, sama seperti riwayat_harga & tanggungan_kasir.
+    // ------------------------------------------------------------
+
+    match /nota_refund/{refundId} {
+      allow read: if isSuperadmin()
+        || (isKasir() && resource.data.kasirUid == request.auth.uid);
+      allow create: if isKasir() && request.resource.data.kasirUid == request.auth.uid;
+      allow update, delete: if isSuperadmin();
+    }
+
+    // ------------------------------------------------------------
+    // SECTION: saldo_finance & transaksi_finance — Deposito Finance
+    // (permintaan pemilik cafe): sumber dana yang SENGAJA dipisah dari
+    // uang hasil penjualan (Omset) — dipakai untuk Gaji Karyawan, Biaya
+    // Operasional yang diinput Finance, dan modal belanja Purchasing
+    // kalau memilih sumber "Saldo Finance" (lihat kas_belanja di bawah).
+    //
+    // NUANSA AKSES KHUSUS di sini (beda dari seluruh rules lain di
+    // berkas ini): peran "finance" biasanya setara PENUH dengan
+    // superadmin (lihat isSuperadmin()) — TAPI untuk domain Deposito
+    // Finance ini, Owner (superadmin) SENGAJA hanya boleh MEMBACA/
+    // memantau, TIDAK BOLEH mengeksekusi Uang Masuk/Keluar sama sekali
+    // (atas permintaan eksplisit pemilik cafe: "Owner tidak bisa").
+    // Itulah kenapa create/update/delete di sini memakai isFinance()
+    // sendirian, BUKAN isSuperadmin(). UI (src/app/transaksi-finance/
+    // page.tsx) juga menyembunyikan tombolnya untuk Owner, tapi rules
+    // inilah yang menegakkannya sungguhan.
+    // ------------------------------------------------------------
+
+    match /saldo_finance/{dokId} {
+      // Purchasing SENGAJA diberi baca (bukan Kasir) — perlu tahu sisa
+      // saldo untuk memutuskan sumber dana saat "Mulai Belanja" (lihat
+      // kas_belanja di bawah), sebelum memilih "Saldo Finance".
+      allow read: if isSuperadmin() || isPurchasing();
+      allow create: if isSuperadmin() || isFinance();
+
+      // Purchasing HANYA boleh MENGURANGI saldo (lewat increment negatif
+      // saat memilih sumber "Saldo Finance" ke kas_belanja), TIDAK
+      // PERNAH field lain. Finance boleh menambah ATAU mengurangi
+      // (Tambah Dana / transaksi keluar). Kedua jalur non-Owner ini
+      // WAJIB menjaga saldo tidak pernah minus (request.resource.data
+      // di rules mencerminkan nilai SETELAH increment() diterapkan,
+      // jadi validasi ini sungguhan menegakkan batas, bukan sekadar
+      // client-side). Owner (superadmin) tetap dapat admin override
+      // penuh tanpa batas minus itu, untuk koreksi data.
+      allow update: if isSuperadmin()
+        || ((isFinance() || isPurchasing())
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["saldo"])
+            && request.resource.data.saldo >= 0);
+    }
+
+    match /transaksi_finance/{transaksiId} {
+      allow read: if isSuperadmin();
+      allow create: if isFinance() && request.resource.data.financeUid == request.auth.uid;
+      // SENGAJA isFinance() saja (bukan isSuperadmin()) — koreksi/hapus
+      // transaksi Deposito Finance juga termasuk "uang masuk/keluar"
+      // yang tidak boleh dieksekusi Owner, sesuai permintaan di atas.
+      allow update, delete: if isFinance();
+    }
+
+    // ------------------------------------------------------------
     // SECTION: catatan_owner & backup_log — Owner-only sepenuhnya
     // ------------------------------------------------------------
 

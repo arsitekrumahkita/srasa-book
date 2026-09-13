@@ -26,10 +26,12 @@ import { signOut } from "firebase/auth";
 import {
   Bell,
   History,
+  Landmark,
   LayoutDashboard,
   LogOut,
   Menu,
   Package,
+  RotateCcw,
   ShoppingBasket,
   UserRound,
   Users,
@@ -61,6 +63,15 @@ const NAV_ITEMS: NavItem[] = [
   },
   { href: "/shift", label: "Shift", icon: Wallet, peran: ["kasir"] },
   {
+    href: "/refund",
+    label: "Refund",
+    icon: RotateCcw,
+    // Untuk transaksi dari shift yang SUDAH ditutup/hari lain — beda
+    // dengan stepper Refund cepat di halaman Shift (khusus shift hari
+    // ini yang masih berjalan). Lihat src/app/refund/page.tsx.
+    peran: ["kasir"],
+  },
+  {
     href: "/belanja-nota",
     label: "Belanja & Nota",
     icon: ShoppingBasket,
@@ -73,6 +84,16 @@ const NAV_ITEMS: NavItem[] = [
     peran: ["superadmin", "finance"],
   },
   { href: "/riwayat", label: "Riwayat", icon: History, peran: ["superadmin", "finance"] },
+  {
+    href: "/transaksi-finance",
+    label: "Transaksi Finance",
+    icon: Landmark,
+    // Owner (superadmin) TETAP bisa membuka & memantau halaman ini
+    // (saldo & riwayat) — yang dibatasi hanya EKSEKUSI Uang Masuk/
+    // Keluar-nya (khusus akun Finance), lihat firestore.rules bagian
+    // saldo_finance/transaksi_finance & src/app/transaksi-finance/page.tsx.
+    peran: ["superadmin", "finance"],
+  },
   {
     href: "/kelola-akun",
     label: "Kelola Akun",

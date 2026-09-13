@@ -104,6 +104,7 @@ function RiwayatIsi() {
 
       <div className="mb-6 flex flex-col gap-6">
         <TanggunganKasirKartu />
+        <RiwayatRefundKartu />
         <EksporLaporanKartu daftarShift={daftarShift} />
         <HitungUlangLabaKartu />
       </div>
@@ -264,6 +265,90 @@ function TanggunganKasirKartu() {
               ) : null}
               Tandai Lunas
             </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+interface RiwayatNotaRefund {
+  id: string;
+  tanggalTransaksiAsal: string;
+  tanggalRefund: string;
+  menuNama: string;
+  qty: number;
+  totalRefund: number;
+  alasan: string;
+  metode: "tunai" | "non_tunai";
+  kasirNama: string;
+}
+
+/**
+ * Riwayat Nota Refund — jejak audit SEMUA refund lintas shift/hari
+ * (src/app/refund/page.tsx), khusus untuk Owner/Finance melihat POLA
+ * dan ALASAN refund terjadi (rasa tidak sesuai, salah pesan Kasir,
+ * dll). Kasir sengaja tidak butuh approval untuk membuat Nota Refund
+ * (atas permintaan pemilik cafe, supaya operasional tetap cepat) —
+ * jejak transparansi untuk Owner justru ada DI SINI, bukan di alur
+ * approval sebelum refund terjadi.
+ */
+function RiwayatRefundKartu() {
+  const [daftar, setDaftar] = useState<RiwayatNotaRefund[]>([]);
+  const [memuat, setMemuat] = useState(true);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "nota_refund"), orderBy("waktuDibuat", "desc")),
+      (snap) => {
+        setDaftar(
+          snap.docs.slice(0, 50).map((d) => ({
+            id: d.id,
+            tanggalTransaksiAsal: d.data().tanggalTransaksiAsal ?? "",
+            tanggalRefund: d.data().tanggalRefund ?? "",
+            menuNama: d.data().menuNama ?? "",
+            qty: d.data().qty ?? 0,
+            totalRefund: d.data().totalRefund ?? 0,
+            alasan: d.data().alasan ?? "",
+            metode: (d.data().metode ?? "tunai") as "tunai" | "non_tunai",
+            kasirNama: d.data().kasirNama ?? "",
+          })),
+        );
+        setMemuat(false);
+      },
+      () => setMemuat(false),
+    );
+    return unsub;
+  }, []);
+
+  if (memuat || daftar.length === 0) return null;
+
+  return (
+    <section
+      aria-labelledby="bagian-refund"
+      className="kartu-interaktif rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2 id="bagian-refund" className="text-base font-semibold text-slate-900">
+        Riwayat Nota Refund (50 terbaru)
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Refund transaksi dari shift yang sudah ditutup/hari lain — bukan Bonus/Refund cepat di shift
+        yang masih berjalan (itu sudah tercermin langsung di Omset shift terkait).
+      </p>
+      <ul className="mt-3 flex flex-col divide-y divide-slate-100">
+        {daftar.map((r) => (
+          <li key={r.id} className="py-2.5 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <p className="font-medium text-slate-900">
+                {r.menuNama} × {r.qty}
+              </p>
+              <p className="font-semibold tabular-nums text-rose-700">{formatRupiah(r.totalRefund)}</p>
+            </div>
+            <p className="text-xs text-slate-500">
+              Transaksi asal {r.tanggalTransaksiAsal} · direfund {r.tanggalRefund} oleh {r.kasirNama} ·{" "}
+              {r.metode === "tunai" ? "Tunai" : "Non-tunai"}
+            </p>
+            <p className="text-xs text-slate-500">Alasan: {r.alasan}</p>
           </li>
         ))}
       </ul>

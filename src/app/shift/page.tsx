@@ -56,7 +56,18 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { Loader2, Minus, Plus, Save, TriangleAlert } from "lucide-react";
+import {
+  Banknote,
+  ChevronDown,
+  CreditCard,
+  Gift,
+  Loader2,
+  Minus,
+  Plus,
+  RotateCcw,
+  Save,
+  TriangleAlert,
+} from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
@@ -68,9 +79,10 @@ import { ambilResepMenu, terapkanPerubahanStok } from "@/shared/lib/resep";
 import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
 import type { ResepItem } from "@/shared/types/inventaris";
 
-/** Isi draf otomatis untuk form Tutup Shift (lihat TutupShiftKartu). */
+/** Isi draf otomatis untuk form Tutup Shift (lihat TutupShiftKartu).
+ *  Omset Non-Tunai TIDAK ADA lagi di sini — sekarang dihitung otomatis
+ *  dari input penjualan per item, tidak perlu didraf manual lagi. */
 interface IsiDrafTutupShift {
-  omsetNonTunai: number;
   kasFisik: number;
   keteranganSelisih: string;
 }
@@ -88,7 +100,39 @@ interface PenjualanItem {
   menuId: string;
   menuNama: string;
   kategori: string;
+  /** Qty REGULER dibayar TUNAI. qty (total reguler, dipakai HPP/Bonus/
+   *  Refund) = qtyTunai + qtyNonTunai — dipisah atas permintaan pemilik
+   *  cafe supaya Rekap Metode Bayar di Dashboard akurat per transaksi,
+   *  bukan tebakan manual di akhir shift seperti sebelumnya. */
+  qtyTunai: number;
+  /** Qty REGULER dibayar NON-TUNAI (QRIS/kartu/transfer). */
+  qtyNonTunai: number;
+  /** Total qty REGULER (bayar penuh) = qtyTunai + qtyNonTunai —
+   *  satu-satunya yang menyumbang Omset. Dipertahankan sebagai field
+   *  turunan (bukan dihitung ulang di klien tiap saat) supaya kode
+   *  Bonus/Refund/HPP yang sudah ada TIDAK PERLU tahu soal pemisahan
+   *  metode bayar sama sekali. */
   qty: number;
+  /** Subtotal dari qtyTunai saja. subtotal (total) = subtotalTunai +
+   *  subtotalNonTunai. */
+  subtotalTunai: number;
+  /** Subtotal dari qtyNonTunai saja. */
+  subtotalNonTunai: number;
+  /** Bonus/Gratis (promo bonus pembelian dsb.) — bahan baku tetap
+   *  berkurang seperti biasa, tapi TIDAK menyumbang Omset sama sekali
+   *  (subtotal-nya selalu 0), supaya Kasir tidak bingung melihat angka
+   *  minus di Total Omset akibat "menggratiskan" produk. Tidak terikat
+   *  metode bayar (memang tidak ada uang yang dibayar). */
+  qtyBonus: number;
+  /** Refund (uang sudah dikembalikan ke pembeli) — mengurangi Omset
+   *  (dipindah dari salah satu bucket qtyTunai/qtyNonTunai — lihat
+   *  ubahQtyRefund), TAPI bahan baku TIDAK dikembalikan ke stok karena
+   *  produknya sudah terlanjur dibuat/dipakai. */
+  qtyRefund: number;
+  /** Dari berapa unit qtyRefund yang sumbernya bucket Non-Tunai (sisanya
+   *  dari Tunai) — dipakai supaya "batalkan refund" tahu persis bucket
+   *  mana yang harus dikembalikan. Lihat komentar ubahQtyRefund. */
+  qtyRefundNonTunai: number;
   hargaJualSnapshot: number;
   subtotal: number;
 }
@@ -106,10 +150,19 @@ interface ShiftAktif {
   status: "buka" | "tutup" | "terkunci";
 }
 
+// "Wifi"/"Listrik"/"PDAM (Air)" SENGAJA eksplisit (bukan cuma "Utilitas"
+// generik) — Biaya Operasional yang diinput Kasir di sini (permintaan
+// pemilik cafe), potong dari kas shift berjalan seperti Kas Keluar
+// lainnya. Beda dengan Biaya Operasional yang diinput Finance lewat
+// /transaksi-finance, yang potong Saldo Deposito Finance, bukan kas
+// shift — dua jalur terpisah tapi kategori yang sama, tergantung siapa
+// yang input (lihat README).
 const KATEGORI_KAS_KELUAR = [
+  "Wifi",
+  "Listrik",
+  "PDAM (Air)",
   "Perlengkapan",
   "Kebersihan",
-  "Utilitas",
   "Bahan Baku Darurat",
   "Lainnya",
 ] as const;
@@ -284,6 +337,18 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
   // ada di memori) — selisihnya diam-diam dan tidak akan pernah
   // ketahuan. Lebih baik tombolnya nonaktif sepersekian detik.
   const [resepSiap, setResepSiap] = useState(false);
+  // Menu mana saja yang panel Bonus/Refund-nya sedang dibuka — SENGAJA
+  // per-item (bukan satu toggle global), supaya Kasir bisa mengintip
+  // beberapa menu sekaligus tanpa opsi lain tertutup tiba-tiba.
+  const [itemDiperluas, setItemDiperluas] = useState<Set<string>>(new Set());
+  function toggleDiperluas(menuId: string) {
+    setItemDiperluas((prev) => {
+      const next = new Set(prev);
+      if (next.has(menuId)) next.delete(menuId);
+      else next.add(menuId);
+      return next;
+    });
+  }
 
   useEffect(() => {
     const unsubMenu = onSnapshot(
@@ -325,7 +390,14 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
             menuId: d.data().menuId,
             menuNama: d.data().menuNama,
             kategori: d.data().kategori ?? "Umum",
+            qtyTunai: d.data().qtyTunai ?? 0,
+            qtyNonTunai: d.data().qtyNonTunai ?? 0,
             qty: d.data().qty ?? 0,
+            subtotalTunai: d.data().subtotalTunai ?? 0,
+            subtotalNonTunai: d.data().subtotalNonTunai ?? 0,
+            qtyBonus: d.data().qtyBonus ?? 0,
+            qtyRefund: d.data().qtyRefund ?? 0,
+            qtyRefundNonTunai: d.data().qtyRefundNonTunai ?? 0,
             hargaJualSnapshot: d.data().hargaJualSnapshot ?? 0,
             subtotal: d.data().subtotal ?? 0,
           })),
@@ -358,12 +430,30 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
     () => penjualan.reduce((total, item) => total + item.subtotal, 0),
     [penjualan],
   );
+  const totalOmsetTunai = useMemo(
+    () => penjualan.reduce((total, item) => total + item.subtotalTunai, 0),
+    [penjualan],
+  );
+  const totalOmsetNonTunai = useMemo(
+    () => penjualan.reduce((total, item) => total + item.subtotalNonTunai, 0),
+    [penjualan],
+  );
   const totalKasKeluar = useMemo(
     () => kasKeluar.reduce((total, item) => total + item.nominal, 0),
     [kasKeluar],
   );
 
-  async function ubahQty(item: MenuHarga, delta: number) {
+  /**
+   * Input Penjualan reguler — kini WAJIB memilih metode bayar per unit
+   * (Tunai atau Non-Tunai/QRIS), atas permintaan pemilik cafe: kalau
+   * hari ini Kopi laku 16pcs (10 QRIS + 6 Tunai), keduanya dicatat
+   * terpisah supaya Rekap Metode Bayar di Dashboard akurat per
+   * transaksi. Rekap Omset & seluruh kalkulasi keuangan lain TETAP
+   * GLOBAL/tidak berubah — `qty` & `subtotal` total tetap dijaga sama
+   * persis seperti sebelum fitur ini ada (lihat komentar interface
+   * PenjualanItem), jadi Bonus/Refund/HPP tidak perlu diubah sama sekali.
+   */
+  async function ubahQtyReguler(item: MenuHarga, delta: number, metode: "tunai" | "nonTunai") {
     const existing = penjualan.find((p) => p.menuId === item.id);
     try {
       if (!existing) {
@@ -372,25 +462,53 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
           menuId: item.id,
           menuNama: item.nama,
           kategori: item.kategori,
+          qtyTunai: metode === "tunai" ? delta : 0,
+          qtyNonTunai: metode === "nonTunai" ? delta : 0,
           qty: delta,
+          subtotalTunai: metode === "tunai" ? item.hargaJual * delta : 0,
+          subtotalNonTunai: metode === "nonTunai" ? item.hargaJual * delta : 0,
+          qtyBonus: 0,
+          qtyRefund: 0,
+          qtyRefundNonTunai: 0,
           hargaJualSnapshot: item.hargaJual,
           subtotal: item.hargaJual * delta,
         });
       } else {
-        const qtyBaru = existing.qty + delta;
-        if (qtyBaru <= 0) {
-          await setDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
-            menuId: item.id,
-            menuNama: item.nama,
-            kategori: item.kategori,
-            qty: 0,
-            hargaJualSnapshot: item.hargaJual,
-            subtotal: 0,
+        const qtyBucketLama = metode === "tunai" ? existing.qtyTunai : existing.qtyNonTunai;
+        const bucketBaru = qtyBucketLama + delta;
+        const perubahanSubtotal = item.hargaJual * delta;
+        if (bucketBaru <= 0) {
+          // Turun ke 0 atau kurang -> di-set 0 secara eksplisit (bukan
+          // increment), supaya tidak pernah minus akibat klik cepat
+          // berulang saat qty sedang di angka kecil.
+          if (metode === "tunai") {
+            await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+              qtyTunai: 0,
+              subtotalTunai: 0,
+              qty: increment(-qtyBucketLama),
+              subtotal: increment(-qtyBucketLama * item.hargaJual),
+            });
+          } else {
+            await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+              qtyNonTunai: 0,
+              subtotalNonTunai: 0,
+              qty: increment(-qtyBucketLama),
+              subtotal: increment(-qtyBucketLama * item.hargaJual),
+            });
+          }
+        } else if (metode === "tunai") {
+          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            qtyTunai: increment(delta),
+            subtotalTunai: increment(perubahanSubtotal),
+            qty: increment(delta),
+            subtotal: increment(perubahanSubtotal),
           });
         } else {
           await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            qtyNonTunai: increment(delta),
+            subtotalNonTunai: increment(perubahanSubtotal),
             qty: increment(delta),
-            subtotal: increment(item.hargaJual * delta),
+            subtotal: increment(perubahanSubtotal),
           });
         }
       }
@@ -398,7 +516,8 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
       // Kurangi (atau kembalikan, bila delta negatif) stok gudang
       // otomatis lewat Resep menu ini — gagal-lunak: kalau menu belum
       // punya resep (Owner belum menyusunnya), stok gudang cukup
-      // diabaikan, penjualan tetap tercatat normal.
+      // diabaikan, penjualan tetap tercatat normal. Stok TIDAK peduli
+      // metode bayar, jadi logikanya sama persis seperti sebelumnya.
       const resep = resepPerMenu.get(item.id);
       if (resep && resep.length > 0) {
         terapkanPerubahanStok(resep, delta).catch(() => {
@@ -414,6 +533,151 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
         error instanceof Error
           ? `Gagal mencatat penjualan: ${error.message}`
           : "Gagal mencatat penjualan.",
+      );
+    }
+  }
+
+  /**
+   * Bonus/Gratis — produk keluar ke pembeli (mis. bonus promo
+   * pembelian) TANPA menyumbang Omset sama sekali, tapi bahan baku
+   * tetap berkurang seperti penjualan biasa (produknya sungguh dibuat
+   * dan diberikan). `subtotal` SENGAJA tidak pernah disentuh di sini —
+   * itulah yang membuat nilainya tidak "Full 100%" masuk ke Omset,
+   * jadi Kasir tidak akan pernah melihat Total Omset minus gara-gara
+   * mencatat produk gratis.
+   */
+  async function ubahQtyBonus(item: MenuHarga, delta: number) {
+    const existing = penjualan.find((p) => p.menuId === item.id);
+    try {
+      if (!existing) {
+        if (delta <= 0) return;
+        await setDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          menuId: item.id,
+          menuNama: item.nama,
+          kategori: item.kategori,
+          qtyTunai: 0,
+          qtyNonTunai: 0,
+          qty: 0,
+          subtotalTunai: 0,
+          subtotalNonTunai: 0,
+          qtyBonus: delta,
+          qtyRefund: 0,
+          qtyRefundNonTunai: 0,
+          hargaJualSnapshot: item.hargaJual,
+          subtotal: 0,
+        });
+      } else {
+        const bonusBaru = existing.qtyBonus + delta;
+        if (bonusBaru <= 0) {
+          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), { qtyBonus: 0 });
+        } else {
+          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            qtyBonus: increment(delta),
+          });
+        }
+      }
+
+      // Bahan baku tetap berkurang persis seperti penjualan reguler —
+      // produk Bonus/Gratis SUNGGUH dibuat & diberikan ke pembeli.
+      const resep = resepPerMenu.get(item.id);
+      if (resep && resep.length > 0) {
+        terapkanPerubahanStok(resep, delta).catch(() => {
+          showToast(
+            "error",
+            `Bonus tercatat, tapi stok gudang untuk "${item.nama}" gagal diperbarui otomatis.`,
+          );
+        });
+      }
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal mencatat bonus: ${error.message}` : "Gagal mencatat bonus.",
+      );
+    }
+  }
+
+  /**
+   * Refund — uang untuk 1 unit yang SUDAH tercatat sebagai qty reguler
+   * dikembalikan ke pembeli. Memindahkan 1 unit dari salah satu bucket
+   * metode bayar (`qtyTunai`/`qtyNonTunai`) ke `qtyRefund` (Omset
+   * berkurang senilai harga jual saat itu — pakai hargaJualSnapshot,
+   * bukan harga terkini), TAPI SENGAJA TIDAK memanggil
+   * terapkanPerubahanStok sama sekali — bahan baku produk itu sudah
+   * terlanjur dibuat/dipakai, jadi stok gudang TIDAK dikembalikan.
+   * Total unit (qty + qtyBonus + qtyRefund) tetap sama sebelum/sesudah,
+   * itulah yang menjaga stok gudang tidak ikut berubah.
+   *
+   * Kasir tidak diminta memilih metode bayar saat me-refund (refund
+   * biasanya terjadi cepat/mendadak) — bucket sumbernya dipilih
+   * OTOMATIS: Non-Tunai diutamakan dulu kalau ada, baru Tunai. Urutan
+   * yang SAMA dipakai saat membatalkan refund (qtyRefundNonTunai
+   * dicek lebih dulu), supaya "ambil lalu kembalikan" selalu konsisten
+   * mengembalikan ke bucket yang sama. Rekap Omset TOTAL tetap 100%
+   * akurat apa pun urutannya — hanya rincian Tunai/Non-Tunai yang
+   * memakai penyederhanaan ini.
+   *
+   * delta = 1 -> refund 1 unit (hanya boleh kalau qty reguler > 0).
+   * delta = -1 -> batalkan refund 1 unit (kembalikan ke qty reguler).
+   */
+  async function ubahQtyRefund(item: MenuHarga, delta: number) {
+    const existing = penjualan.find((p) => p.menuId === item.id);
+    if (!existing) return;
+    try {
+      if (delta > 0) {
+        if (existing.qty <= 0) {
+          showToast(
+            "error",
+            `Tidak bisa refund "${item.nama}" — qty reguler yang tercatat sudah 0.`,
+          );
+          return;
+        }
+        const dariNonTunai = existing.qtyNonTunai > 0;
+        if (dariNonTunai) {
+          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            qtyNonTunai: increment(-1),
+            subtotalNonTunai: increment(-existing.hargaJualSnapshot),
+            qtyRefundNonTunai: increment(1),
+            qty: increment(-1),
+            qtyRefund: increment(1),
+            subtotal: increment(-existing.hargaJualSnapshot),
+          });
+        } else {
+          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            qtyTunai: increment(-1),
+            subtotalTunai: increment(-existing.hargaJualSnapshot),
+            qty: increment(-1),
+            qtyRefund: increment(1),
+            subtotal: increment(-existing.hargaJualSnapshot),
+          });
+        }
+      } else {
+        if (existing.qtyRefund <= 0) return;
+        const dariNonTunai = existing.qtyRefundNonTunai > 0;
+        if (dariNonTunai) {
+          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            qtyNonTunai: increment(1),
+            subtotalNonTunai: increment(existing.hargaJualSnapshot),
+            qtyRefundNonTunai: increment(-1),
+            qty: increment(1),
+            qtyRefund: increment(-1),
+            subtotal: increment(existing.hargaJualSnapshot),
+          });
+        } else {
+          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            qtyTunai: increment(1),
+            subtotalTunai: increment(existing.hargaJualSnapshot),
+            qty: increment(1),
+            qtyRefund: increment(-1),
+            subtotal: increment(existing.hargaJualSnapshot),
+          });
+        }
+      }
+      // TIDAK ADA panggilan terapkanPerubahanStok di sini — itu poin
+      // utamanya (lihat komentar fungsi).
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal mencatat refund: ${error.message}` : "Gagal mencatat refund.",
       );
     }
   }
@@ -441,6 +705,9 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
           <p className="text-xs text-slate-500">Total Omset Berjalan</p>
           <p className="text-xl font-bold tabular-nums text-emerald-700">
             {formatRupiah(totalOmset)}
+          </p>
+          <p className="text-[11px] text-slate-400">
+            Tunai {formatRupiah(totalOmsetTunai)} · Non-Tunai {formatRupiah(totalOmsetNonTunai)}
           </p>
         </div>
       </header>
@@ -472,36 +739,186 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
                   </p>
                   <div className="flex flex-col divide-y divide-slate-100">
                     {items.map((item) => {
-                      const qty = penjualan.find((p) => p.menuId === item.id)?.qty ?? 0;
+                      const catatan = penjualan.find((p) => p.menuId === item.id);
+                      const qty = catatan?.qty ?? 0;
+                      const qtyTunai = catatan?.qtyTunai ?? 0;
+                      const qtyNonTunai = catatan?.qtyNonTunai ?? 0;
+                      const qtyBonus = catatan?.qtyBonus ?? 0;
+                      const qtyRefund = catatan?.qtyRefund ?? 0;
+                      const diperluas = itemDiperluas.has(item.id);
                       return (
-                        <div key={item.id} className="flex items-center justify-between gap-3 py-2.5">
-                          <div>
-                            <p className="text-sm font-medium text-slate-900">{item.nama}</p>
-                            <p className="text-xs text-slate-500">{formatRupiah(item.hargaJual)}</p>
-                          </div>
-                          <div className="flex items-center gap-3">
+                        <div key={item.id} className="flex flex-col gap-2 py-2.5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-slate-900">{item.nama}</p>
+                              <p className="text-xs text-slate-500">{formatRupiah(item.hargaJual)}</p>
+                              {qty > 0 || qtyBonus > 0 || qtyRefund > 0 ? (
+                                <p className="mt-0.5 text-[11px] text-slate-400">
+                                  {qty > 0 ? `Total terjual: ${qty}` : null}
+                                  {qty > 0 && (qtyBonus > 0 || qtyRefund > 0) ? " · " : null}
+                                  {qtyBonus > 0 ? `Bonus/Gratis: ${qtyBonus}` : null}
+                                  {qtyBonus > 0 && qtyRefund > 0 ? " · " : null}
+                                  {qtyRefund > 0 ? `Refund: ${qtyRefund}` : null}
+                                </p>
+                              ) : null}
+                            </div>
                             <button
                               type="button"
-                              onClick={() => ubahQty(item, -1)}
-                              disabled={qty <= 0 || !resepSiap}
-                              aria-label={`Kurangi ${item.nama}`}
-                              className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 text-slate-600 motion-safe:transition active:scale-95 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                              onClick={() => toggleDiperluas(item.id)}
+                              aria-label={`Opsi Bonus/Refund untuk ${item.nama}`}
+                              aria-expanded={diperluas}
+                              className={[
+                                "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-slate-400 motion-safe:transition active:scale-90 hover:bg-slate-100 hover:text-slate-600",
+                                diperluas ? "bg-slate-100 text-slate-600" : "",
+                              ].join(" ")}
                             >
-                              <Minus className="h-4 w-4" aria-hidden="true" />
-                            </button>
-                            <span className="w-6 text-center text-sm font-semibold tabular-nums text-slate-900">
-                              {qty}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => ubahQty(item, 1)}
-                              disabled={!resepSiap}
-                              aria-label={`Tambah ${item.nama}`}
-                              className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-emerald-600 text-white motion-safe:transition hover:bg-emerald-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              <Plus className="h-4 w-4" aria-hidden="true" />
+                              <ChevronDown
+                                className={`h-4 w-4 motion-safe:transition-transform ${diperluas ? "rotate-180" : ""}`}
+                                aria-hidden="true"
+                              />
                             </button>
                           </div>
+
+                          {/* Dua stepper metode bayar — INI alur input utama
+                              (bukan lagi satu stepper tunggal), atas permintaan
+                              pemilik cafe supaya "Kopi 10 QRIS + Kopi 6 Tunai"
+                              tercatat terpisah sejak awal, bukan direkap manual
+                              belakangan. */}
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-50/60 px-2.5 py-1.5">
+                              <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-800">
+                                <Banknote className="h-3.5 w-3.5" aria-hidden="true" />
+                                Tunai
+                              </span>
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => ubahQtyReguler(item, -1, "tunai")}
+                                  disabled={qtyTunai <= 0 || !resepSiap}
+                                  aria-label={`Kurangi ${item.nama} (Tunai)`}
+                                  className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-600 motion-safe:transition active:scale-95 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  <Minus className="h-4 w-4" aria-hidden="true" />
+                                </button>
+                                <span className="w-6 text-center text-sm font-semibold tabular-nums text-slate-900">
+                                  {qtyTunai}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => ubahQtyReguler(item, 1, "tunai")}
+                                  disabled={!resepSiap}
+                                  aria-label={`Tambah ${item.nama} (Tunai)`}
+                                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-emerald-600 text-white motion-safe:transition hover:bg-emerald-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  <Plus className="h-4 w-4" aria-hidden="true" />
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-2 rounded-lg bg-sky-50/60 px-2.5 py-1.5">
+                              <span className="flex items-center gap-1.5 text-xs font-medium text-sky-800">
+                                <CreditCard className="h-3.5 w-3.5" aria-hidden="true" />
+                                Non-Tunai
+                              </span>
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => ubahQtyReguler(item, -1, "nonTunai")}
+                                  disabled={qtyNonTunai <= 0 || !resepSiap}
+                                  aria-label={`Kurangi ${item.nama} (Non-Tunai)`}
+                                  className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-600 motion-safe:transition active:scale-95 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  <Minus className="h-4 w-4" aria-hidden="true" />
+                                </button>
+                                <span className="w-6 text-center text-sm font-semibold tabular-nums text-slate-900">
+                                  {qtyNonTunai}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => ubahQtyReguler(item, 1, "nonTunai")}
+                                  disabled={!resepSiap}
+                                  aria-label={`Tambah ${item.nama} (Non-Tunai)`}
+                                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-sky-600 text-white motion-safe:transition hover:bg-sky-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  <Plus className="h-4 w-4" aria-hidden="true" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {diperluas ? (
+                            <div className="animasi-masuk-halus flex flex-col gap-3 rounded-xl bg-slate-50 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                                    <Gift className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                                    Bonus / Gratis
+                                  </p>
+                                  <p className="text-[11px] text-slate-500">
+                                    Promo bonus pembelian — bahan tetap berkurang, TIDAK menambah Omset.
+                                  </p>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => ubahQtyBonus(item, -1)}
+                                    disabled={qtyBonus <= 0 || !resepSiap}
+                                    aria-label={`Kurangi Bonus ${item.nama}`}
+                                    className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-600 motion-safe:transition active:scale-95 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Minus className="h-3.5 w-3.5" aria-hidden="true" />
+                                  </button>
+                                  <span className="w-5 text-center text-sm font-semibold tabular-nums text-slate-900">
+                                    {qtyBonus}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => ubahQtyBonus(item, 1)}
+                                    disabled={!resepSiap}
+                                    aria-label={`Tambah Bonus ${item.nama}`}
+                                    className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-700 text-white motion-safe:transition hover:bg-slate-800 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
+                                <div className="min-w-0">
+                                  <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                                    <RotateCcw className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                                    Refund
+                                  </p>
+                                  <p className="text-[11px] text-slate-500">
+                                    Uang dikembalikan ke pembeli — mengurangi Omset, bahan TIDAK dikembalikan ke stok.
+                                  </p>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => ubahQtyRefund(item, -1)}
+                                    disabled={qtyRefund <= 0}
+                                    aria-label={`Batalkan refund ${item.nama}`}
+                                    className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-600 motion-safe:transition active:scale-95 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Minus className="h-3.5 w-3.5" aria-hidden="true" />
+                                  </button>
+                                  <span className="w-5 text-center text-sm font-semibold tabular-nums text-slate-900">
+                                    {qtyRefund}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => ubahQtyRefund(item, 1)}
+                                    disabled={qty <= 0}
+                                    aria-label={`Refund ${item.nama}`}
+                                    className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-rose-600 text-white motion-safe:transition hover:bg-rose-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       );
                     })}
@@ -518,6 +935,8 @@ function ShiftBerjalan({ shiftId, modalKasAwal }: { shiftId: string; modalKasAwa
           shiftId={shiftId}
           modalKasAwal={modalKasAwal}
           totalOmset={totalOmset}
+          totalOmsetTunai={totalOmsetTunai}
+          totalOmsetNonTunai={totalOmsetNonTunai}
           totalKasKeluar={totalKasKeluar}
         />
       </div>
@@ -661,44 +1080,44 @@ function TutupShiftKartu({
   shiftId,
   modalKasAwal,
   totalOmset,
+  totalOmsetTunai,
+  totalOmsetNonTunai,
   totalKasKeluar,
 }: {
   shiftId: string;
   modalKasAwal: number;
   totalOmset: number;
+  totalOmsetTunai: number;
+  totalOmsetNonTunai: number;
   totalKasKeluar: number;
 }) {
   const { showToast } = useToast();
   const { user, profil } = useAuth();
-  const [omsetNonTunai, setOmsetNonTunai] = useState(0);
   const [kasFisik, setKasFisik] = useState(0);
   const [keteranganSelisih, setKeteranganSelisih] = useState("");
   const [sedangTutup, setSedangTutup] = useState(false);
 
   // --- Auto Draft ---
-  // Angka-angka ini hasil MENGHITUNG UANG FISIK di laci. Kalau hilang
-  // karena auto logout atau tab tertutup, Kasir harus menghitung ulang
-  // seluruh laci dari nol — kerugian waktu yang nyata. Drafnya dikunci
-  // per shiftId supaya draf shift kemarin tidak pernah bocor ke shift
-  // hari ini.
+  // Kas Fisik hasil MENGHITUNG UANG TUNAI di laci. Kalau hilang karena
+  // auto logout atau tab tertutup, Kasir harus menghitung ulang seluruh
+  // laci dari nol — kerugian waktu yang nyata. Drafnya dikunci per
+  // shiftId supaya draf shift kemarin tidak pernah bocor ke shift hari
+  // ini. Omset Tunai/Non-Tunai TIDAK PERLU didraf lagi — sekarang
+  // dihitung OTOMATIS dari metode bayar yang dipilih Kasir per item saat
+  // Input Penjualan (lihat totalOmsetTunai/totalOmsetNonTunai di
+  // ShiftBerjalan), bukan lagi tebakan manual di akhir shift.
   const kunciDraf = `tutup-shift:${shiftId}`;
-  const isiDraf = useMemo<IsiDrafTutupShift>(
-    () => ({ omsetNonTunai, kasFisik, keteranganSelisih }),
-    [omsetNonTunai, kasFisik, keteranganSelisih],
-  );
-  useDrafOtomatis(
-    user?.uid,
-    kunciDraf,
-    isiDraf,
-    omsetNonTunai > 0 || kasFisik > 0 || keteranganSelisih.trim().length > 0,
-  );
+  const isiDraf = useMemo<IsiDrafTutupShift>(() => ({ kasFisik, keteranganSelisih }), [
+    kasFisik,
+    keteranganSelisih,
+  ]);
+  useDrafOtomatis(user?.uid, kunciDraf, isiDraf, kasFisik > 0 || keteranganSelisih.trim().length > 0);
 
   useEffect(() => {
     if (!user) return;
     let dibatalkan = false;
     ambilDrafAsync<IsiDrafTutupShift>(user.uid, kunciDraf).then((tersimpan) => {
       if (dibatalkan || !tersimpan?.data) return;
-      setOmsetNonTunai(tersimpan.data.omsetNonTunai ?? 0);
       setKasFisik(tersimpan.data.kasFisik ?? 0);
       setKeteranganSelisih(tersimpan.data.keteranganSelisih ?? "");
       showToast("success", "Hitungan kas yang belum sempat disimpan dipulihkan dari draf.");
@@ -708,7 +1127,8 @@ function TutupShiftKartu({
     };
   }, [user, kunciDraf, showToast]);
 
-  const omsetTunai = Math.max(totalOmset - omsetNonTunai, 0);
+  const omsetTunai = totalOmsetTunai;
+  const omsetNonTunai = totalOmsetNonTunai;
   const kasSeharusnya = modalKasAwal + omsetTunai - totalKasKeluar;
   const selisihKas = kasFisik - kasSeharusnya;
 
@@ -799,21 +1219,21 @@ function TutupShiftKartu({
       <h2 id="bagian-tutup" className="text-base font-semibold text-slate-900">
         Tutup Shift Hari Ini
       </h2>
-      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <NumberField
-          id="omset-non-tunai"
-          label="Omset Non-Tunai"
-          value={omsetNonTunai}
-          onChange={setOmsetNonTunai}
-          prefix="Rp"
-          hint="Total QRIS/kartu/transfer selama shift ini."
-        />
+      <div className="mt-4 rounded-lg bg-slate-50 p-3 text-sm">
+        <p className="text-slate-600">Omset Tunai / Non-Tunai (otomatis dari Input Penjualan)</p>
+        <p className="mt-0.5 font-medium tabular-nums text-slate-900">
+          {formatRupiah(omsetTunai)} · {formatRupiah(omsetNonTunai)}
+        </p>
+      </div>
+
+      <div className="mt-4">
         <NumberField
           id="kas-fisik"
           label="Kas Fisik Dihitung"
           value={kasFisik}
           onChange={setKasFisik}
           prefix="Rp"
+          hint="Hitung uang TUNAI di laci saat ini, lalu masukkan di sini."
         />
       </div>
 

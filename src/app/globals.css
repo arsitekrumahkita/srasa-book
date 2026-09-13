@@ -35,6 +35,18 @@
     system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono:
     ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Semua kartu/shape di aplikasi ini memakai utility "shadow-sm"
+     bawaan Tailwind (66 dari 68 pemakaian shadow di seluruh kode) —
+     jadi menimpa TOKEN-nya di sini (bukan mengganti satu-satu di
+     puluhan file) membuat SEMUA shape sekaligus lebih "timbul"
+     sesuai permintaan Owner/user, dengan satu sumber kebenaran.
+     Nilai bawaan Tailwind sangat tipis (nyaris tak terlihat);
+     di-perkuat jadi shadow ganda (lebar+lembut & dekat+lebih gelap)
+     supaya kartu terasa terangkat dari latar tanpa jadi norak. */
+  --shadow-sm:
+    0 8px 20px -4px rgba(15, 23, 42, 0.16),
+    0 2px 6px -2px rgba(15, 23, 42, 0.12);
 }
 
 /* Aplikasi ini sengaja hanya punya satu tema (terang) — kartu putih

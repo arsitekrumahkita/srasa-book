@@ -408,22 +408,32 @@ function DetailPerusahaanKartu() {
         </div>
       ) : (
         <div className="mt-4 flex flex-col gap-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <BidangTeks
+          <div>
+            <label htmlFor="pt-nama" className="block text-sm font-semibold text-slate-800">
+              Nama Perusahaan
+            </label>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Boleh 2-3 baris (tekan Enter) — mis. nama besar di baris
+              pertama, anak kalimat di baris berikutnya. Setiap baris
+              dicetak apa adanya di kop surat Excel/PDF.
+            </p>
+            <textarea
               id="pt-nama"
-              label="Nama Perusahaan"
-              nilai={detail.nama}
-              onChange={(v) => ubah("nama", v)}
-              placeholder="misalnya: SRASA COFFEE"
-            />
-            <BidangTeks
-              id="pt-bidang"
-              label="Bidang Usaha"
-              nilai={detail.bidangUsaha}
-              onChange={(v) => ubah("bidangUsaha", v)}
-              placeholder="misalnya: Coffee & Eatery"
+              rows={2}
+              value={detail.nama}
+              onChange={(event) => ubah("nama", event.target.value)}
+              placeholder={"misalnya:\nSRASA COFFEE\nCabang Sudirman"}
+              className="mt-1.5 w-full resize-y rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 whitespace-pre-line outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
             />
           </div>
+
+          <BidangTeks
+            id="pt-bidang"
+            label="Bidang Usaha"
+            nilai={detail.bidangUsaha}
+            onChange={(v) => ubah("bidangUsaha", v)}
+            placeholder="misalnya: Coffee & Eatery"
+          />
 
           <div>
             <label htmlFor="pt-alamat" className="block text-sm font-semibold text-slate-800">

@@ -40,6 +40,9 @@ import type { ProfilHppDefault } from "@/shared/types/hpp";
 export interface RincianLabaMenu {
   menuId: string;
   menuNama: string;
+  /** Total unit yang SUNGGUH DIBUAT (qty reguler + Bonus/Gratis +
+   *  Refund) — bukan cuma yang dibayar penuh, karena bahan bakunya
+   *  sama-sama terpakai. Lihat catatan di hitungLabaHarian(). */
   qtyTerjual: number;
   hppPerPorsi: number;
   hppTotal: number;
@@ -48,10 +51,14 @@ export interface RincianLabaMenu {
 export interface HasilLabaHarian {
   tanggal: string;
   totalOmset: number;
-  /** Omset tunai/non-tunai & selisih kas hanya terisi untuk shift yang
-   *  SUDAH ditutup (Kasir mengisinya saat Tutup Shift). Dipakai untuk
-   *  membangun ulang summary_harian dari sumber aslinya bila ringkasan
-   *  hari itu meleset — lihat Riwayat > Hitung Ulang. */
+  /** Omset Tunai/Non-Tunai sekarang dihitung OTOMATIS dari metode bayar
+   *  yang Kasir pilih per item saat input penjualan (subtotalTunai/
+   *  subtotalNonTunai di shift/{id}/penjualan) — bukan lagi tebakan
+   *  manual Kasir di akhir shift. Shift dari SEBELUM fitur ini ada tetap
+   *  memakai field manual lama sebagai fallback (lihat hitungLabaHarian).
+   *  Selisih Kas hanya terisi untuk shift yang sudah ditutup. Dipakai
+   *  untuk membangun ulang summary_harian dari sumber aslinya bila
+   *  ringkasan hari itu meleset — lihat Riwayat > Hitung Ulang. */
   omsetTunai: number;
   omsetNonTunai: number;
   selisihKas: number;
@@ -80,10 +87,34 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
   let selisihKas = 0;
   const qtyPerMenu = new Map<string, { nama: string; qty: number }>();
 
+  // Nota Refund lintas hari/shift terkunci (src/app/refund/page.tsx) —
+  // BUKAN qtyRefund cepat di shift/{id}/penjualan yang sudah otomatis
+  // tercermin lewat `subtotal` di atas. Dua metode dibedakan sengaja:
+  // - "tunai" TIDAK dijumlahkan di sini sama sekali — sudah tercatat
+  //   sebagai Kas Keluar di shift kasir pada tanggal REFUND terjadi
+  //   (lihat komentar kepala halaman Refund), yang otomatis ikut
+  //   mengurangi Laba Bersih lewat totalKasKeluar tepat di bawah ini.
+  //   Kalau nota_refund tunai IKUT dijumlahkan lagi ke totalOmset di
+  //   sini, biayanya akan terhitung dua kali.
+  // - "non_tunai" TIDAK ada uang fisik yang keluar dari laci, jadi
+  //   satu-satunya jejaknya adalah di sini: mengurangi Omset pada
+  //   tanggal REFUND (bukan mengedit ulang laporan tanggal transaksi
+  //   asli yang sudah final).
+  const refundNonTunaiSnap = await getDocs(
+    query(
+      collection(db, "nota_refund"),
+      where("tanggalRefund", "==", tanggal),
+      where("metode", "==", "non_tunai"),
+    ),
+  );
+  let totalRefundNonTunai = 0;
+  for (const r of refundNonTunaiSnap.docs) {
+    totalRefundNonTunai += r.data().totalRefund ?? 0;
+  }
+
   for (const shiftDoc of shiftSnap.docs) {
     const data = shiftDoc.data();
     totalKasKeluar += data.totalKasKeluar ?? 0;
-    omsetNonTunai += data.omsetNonTunai ?? 0;
     selisihKas += data.selisihKas ?? 0;
 
     // Omset dihitung dari subkoleksi penjualan, BUKAN dari field
@@ -96,18 +127,53 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
     // konsisten kapan pun dibuka, dan hasilnya tetap identik setelah
     // shift ditutup.
     const penjualanSnap = await getDocs(collection(db, "shift", shiftDoc.id, "penjualan"));
+
+    // Rincian metode bayar (Tunai/QRIS-Non-Tunai) SEKARANG dicatat per
+    // ITEM sejak Kasir memilih metode bayar saat input penjualan (lihat
+    // src/app/shift/page.tsx, subtotalTunai/subtotalNonTunai) — jauh
+    // lebih akurat daripada field manual `omsetNonTunai` lama yang dulu
+    // diisi Kasir sebagai TOTAL tebakan di akhir shift.
+    let omsetNonTunaiShiftIni = 0;
+    let adaRincianMetodeBayar = false;
+
     for (const item of penjualanSnap.docs) {
       const d = item.data();
       const menuId = d.menuId as string | undefined;
-      const qty = d.qty ?? 0;
+      // `subtotal` SUDAH benar hanya mencerminkan qty REGULER (lihat
+      // src/app/shift/page.tsx) — Bonus/Gratis selalu subtotal 0, dan
+      // Refund sudah dikurangkan dari subtotal saat direkam. Jadi Omset
+      // di sini otomatis TIDAK PERNAH memasukkan nilai Bonus/Refund,
+      // tanpa perlu logika tambahan.
       totalOmset += d.subtotal ?? 0;
-      if (!menuId || qty <= 0) continue;
+
+      if (d.subtotalTunai !== undefined || d.subtotalNonTunai !== undefined) {
+        adaRincianMetodeBayar = true;
+        omsetNonTunaiShiftIni += d.subtotalNonTunai ?? 0;
+      }
+
+      // TAPI bahan baku yang benar-benar terpakai (dan karenanya HARUS
+      // ikut dihitung sebagai HPP Terjual / biaya) mencakup SEMUA unit
+      // yang sungguh dibuat: qty reguler + Bonus/Gratis + Refund (yang
+      // terakhir ini bahannya TIDAK dikembalikan ke gudang saat
+      // direfund — lihat ubahQtyRefund). Kalau hanya `qty` reguler yang
+      // dihitung di sini, biaya bahan Bonus/Refund akan "menghilang"
+      // dari pembukuan padahal stoknya sungguh berkurang — itulah
+      // sebabnya totalnya dijumlahkan dari ketiga field ini.
+      const qtyTotalDibuat = (d.qty ?? 0) + (d.qtyBonus ?? 0) + (d.qtyRefund ?? 0);
+      if (!menuId || qtyTotalDibuat <= 0) continue;
       const existing = qtyPerMenu.get(menuId);
       qtyPerMenu.set(menuId, {
         nama: d.menuNama ?? existing?.nama ?? "",
-        qty: (existing?.qty ?? 0) + qty,
+        qty: (existing?.qty ?? 0) + qtyTotalDibuat,
       });
     }
+
+    // Shift LAMA dari sebelum fitur pemisahan metode bayar per-item ada
+    // TIDAK PUNYA subtotalTunai/subtotalNonTunai sama sekali di setiap
+    // dokumen penjualannya — supaya laporan hari-hari lama itu tidak
+    // tiba-tiba menunjukkan Rp0 di kedua bucket, jatuhkan kembali ke
+    // field manual `omsetNonTunai` lama KHUSUS untuk shift itu saja.
+    omsetNonTunai += adaRincianMetodeBayar ? omsetNonTunaiShiftIni : (data.omsetNonTunai ?? 0);
   }
 
   // Cache harga bahan supaya satu bahan yang dipakai di banyak menu
@@ -175,6 +241,14 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
   }
 
   totalHppTerjual = Math.round(totalHppTerjual);
+
+  // Refund non-tunai mengurangi Omset PADA TANGGAL REFUND ini — dan
+  // karena tidak menyentuh kas fisik, ikut dikurangkan dari bucket
+  // non-tunai juga (bukan bucket tunai), supaya omsetTunai turunan di
+  // bawah tidak ikut salah terpotong.
+  totalOmset = Math.max(totalOmset - totalRefundNonTunai, 0);
+  omsetNonTunai = Math.max(omsetNonTunai - totalRefundNonTunai, 0);
+
   const labaBersih = totalOmset - totalHppTerjual - totalKasKeluar;
 
   return {

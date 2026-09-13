@@ -24,7 +24,10 @@ export interface KolomLaporan<T> {
   judul: string;
   /** Ambil nilai mentah dari satu baris data. */
   ambil: (baris: T) => string | number;
-  /** Lebar kolom Excel (karakter). PDF menghitung lebarnya sendiri. */
+  /** Lebar MINIMUM kolom Excel (karakter) — lebar sebenarnya SELALU
+   *  dihitung otomatis (autofit) dari isi terpanjang kolom ini; field
+   *  ini hanya dipakai kalau hasil autofit lebih sempit dari nilai ini.
+   *  PDF menghitung lebarnya sendiri (autoTable), tidak memakai field ini. */
   lebar?: number;
   /** Kolom angka dirata-kanan & diformat ribuan di kedua keluaran. */
   angka?: boolean;
@@ -86,7 +89,10 @@ function barisKop(p: DetailPerusahaan): string[] {
 export async function eksporExcel<T>(opsi: OpsiLaporan<T>): Promise<void> {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
-  wb.creator = opsi.perusahaan.nama || "SRASA BOOK";
+  // Metadata dokumen (bukan yang tercetak) — baris baru diratakan jadi
+  // spasi di sini saja, kop surat sesungguhnya di bawah TETAP menghormati
+  // Enter (webrules-hikimori poin 10: Nama Perusahaan boleh 2-3 baris).
+  wb.creator = (opsi.perusahaan.nama || "SRASA BOOK").replace(/\n/g, " ");
   wb.created = new Date();
 
   const ws = wb.addWorksheet("Laporan", {
@@ -112,7 +118,13 @@ export async function eksporExcel<T>(opsi: OpsiLaporan<T>): Promise<void> {
   }
 
   // --- KOP SURAT ---
-  tambahBarisKop(opsi.perusahaan.nama || "SRASA BOOK", 16, true);
+  // Nama Perusahaan boleh 2-3 baris (mis. nama + anak kalimat) — setiap
+  // baris yang diketik pakai Enter di Profil Akun dicetak sebagai baris
+  // kop TERSENDIRI di sini, bukan digabung jadi satu baris panjang.
+  const barisNama = (opsi.perusahaan.nama || "SRASA BOOK").split("\n").filter((b) => b.trim());
+  for (const baris of barisNama.length > 0 ? barisNama : ["SRASA BOOK"]) {
+    tambahBarisKop(baris, 16, true);
+  }
   for (const teks of barisKop(opsi.perusahaan)) {
     tambahBarisKop(teks, 10, false);
   }
@@ -178,13 +190,32 @@ export async function eksporExcel<T>(opsi: OpsiLaporan<T>): Promise<void> {
     barisCatatan.getCell(1).font = { size: 9, italic: true, color: { argb: "FF64748B" } };
   }
 
-  // Lebar kolom: pakai lebar yang diminta, atau perkirakan dari isi.
+  // Lebar kolom: AUTOFIT WAJIB — dihitung dari isi SESUNGGUHNYA setiap
+  // kolom (bukan tebakan tetap), supaya "Kasir Nama Panjang" atau angka
+  // besar tidak pernah terpotong dan kolom pendek tidak menyisakan
+  // ruang kosong berlebihan. `kolom.lebar` (kalau diisi pemanggil)
+  // dipakai sebagai batas MINIMUM saja, bukan menimpa hasil autofit.
+  function panjangTampil(nilai: string | number, angka: boolean | undefined): number {
+    // Kolom angka dicetak dengan numFmt "#,##0" (pemisah ribuan) —
+    // dihitung dengan format yang sama supaya lebar kolomnya pas dengan
+    // yang benar-benar terlihat di Excel, bukan angka mentah tanpa koma.
+    if (angka && typeof nilai === "number") {
+      return nilai.toLocaleString("en-US").length;
+    }
+    // Nilai bisa memuat baris baru (mis. keterangan multi-baris) —
+    // yang menentukan lebar kolom adalah baris TERPANJANGnya, bukan
+    // total seluruh karakter.
+    return Math.max(...String(nilai).split("\n").map((baris) => baris.length));
+  }
+
   opsi.kolom.forEach((kolom, indeks) => {
     const isiTerpanjang = Math.max(
       kolom.judul.length,
-      ...opsi.baris.map((b) => String(kolom.ambil(b)).length),
+      ...opsi.baris.map((b) => panjangTampil(kolom.ambil(b), kolom.angka)),
+      0,
     );
-    ws.getColumn(indeks + 1).width = kolom.lebar ?? Math.min(Math.max(isiTerpanjang + 3, 10), 40);
+    const lebarAutofit = Math.min(Math.max(isiTerpanjang + 3, 8), 60);
+    ws.getColumn(indeks + 1).width = Math.max(lebarAutofit, kolom.lebar ?? 0);
   });
 
   const buffer = await wb.xlsx.writeBuffer();
@@ -214,7 +245,15 @@ export async function eksporPdf<T>(opsi: OpsiLaporan<T>): Promise<void> {
   let y = 18;
   dok.setFont("helvetica", "bold");
   dok.setFontSize(16);
-  dok.text(opsi.perusahaan.nama || "SRASA BOOK", tengah, y, { align: "center" });
+  // Nama Perusahaan boleh 2-3 baris — setiap baris hasil Enter di Profil
+  // Akun dicetak sebagai barisnya sendiri (webrules-hikimori poin 10),
+  // bukan dirapatkan jadi satu baris.
+  const barisNama = (opsi.perusahaan.nama || "SRASA BOOK").split("\n").filter((b) => b.trim());
+  for (const baris of barisNama.length > 0 ? barisNama : ["SRASA BOOK"]) {
+    dok.text(baris, tengah, y, { align: "center" });
+    y += 6.5;
+  }
+  y -= 6.5;
 
   dok.setFont("helvetica", "normal");
   dok.setFontSize(9);

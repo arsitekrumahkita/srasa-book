@@ -36,6 +36,61 @@ export function daftarTanggalAntara(mulai: string, selesai: string): string[] {
   return hasil;
 }
 
+/** Opsi rentang custom (subset dari OpsiTren di tren.ts — didefinisikan
+ *  ulang di sini, bukan diimpor, supaya file ini tetap 100% bebas
+ *  Firebase dan bisa diuji Vitest tanpa memicu inisialisasi apa pun). */
+export interface OpsiRentang {
+  tanggalMulai?: string;
+  tanggalSelesai?: string;
+  bulanMulai?: string;
+  bulanSelesai?: string;
+}
+
+/** Menerjemahkan periode & opsi Analitik Tren (lihat tren.ts) menjadi
+ *  rentang TANGGAL HARIAN "YYYY-MM-DD" konkret — dipakai fitur yang
+ *  butuh baris tanggal asli (shift.tanggal), bukan dokumen ringkasan
+ *  summary_harian/summary_bulanan yang sudah dibungkus per hari/bulan.
+ *  Dipisah di sini (bukan di produk-terlaris.ts yang butuh Firebase)
+ *  supaya bisa diuji Vitest sebagai fungsi murni. */
+export function resolveRentangTanggal(
+  periode: "harian" | "mingguan" | "bulanan" | "custom-tanggal" | "custom-bulan",
+  opsi: OpsiRentang = {},
+): { mulai: string; selesai: string } | null {
+  switch (periode) {
+    case "harian":
+      return { mulai: tanggalKe(13), selesai: tanggalKe(0) };
+    case "mingguan":
+      return { mulai: tanggalKe(8 * 7 - 1), selesai: tanggalKe(0) };
+    case "bulanan": {
+      const sekarang = new Date();
+      const awal = new Date(sekarang.getFullYear(), sekarang.getMonth() - 5, 1);
+      return { mulai: formatTanggalId(awal), selesai: formatTanggalId(sekarang) };
+    }
+    case "custom-tanggal": {
+      if (!opsi.tanggalMulai || !opsi.tanggalSelesai) return null;
+      const [mulai, selesai] =
+        opsi.tanggalMulai <= opsi.tanggalSelesai
+          ? [opsi.tanggalMulai, opsi.tanggalSelesai]
+          : [opsi.tanggalSelesai, opsi.tanggalMulai];
+      return { mulai, selesai };
+    }
+    case "custom-bulan": {
+      if (!opsi.bulanMulai || !opsi.bulanSelesai) return null;
+      const [bulanMulai, bulanSelesai] =
+        opsi.bulanMulai <= opsi.bulanSelesai
+          ? [opsi.bulanMulai, opsi.bulanSelesai]
+          : [opsi.bulanSelesai, opsi.bulanMulai];
+      const [ySelesai, mSelesai] = bulanSelesai.split("-").map(Number);
+      // Tanggal 0 dari bulan BERIKUTNYA = hari terakhir bulan ini
+      // (trik standar Date JS untuk "akhir bulan" tanpa tabel 28/30/31).
+      const akhirBulan = new Date(ySelesai, mSelesai, 0);
+      return { mulai: `${bulanMulai}-01`, selesai: formatTanggalId(akhirBulan) };
+    }
+    default:
+      return null;
+  }
+}
+
 export function daftarBulanAntara(mulai: string, selesai: string): string[] {
   const hasil: string[] = [];
   const [yMulai, mMulaiRaw] = mulai.split("-").map(Number);

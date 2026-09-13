@@ -62,6 +62,26 @@ ulang lengkap di sesi ini: `/shift`, `/belanja-nota`, `/kalkulator-hpp`
 `/login` semuanya sudah memenuhi pola ini untuk setiap operasi
 create/update/delete miliknya.
 
+**Revisi tampilan lanjutan (permintaan pemilik cafe):**
+
+- Semua shape/kartu di seluruh aplikasi memakai token `--shadow-sm`
+  (Tailwind v4 `@theme inline`, `globals.css`) — ditimpa jadi shadow
+  ganda yang lebih tegas ("timbul") di SATU tempat, otomatis berlaku ke
+  66 pemakaian `shadow-sm` di seluruh kode tanpa menyentuh satu-satu.
+- Daftar Akun (`/kelola-akun`) sekarang menandai tiap field dengan
+  label eksplisit (Email/Username/Peran/Status), bukan digabung dengan
+  "·". Kata sandi SENGAJA tidak pernah ditampilkan — Firebase Auth
+  menyimpannya terenkripsi satu arah, tidak bisa dibaca ulang oleh
+  siapa pun termasuk Owner; ada catatan penjelasan di halaman.
+- Nama Perusahaan (Profil Akun → Detail Perusahaan) sekarang textarea
+  multi-baris (2-3 baris, mis. nama + anak kalimat) — setiap Enter
+  dihormati sampai ke kop surat Excel/PDF (`src/shared/lib/ekspor.ts`
+  mencetak tiap baris nama sebagai barisnya sendiri, bukan digabung).
+- Ekspor Excel: lebar kolom sekarang **autofit sungguhan** — dihitung
+  dari isi terpanjang tiap kolom (termasuk format ribuan untuk kolom
+  angka), bukan tebakan tetap. `kolom.lebar` di pemanggil sekarang jadi
+  batas minimum saja, bukan menimpa hasil autofit.
+
 ## Aturan Struktur Proyek (WAJIB dibaca sebelum menambah halaman)
 
 **Satu route = satu folder**, mengikuti konvensi Next.js App Router secara
@@ -343,6 +363,188 @@ Inventaris otomatis (baca komentar kepala file terkait untuk detail):**
   Belanja (`kas_belanja`) SENGAJA tidak dikurangkan lagi di rumus ini —
   itu sudah "menjadi" HPP Terjual begitu bahannya terpakai lewat Resep,
   jadi mengurangkannya lagi akan menghitung dua kali.
+
+**Fitur Bonus/Gratis & Refund di halaman Shift Kasir (permintaan pemilik cafe):**
+
+Setiap baris menu di halaman Kasir (`/shift`) sekarang punya tombol panah
+(chevron) di sebelah stepper qty reguler yang membuka panel tambahan berisi
+dua kontrol baru, di luar qty reguler yang sudah ada:
+
+- **Bonus / Gratis** — dipakai saat produk diberikan gratis ke customer
+  sebagai bonus pembelian (misal promo "beli 2 gratis 1"). Menambah
+  `qtyBonus`, bahan baku di gudang tetap berkurang lewat Resep seperti
+  biasa, TAPI `subtotal`-nya SELALU 0 — sama sekali tidak menyumbang Omset.
+- **Refund** — dipakai saat customer mengembalikan produk yang sudah
+  dibayar. Memindahkan 1 unit dari `qty` reguler ke `qtyRefund` (mengurangi
+  Omset sesuai harga jual saat itu), TAPI bahan baku yang sudah terpakai
+  TIDAK dikembalikan ke stok gudang (produk yang sudah jadi tidak bisa
+  "un-dimasak"). Tombol "+" Refund otomatis nonaktif kalau qty reguler
+  menu tsb sudah 0 (tidak ada yang bisa direfund).
+
+Kasir HANYA melihat angka qty di ketiga kontrol ini — tidak pernah melihat
+HPP/margin Rupiah sama sekali (itu memang privat, lihat firestore.rules),
+jadi tidak ada risiko Kasir bingung melihat angka minus.
+
+Kalkulasi otomatis di sisi Owner/Finance (`src/shared/lib/laba-harian.ts`)
+sudah menghormati logika ini tanpa perlu input manual apa pun:
+
+- **Omset** tetap murni dari `subtotal`, yang sudah otomatis hanya
+  mencerminkan qty reguler (Bonus selalu 0, Refund sudah dikurangkan) —
+  jadi Bonus/Refund TIDAK PERNAH membuat Omset salah atau bikin bingung.
+- **HPP Terjual** (dan karenanya Laba Bersih) dihitung dari jumlah SEMUA
+  unit yang sungguh dibuat (`qty` + `qtyBonus` + `qtyRefund`), karena
+  bahan bakunya sama-sama benar-benar terpakai untuk ketiganya. Dengan
+  begitu biaya bahan untuk produk gratis/refund tetap otomatis mengurangi
+  Laba Bersih di Dashboard — sesuai permintaan "tetap otomatisasi
+  kalkulasi keuangannya" — tanpa pernah menyingkap angka itu ke Kasir.
+
+Tidak ada perubahan `firestore.rules` untuk fitur ini — rule subkoleksi
+`shift/{id}/penjualan` untuk Kasir memang sudah tidak membatasi field
+tertentu (beda dengan `bahan_baku`/`stok_kasir`), jadi field baru
+`qtyBonus`/`qtyRefund` otomatis sudah bisa ditulis Kasir.
+
+**Nota Refund lintas hari/shift (halaman `/refund`, khusus Kasir):**
+
+Stepper Refund cepat di halaman Shift (di atas) HANYA berlaku selagi shift
+hari itu masih berjalan/belum dikunci — begitu shift ditutup, Firestore
+Rules melarang Kasir menulis lagi ke subkoleksi penjualan shift itu. Untuk
+customer yang baru komplain SETELAH shift ditutup (bahkan hari lain),
+dibuat halaman terpisah `/refund` yang alurnya meniru "cari nota" ala
+Majoo, disesuaikan dengan skema app ini yang mencatat qty per menu per
+shift (bukan per struk customer):
+
+1. Kasir pilih tanggal transaksi asal.
+2. Pilih shift (hanya shift MILIK KASIR ITU SENDIRI yang muncul, sesuai
+   firestore.rules — refund lintas Kasir ditangani manual oleh Owner lewat
+   Riwayat).
+3. Pilih menu yang mau direfund dari shift itu (sisa yang bisa direfund
+   otomatis dihitung dari qty asli dikurangi refund-refund sebelumnya).
+4. Isi jumlah, alasan (dropdown + opsi "Lainnya" isi manual), dan metode
+   pengembalian dana (Tunai/Non-tunai).
+
+Hasilnya tersimpan di koleksi baru `nota_refund` — TIDAK menulis ulang ke
+shift lama yang sudah terkunci, murni catatan finansial + jejak audit yang
+merujuk ke shift/menu asal. Bahan baku sama sekali tidak disentuh (sudah
+terpakai di hari transaksi asli, tidak dikembalikan ke stok).
+
+Efeknya ke Laba Bersih dibedakan menurut metode, supaya tidak dobel hitung:
+
+- **Tunai** — otomatis tercatat sebagai Kas Keluar (kategori "Refund
+  Tunai") di shift Kasir HARI INI. Ini membuat Kas Seharusnya hari ini
+  otomatis cocok dengan uang fisik di laci (karena uangnya memang keluar
+  hari ini), dan Laba Bersih ikut berkurang lewat totalKasKeluar yang
+  sudah ada — tidak ada logika baru yang perlu dipercaya untuk kasus ini.
+- **Non-tunai** — tidak ada uang fisik yang keluar dari laci, jadi dicatat
+  sebagai pengurang Omset pada TANGGAL REFUND terjadi (`hitungLabaHarian`
+  di `src/shared/lib/laba-harian.ts` menjumlahkan `nota_refund` dengan
+  `metode == "non_tunai"` pada tanggal itu) — bukan mengedit ulang laporan
+  hari transaksi asli yang sudah final.
+
+Owner/Finance bisa melihat seluruh riwayat Nota Refund (50 terbaru,
+termasuk alasannya) di halaman Riwayat — berguna untuk memantau pola
+masalah (misal sering "Salah pesan dari kasir" di jam sibuk tertentu).
+Kasir SENGAJA tidak perlu approval Owner untuk membuat Nota Refund (atas
+permintaan pemilik cafe, supaya operasional tetap cepat) — jejak
+transparansi untuk Owner ada di riwayat ini, bukan di alur approval
+sebelum refund terjadi.
+
+**Pemisahan Metode Bayar per item (Tunai/Non-Tunai) + Rekap & Produk
+Terlaris di Dashboard (permintaan pemilik cafe):**
+
+Sebelumnya Kasir input qty per menu dengan SATU stepper (mis. Kopi 48
+pcs), lalu total Omset Non-Tunai diisi TEBAKAN manual satu angka di akhir
+shift saat Tutup Shift. Sekarang setiap menu di halaman Shift punya DUA
+stepper berdampingan — Tunai dan Non-Tunai (QRIS/kartu/transfer) — jadi
+kalau Kopi hari ini laku 16pcs (10 dibayar QRIS, 6 tunai), Kasir input
+"Kopi 10" di stepper Non-Tunai dan "Kopi 6" di stepper Tunai secara
+terpisah, sejak awal, bukan direkap manual belakangan.
+
+- Setiap dokumen `shift/{id}/penjualan/{menuId}` sekarang punya
+  `qtyTunai`/`qtyNonTunai` (dan `subtotalTunai`/`subtotalNonTunai`) di
+  samping `qty`/`subtotal` totalnya — Bonus/Refund/HPP TIDAK diubah sama
+  sekali (tetap beroperasi di atas `qty` total seperti sebelumnya), jadi
+  Rekap Omset dan seluruh kalkulasi keuangan lain tetap GLOBAL/tidak
+  berubah, sesuai permintaan pemilik cafe — hanya rinciannya yang
+  bertambah detail.
+- Refund cepat di halaman Shift (untuk shift yang masih berjalan) TIDAK
+  meminta Kasir memilih metode bayar lagi (refund biasanya mendadak) —
+  bucket sumbernya dipilih otomatis (Non-Tunai diutamakan lebih dulu),
+  didokumentasikan sebagai penyederhanaan yang disengaja di
+  `ubahQtyRefund` (`src/app/shift/page.tsx`). Rekap Omset TOTAL tetap
+  100% akurat apa pun urutan pemilihannya — hanya rincian Tunai/Non-Tunai
+  yang memakai penyederhanaan ini.
+- **Tutup Shift disederhanakan**: field manual "Omset Non-Tunai" DIHAPUS
+  dari form — sekarang dihitung OTOMATIS dari total `subtotalTunai`/
+  `subtotalNonTunai` seluruh item yang sudah diinput Kasir sepanjang
+  shift. Ini juga membuat "Kas Seharusnya" (dasar rekonsiliasi kas fisik)
+  lebih akurat karena tidak lagi bergantung pada tebakan manual di akhir
+  shift.
+- `hitungLabaHarian` (`src/shared/lib/laba-harian.ts`) memakai rincian
+  per-item ini untuk Omset Tunai/Non-Tunai kalau tersedia, dengan
+  FALLBACK ke field manual `omsetNonTunai` lama KHUSUS untuk shift dari
+  SEBELUM fitur ini ada — supaya laporan hari-hari lama tidak tiba-tiba
+  menunjukkan Rp0.
+- **Dashboard** (Owner/Finance) — kartu baru "Rekap Metode Bayar",
+  "Produk Terlaris", dan "Produk Kurang Laris" (termasuk menu yang sama
+  sekali tidak laku sama sekali di rentang itu), semuanya mengikuti
+  rentang periode yang SAMA dengan toggle Harian/Mingguan/Bulanan/Custom
+  Tanggal/Custom Bulan di grafik Analitik Tren — atas permintaan pemilik
+  cafe ("diatur di grafik analitik tren"). Sumber datanya fungsi baru
+  `ambilRingkasanPeriode` di `src/shared/lib/produk-terlaris.ts`, yang
+  membaca langsung dari `shift/{id}/penjualan` (bukan dokumen ringkasan
+  `summary_harian`/`summary_bulanan`, karena rincian per-produk & per-
+  metode-bayar memang tidak pernah diringkas ke sana) — wajar untuk skala
+  cafe kecil di Spark Plan, tapi perlu dipikirkan ulang kalau skalanya
+  jauh lebih besar nanti.
+
+**Saldo Deposito Finance, Transaksi Finance, Biaya Operasional, & 2
+Sumber Dana Belanja (permintaan pemilik cafe):**
+
+Sebelumnya semua uang di aplikasi ini bersumber dari Omset penjualan
+(kas shift Kasir). Sekarang ada SUMBER DANA KEDUA yang sengaja terpisah
+total: **Saldo Deposito Finance** — dana yang diberikan Owner DI LUAR
+Omset (misalnya modal tambahan, dana operasional bulanan), dikelola
+lewat menu baru **Transaksi Finance** (`/transaksi-finance`).
+
+- **Akses khusus** (satu-satunya tempat di aplikasi ini yang berbeda dari
+  pola biasa): peran Finance normalnya setara penuh dengan Owner
+  (superadmin) di semua fitur lain — tapi khusus Saldo Deposito Finance
+  ini, Owner **hanya boleh memantau** (lihat saldo & riwayat transaksi),
+  **tidak bisa mengeksekusi** Tambah Dana atau mencatat transaksi apa
+  pun — itu wewenang eksklusif akun berperan Finance. Ditegakkan di dua
+  lapis: UI menyembunyikan form aksi untuk Owner, dan firestore.rules
+  (`saldo_finance`/`transaksi_finance`) menolak create/update/delete dari
+  `isSuperadmin()` biasa, hanya `isFinance()` murni.
+- **Tambah Dana (Uang Masuk)** — Finance mencatat dana masuk dari Owner
+  di luar Omset, menambah Saldo Deposito.
+- **Catat Transaksi (Uang Keluar)** — tiga kategori: **Gaji Karyawan**
+  (nama karyawan diisi bebas per transaksi, tanpa perlu data master
+  karyawan dulu — sesuai permintaan), **Biaya Operasional** (Wifi/
+  Listrik/PDAM (Air)/Lainnya), dan **Lainnya**. Saldo tidak bisa
+  ditarik melebihi yang tersedia — dicegah di klien DAN di
+  firestore.rules (`saldo_finance.saldo >= 0` diperiksa di level
+  database, bukan cuma UI).
+- **Biaya Operasional juga bisa diinput Kasir** lewat Kas Keluar di
+  halaman Shift (kategori Wifi/Listrik/PDAM (Air) kini eksplisit di
+  `KATEGORI_KAS_KELUAR`, `src/app/shift/page.tsx`) — bedanya, versi
+  Kasir ini memotong KAS SHIFT (uang hasil Omset hari itu), BUKAN Saldo
+  Deposito Finance. Sumber dananya mengikuti siapa yang input: Kasir ->
+  kas shift, Finance -> Saldo Deposito.
+- **Belanja Purchasing kini pilih 2 Sumber Dana** saat "Mulai Belanja"
+  (`src/app/belanja-nota/page.tsx`): **Kas Resto/Outlet** (seperti
+  sebelumnya, tidak dilacak sebagai saldo tersendiri di aplikasi) atau
+  **Saldo Finance** (memotong Saldo Deposito Finance sejumlah modal yang
+  diterima, dengan pengecekan saldo cukup sebelum belanja dimulai).
+  Purchasing diberi akses BACA ke `saldo_finance` (bukan Kasir) khusus
+  untuk melihat sisa saldo sebelum memilih sumber dana ini.
+- **Batasan yang disengaja**: pengeluaran dari Saldo Deposito Finance
+  (Gaji Karyawan, Biaya Operasional versi Finance, belanja bersumber
+  Saldo Finance) TIDAK ikut mengurangi Laba Bersih di `hitungLabaHarian`
+  (`src/shared/lib/laba-harian.ts`) — rumus Laba Bersih itu murni
+  berbasis Omset penjualan, sedangkan Saldo Deposito adalah pool dana
+  terpisah yang sumbernya dari luar Omset. Riwayat lengkap pengeluaran
+  Finance tetap tercatat & bisa dipantau Owner di halaman Transaksi
+  Finance, hanya belum digabung ke satu angka Laba Bersih.
 
 **Batasan lain yang masih P1/P2 (lihat PRD bagian 13 untuk roadmap lengkap):**
 
