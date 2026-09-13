@@ -1003,50 +1003,57 @@ function KalkulatorHppForm() {
             </p>
           )}
 
-          {daftarBahan.length === 0 ? (
-            <p className="mt-4 text-sm text-amber-700">
-              Belum ada Bahan Baku. Tambahkan dulu lewat Belanja & Nota
-              (Purchasing) sebelum menyusun resep di sini.
-            </p>
-          ) : (
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr_auto]">
-              <div>
-                <label htmlFor="bahan-resep" className="block text-sm font-semibold text-slate-800">
-                  Bahan
-                </label>
-                <select
-                  id="bahan-resep"
-                  value={bahanDipilih}
-                  onChange={(event) => setBahanDipilih(event.target.value)}
-                  className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
-                >
-                  <option value="">Pilih bahan...</option>
-                  {daftarBahan
-                    .filter((b) => !resepRows.some((r) => r.bahanId === b.id))
-                    .map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.nama} ({formatRupiahSatuan(b.hargaSatuanTerakhir)}/{b.satuan})
-                      </option>
-                    ))}
-                </select>
-              </div>
-              <NumberField
-                id="takaran-resep"
-                label={`Takaran (${daftarBahan.find((b) => b.id === bahanDipilih)?.satuan ?? "gram/pcs"})`}
-                value={takaranInput}
-                onChange={setTakaranInput}
-              />
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={tambahBarisResep}
-                  className="inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] sm:w-auto"
-                >
-                  Tambah
-                </button>
-              </div>
+          {/* Form tambah bahan SELALU tampil, tidak lagi digantikan
+              peringatan saat Bahan Baku masih kosong — Owner/Finance
+              bisa langsung mengisi Nama Menu, Kategori, dan menyimpan
+              menu ini duluan, lalu menyusun resepnya belakangan begitu
+              Bahan Baku sudah ada. Kalau daftar Bahan Baku memang masih
+              kosong, dropdown-nya cuma menampilkan "Pilih bahan..."
+              tanpa pilihan lain — bukan sesuatu yang mengunci form ini. */}
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr_auto]">
+            <div>
+              <label htmlFor="bahan-resep" className="block text-sm font-semibold text-slate-800">
+                Bahan
+              </label>
+              <select
+                id="bahan-resep"
+                value={bahanDipilih}
+                onChange={(event) => setBahanDipilih(event.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              >
+                <option value="">Pilih bahan...</option>
+                {daftarBahan
+                  .filter((b) => !resepRows.some((r) => r.bahanId === b.id))
+                  .map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.nama} ({formatRupiahSatuan(b.hargaSatuanTerakhir)}/{b.satuan})
+                    </option>
+                  ))}
+              </select>
+              {daftarBahan.length === 0 ? (
+                <p className="mt-1 text-xs text-amber-700">
+                  Belum ada Bahan Baku — tambahkan lewat Belanja & Nota
+                  (Purchasing) begitu sempat, lalu kembali ke sini untuk
+                  mengisi resepnya.
+                </p>
+              ) : null}
             </div>
-          )}
+            <NumberField
+              id="takaran-resep"
+              label={`Takaran (${daftarBahan.find((b) => b.id === bahanDipilih)?.satuan ?? "gram/pcs"})`}
+              value={takaranInput}
+              onChange={setTakaranInput}
+            />
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={tambahBarisResep}
+                className="inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] sm:w-auto"
+              >
+                Tambah
+              </button>
+            </div>
+          </div>
 
           <div className="mt-4 flex justify-between rounded-lg bg-emerald-50 px-3 py-2.5 text-sm">
             <span className="font-medium text-emerald-900">HPP Bahan per Porsi (otomatis)</span>
@@ -1104,55 +1111,56 @@ function KalkulatorHppForm() {
             </p>
           )}
 
-          {daftarBahan.length === 0 ? (
-            <p className="mt-4 text-sm text-amber-700">
-              Belum ada Bahan Baku. Tambahkan dulu lewat Belanja & Nota
-              (Purchasing) — termasuk item packaging seperti cup/sedotan,
-              dicatat dengan satuan pcs (harga per pack ÷ isi per pack).
-            </p>
-          ) : (
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr_auto]">
-              <div>
-                <label htmlFor="kemasan-item" className="block text-sm font-semibold text-slate-800">
-                  Item Packaging
-                </label>
-                <select
-                  id="kemasan-item"
-                  value={kemasanDipilih}
-                  onChange={(event) => setKemasanDipilih(event.target.value)}
-                  className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
-                >
-                  <option value="">Pilih item...</option>
-                  {daftarBahan
-                    .filter(
-                      (b) =>
-                        !kemasanRows.some((r) => r.bahanId === b.id) &&
-                        !resepRows.some((r) => r.bahanId === b.id),
-                    )
-                    .map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.nama} ({formatRupiahSatuan(b.hargaSatuanTerakhir)}/{b.satuan})
-                      </option>
-                    ))}
-                </select>
-              </div>
-              <NumberField
-                id="takaran-kemasan"
-                label="Jumlah (pcs)"
-                value={takaranKemasanInput}
-                onChange={setTakaranKemasanInput}
-              />
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={tambahBarisKemasan}
-                  className="inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] sm:w-auto"
-                >
-                  + Tambah
-                </button>
-              </div>
+          {/* Sama seperti Resep di atas — form ini SELALU tampil,
+              tidak digantikan peringatan saat Bahan Baku masih kosong. */}
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr_auto]">
+            <div>
+              <label htmlFor="kemasan-item" className="block text-sm font-semibold text-slate-800">
+                Item Packaging
+              </label>
+              <select
+                id="kemasan-item"
+                value={kemasanDipilih}
+                onChange={(event) => setKemasanDipilih(event.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              >
+                <option value="">Pilih item...</option>
+                {daftarBahan
+                  .filter(
+                    (b) =>
+                      !kemasanRows.some((r) => r.bahanId === b.id) &&
+                      !resepRows.some((r) => r.bahanId === b.id),
+                  )
+                  .map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.nama} ({formatRupiahSatuan(b.hargaSatuanTerakhir)}/{b.satuan})
+                    </option>
+                  ))}
+              </select>
+              {daftarBahan.length === 0 ? (
+                <p className="mt-1 text-xs text-amber-700">
+                  Belum ada Bahan Baku — tambahkan lewat Belanja & Nota
+                  (Purchasing), termasuk item packaging seperti cup/sedotan
+                  (dicatat dengan satuan pcs, harga per pack ÷ isi per pack).
+                </p>
+              ) : null}
             </div>
-          )}
+            <NumberField
+              id="takaran-kemasan"
+              label="Jumlah (pcs)"
+              value={takaranKemasanInput}
+              onChange={setTakaranKemasanInput}
+            />
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={tambahBarisKemasan}
+                className="inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] sm:w-auto"
+              >
+                + Tambah
+              </button>
+            </div>
+          </div>
 
           <div className="mt-4 flex justify-between rounded-lg bg-emerald-50 px-3 py-2.5 text-sm">
             <span className="font-medium text-emerald-900">Packaging Cost per Porsi (otomatis)</span>

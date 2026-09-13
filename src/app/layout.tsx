@@ -13,6 +13,16 @@ export const metadata: Metadata = {
   title: "Archimax — Food n Beverages Lifestyle Accounting",
   description:
     "Aplikasi accounting multi-outlet untuk bisnis Food & Beverages — omset, kas, dan HPP dalam satu layar, satu Owner terpusat untuk semua Outlet.",
+  // Supaya kalau Owner/Kasir/Purchasing menambahkan Archimax ke Layar
+  // Utama HP-nya (umum untuk aplikasi internal seperti ini, dipakai
+  // seperti app asli tanpa lewat browser), tampilannya standalone
+  // (tanpa address bar) dengan status bar yang wajar — bukan wajib,
+  // tapi kalau tidak diisi Safari memakai bawaan yang kurang rapi.
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Archimax",
+  },
 };
 
 // Wajib untuk PWA/mobile-friendly (webrules-hikimori poin 5). Batas zoom
@@ -20,10 +30,20 @@ export const metadata: Metadata = {
 // mengunci pinch-zoom melanggar WCAG (pengguna low-vision butuh zoom).
 // viewportFit "cover" + CSS env(safe-area-inset-*) di globals.css supaya
 // layout tidak ketiban notch/pill kamera di HP layar penuh (iPhone dsb).
+//
+// themeColor: warna bar status/tab browser di Android & saat di-Add to
+// Home Screen ikut hijau Archimax, bukan putih/hitam bawaan browser.
+// colorScheme "light": app ini SATU tema saja (belum ada mode gelap) —
+// tanpa ini, HP yang mode gelap sistemnya aktif bisa membuat kontrol
+// bawaan browser (mis. date/time picker bawaan iOS/Android) ikut
+// bergaya gelap padahal seluruh halaman di sekitarnya tetap terang,
+// jadinya belang dan kurang kebaca.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  themeColor: "#047857",
+  colorScheme: "light",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

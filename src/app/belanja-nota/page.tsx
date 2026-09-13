@@ -1005,6 +1005,7 @@ function BatasMinimalStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
             <div className="flex items-center gap-2">
               <input
                 type="number"
+                inputMode="numeric"
                 min={0}
                 aria-label={`Batas minimal stok ${b.nama}`}
                 value={draf[b.id] ?? b.batasMinimalStok}

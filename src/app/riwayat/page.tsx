@@ -562,11 +562,24 @@ function tanggalIniISO(): string {
  * mem-back-fill hari-hari sebelumnya (mis. resep baru disusun
  * belakangan, atau Owner belum sempat buka Dashboard hari itu).
  */
+interface HasilHitungUlang {
+  tanggal: string;
+  totalOmset: number;
+  totalHppTerjual: number;
+  labaBersih: number;
+}
+
 function HitungUlangLabaKartu() {
   const outletId = useOutletId();
   const { showToast } = useToast();
   const [tanggal, setTanggal] = useState(tanggalIniISO());
   const [sedangHitung, setSedangHitung] = useState(false);
+  // Hasil ditampilkan sebagai LIST yang menumpuk di kartu ini (bukan
+  // toast sekali muncul lalu hilang) — supaya Owner/Finance yang
+  // menghitung ulang beberapa tanggal berturut-turut bisa melihat dan
+  // membandingkan semua hasilnya sekaligus tanpa harus mengingat-ingat
+  // toast yang sudah lewat. Terbaru di atas.
+  const [riwayatHasil, setRiwayatHasil] = useState<HasilHitungUlang[]>([]);
 
   async function handleHitung() {
     setSedangHitung(true);
@@ -595,10 +608,17 @@ function HitungUlangLabaKartu() {
         },
         { merge: true },
       );
-      showToast(
-        "success",
-        `${tanggal} — Omset ${formatRupiah(hasil.totalOmset)}, HPP Terjual ${formatRupiah(hasil.totalHppTerjual)}, Laba Bersih ${formatRupiah(hasil.labaBersih)}.`,
-      );
+      setRiwayatHasil((sebelumnya) => [
+        {
+          tanggal,
+          totalOmset: hasil.totalOmset,
+          totalHppTerjual: hasil.totalHppTerjual,
+          labaBersih: hasil.labaBersih,
+        },
+        // Tanggal yang sama dihitung ulang lagi -> ganti barisnya yang
+        // lama, jangan menumpuk duplikat untuk tanggal yang sama.
+        ...sebelumnya.filter((b) => b.tanggal !== tanggal),
+      ]);
     } catch (error) {
       showToast(
         "error",
@@ -655,6 +675,23 @@ function HitungUlangLabaKartu() {
           {sedangHitung ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : "Hitung"}
         </button>
       </div>
+
+      {riwayatHasil.length > 0 ? (
+        <ul className="mt-4 flex flex-col divide-y divide-slate-100 rounded-lg border border-slate-200 bg-slate-50">
+          {riwayatHasil.map((baris) => (
+            <li key={baris.tanggal} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 py-2.5 text-sm">
+              <span className="font-medium text-slate-900">{baris.tanggal}</span>
+              <span className="text-xs text-slate-600">
+                Omset <span className="font-medium tabular-nums text-slate-900">{formatRupiah(baris.totalOmset)}</span>
+                {" · "}HPP Terjual{" "}
+                <span className="font-medium tabular-nums text-slate-900">{formatRupiah(baris.totalHppTerjual)}</span>
+                {" · "}Laba Bersih{" "}
+                <span className="font-semibold tabular-nums text-emerald-700">{formatRupiah(baris.labaBersih)}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </section>
   );
 }

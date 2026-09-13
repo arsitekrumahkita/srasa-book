@@ -60,6 +60,27 @@ body {
   font-family: var(--font-sans);
 }
 
+/* Optimasi lanjutan iOS/Android (permintaan pemilik cafe: rapikan
+ * semua hal seputar itu di semua perangkat), di luar perbaikan
+ * zoom-macet field yang sudah ada di bawah:
+ * - `text-size-adjust: 100%` — mencegah Safari/Chrome mobile MEMBESARKAN
+ *   sendiri ukuran teks saat HP diputar ke landscape (bug lama WebKit,
+ *   beda dari bug zoom-saat-fokus-input yang sudah diperbaiki di bawah).
+ * - `overscroll-behavior-y: contain` di html/body — mencegah efek
+ *   "pantul" (rubber-band/pull-to-refresh) di halaman ikut menyeret
+ *   layar browser itu sendiri saat konten di dalam sudah habis
+ *   di-scroll; masih membiarkan drawer/menu (Kelola Akun, dsb) yang
+ *   scroll sendiri tetap boleh overscroll di dalam elemennya sendiri. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior-y: contain;
+}
+
+body {
+  overscroll-behavior-y: contain;
+}
+
 /* ------------------------------------------------------------
  * Optimasi ragam ukuran layar & gesture touchscreen:
  * - Safe-area (notch/pill kamera/home-indicator iPhone & Android
@@ -87,6 +108,30 @@ select,
 textarea {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+}
+
+/* Perbaikan bug "layar zoom sendiri lalu tidak kembali normal" di
+ * Safari iOS (dilaporkan pemilik cafe: mengetik di field Nama Lengkap
+ * bikin seluruh halaman ter-zoom dan macet di posisi zoom itu setelah
+ * selesai mengetik). PENYEBABNYA: Safari iOS OTOMATIS mem-zoom in
+ * setiap field <16px font-size saat difokus (disangka pengguna perlu
+ * dibesarkan supaya kebaca) — hampir semua field di app ini pakai
+ * Tailwind `text-sm` (14px), jadi KENA semua. Zoom itu lalu tersangkut
+ * karena viewport SENGAJA tidak mengunci `maximum-scale`/
+ * `user-scalable=no` (mengunci pinch-zoom melanggar WCAG untuk
+ * pengguna low-vision, lihat komentar viewport di layout.tsx) —
+ * jadi solusinya BUKAN mengunci zoom, tapi menghilangkan PEMICUNYA:
+ * pastikan semua field selalu >=16px persis di layar sempit (HP),
+ * supaya Safari tidak pernah merasa perlu men-zoom sama sekali.
+ * `!important` perlu di sini karena utility class Tailwind (mis.
+ * `text-sm`) sama-sama menata font-size lewat class selector yang
+ * spesifisitasnya sama/lebih tinggi dari selector elemen biasa. */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
 }
 
 .aman-notch-atas {

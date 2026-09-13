@@ -312,7 +312,10 @@ function Sidebar({
         </Link>
       ) : null}
 
-      <nav className="flex-1 overflow-y-auto px-3">
+      {/* overscroll-contain: scroll menu ini tidak "menyeret" body di
+          belakangnya begitu mentok atas/bawah (pantulan iOS/Android) —
+          penting karena drawer ini sendiri posisinya fixed di atas body. */}
+      <nav className="flex-1 overflow-y-auto overscroll-contain px-3">
         <ul className="flex flex-col gap-1">
           {items.map((item) => {
             const aktif = pathname === item.href;
