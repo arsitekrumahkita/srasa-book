@@ -1,19 +1,25 @@
 "use client";
 
 // ============================================================
-// Komponen: Latar Interaktif — gumpalan warna lembut (blob) di
-// belakang kartu Login yang mengikuti ARAH gerakan pointer mouse
-// (permintaan pemilik cafe: "background login page yg interaktif
-// bisa dimainkan mengikuti arah panah pointer mouse"). Efek paralaks
-// halus: tiap blob bergerak dengan kecepatan & jarak berbeda supaya
-// terasa punya kedalaman, bukan sekadar ikut nempel di posisi kursor.
+// Komponen: Latar Interaktif — model GALAXY (bintang-bintang di
+// langit gelap) di belakang kartu Login, bergerak mengikuti ARAH
+// pointer mouse dengan efek paralaks (permintaan pemilik cafe:
+// "Model Galaxy bintang bergerak mengikuti kursor mouse" — revisi
+// dari versi blob warna sebelumnya yang dianggap kurang terasa
+// efeknya).
+//
+// Digambar lewat <canvas> (bukan ratusan elemen DOM) supaya ratusan
+// bintang tetap ringan dijalankan browser. Tiap bintang punya
+// "kedalaman" (depth) acak — bintang yang lebih dekat (depth besar)
+// bergerak lebih jauh mengikuti mouse dan berkedip lebih cepat,
+// bintang jauh bergerak halus saja — itulah yang bikin terasa seperti
+// galaxy 3D, bukan sekadar titik-titik menempel di kursor.
 //
 // SENGAJA:
-// - Murni CSS transform + requestAnimationFrame, TANPA canvas/library
-//   animasi eksternal — ringan, tidak menambah dependency.
-// - Menghormati prefers-reduced-motion (webrules-hikimori/WCAG): kalau
-//   pengguna mengaktifkan itu di sistemnya, blob berhenti bergerak dan
-//   ditampilkan diam di posisi tengah, bukan mengikuti mouse.
+// - Kanvas HANYA digambar ulang lewat requestAnimationFrame, TANPA
+//   library animasi/partikel eksternal — ringan, tanpa dependency baru.
+// - Menghormati prefers-reduced-motion (WCAG): bintang tetap tampil
+//   tapi diam di posisi awal & tidak berkedip, tidak mengikuti mouse.
 // - `aria-hidden` + `pointer-events-none` — murni dekoratif, tidak
 //   pernah menghalangi klik ke form Login atau dibaca screen reader.
 // - Top-level component, tidak bersarang (webrules-hikimori poin 11).
@@ -21,102 +27,204 @@
 
 import { useEffect, useRef } from "react";
 
-interface DefinisiBlob {
-  kelasPosisi: string;
-  kelasUkuran: string;
-  kelasWarna: string;
-  /** Seberapa jauh blob ini bisa bergeser dari posisi aslinya (px). */
-  jangkauan: number;
-  /** Seberapa cepat blob ini "mengejar" posisi mouse — makin kecil,
-   *  makin lamban/berat terasa (efek paralaks kedalaman). */
-  kecepatan: number;
+interface Bintang {
+  /** Posisi dasar, 0..1 relatif ke ukuran kanvas. */
+  x: number;
+  y: number;
+  radius: number;
+  /** 0.2 (jauh, nyaris diam) .. 1 (dekat, ikut mouse paling jauh). */
+  depth: number;
+  faseKedip: number;
+  kecepatanKedip: number;
 }
 
-const DAFTAR_BLOB: DefinisiBlob[] = [
-  {
-    kelasPosisi: "-left-24 -top-24",
-    kelasUkuran: "h-96 w-96",
-    kelasWarna: "bg-emerald-300/30",
-    jangkauan: 50,
-    kecepatan: 0.05,
-  },
-  {
-    kelasPosisi: "top-1/3 right-[-9rem]",
-    kelasUkuran: "h-[28rem] w-[28rem]",
-    kelasWarna: "bg-teal-300/25",
-    jangkauan: 70,
-    kecepatan: 0.035,
-  },
-  {
-    kelasPosisi: "bottom-[-7rem] left-1/3",
-    kelasUkuran: "h-80 w-80",
-    kelasWarna: "bg-emerald-400/20",
-    jangkauan: 60,
-    kecepatan: 0.06,
-  },
-  {
-    kelasPosisi: "right-1/4 bottom-1/4",
-    kelasUkuran: "h-56 w-56",
-    kelasWarna: "bg-emerald-200/25",
-    jangkauan: 90,
-    kecepatan: 0.08,
-  },
-];
+const JUMLAH_BINTANG = 180;
+/** Beberapa "bintang jatuh" sesekali lewat, aksen galaxy tambahan. */
+const JEDA_BINTANG_JATUH_MS = 4500;
 
 export function LatarInteraktif() {
-  const refBlob = useRef<(HTMLDivElement | null)[]>([]);
+  const refCanvas = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
-    const kurangiAnimasi = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (kurangiAnimasi) return; // Blob tetap diam — lihat komentar kepala berkas.
+    const canvas = refCanvas.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-    // Posisi mouse dinormalisasi ke -1..1 dari TITIK TENGAH layar, jadi
-    // "arah" pointer (kiri/kanan/atas/bawah) langsung terasa sebagai
-    // arah gerak blob, bukan cuma menempel di posisi mutlaknya.
+    const kurangiAnimasi = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let lebar = 0;
+    let tinggi = 0;
+    let dpr = 1;
+
+    function aturUkuran() {
+      if (!canvas) return;
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      lebar = window.innerWidth;
+      tinggi = window.innerHeight;
+      canvas.width = lebar * dpr;
+      canvas.height = tinggi * dpr;
+      canvas.style.width = `${lebar}px`;
+      canvas.style.height = `${tinggi}px`;
+      ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    aturUkuran();
+
+    const bintangList: Bintang[] = Array.from({ length: JUMLAH_BINTANG }, () => ({
+      x: Math.random(),
+      y: Math.random(),
+      radius: Math.random() * 1.3 + 0.4,
+      depth: Math.random() * 0.8 + 0.2,
+      faseKedip: Math.random() * Math.PI * 2,
+      kecepatanKedip: Math.random() * 1.5 + 0.5,
+    }));
+
+    interface BintangJatuh {
+      x: number;
+      y: number;
+      panjang: number;
+      sudut: number;
+      kecepatan: number;
+      umur: number;
+      umurMaksimal: number;
+    }
+    const bintangJatuhList: BintangJatuh[] = [];
+    let waktuBintangJatuhBerikutnya = kurangiAnimasi ? Infinity : JEDA_BINTANG_JATUH_MS;
+
     let arahX = 0;
     let arahY = 0;
-    const posisiSaatIni = DAFTAR_BLOB.map(() => ({ x: 0, y: 0 }));
-    let frameId = 0;
+    let mouseHalusX = 0;
+    let mouseHalusY = 0;
 
     function tangkapGerakMouse(event: MouseEvent) {
       arahX = (event.clientX / window.innerWidth) * 2 - 1;
       arahY = (event.clientY / window.innerHeight) * 2 - 1;
     }
-    window.addEventListener("mousemove", tangkapGerakMouse);
-
-    function animasikan() {
-      DAFTAR_BLOB.forEach((blob, i) => {
-        const el = refBlob.current[i];
-        if (!el) return;
-        const target = posisiSaatIni[i];
-        target.x += (arahX * blob.jangkauan - target.x) * blob.kecepatan;
-        target.y += (arahY * blob.jangkauan - target.y) * blob.kecepatan;
-        el.style.transform = `translate3d(${target.x.toFixed(1)}px, ${target.y.toFixed(1)}px, 0)`;
-      });
-      frameId = requestAnimationFrame(animasikan);
+    if (!kurangiAnimasi) {
+      window.addEventListener("mousemove", tangkapGerakMouse);
     }
-    frameId = requestAnimationFrame(animasikan);
+    window.addEventListener("resize", aturUkuran);
+
+    let frameId = 0;
+    const waktuAwal = performance.now();
+    let waktuFrameLalu = waktuAwal;
+
+    function gambar(waktuSekarang: number) {
+      const t = (waktuSekarang - waktuAwal) / 1000;
+      const dtMs = waktuSekarang - waktuFrameLalu;
+      waktuFrameLalu = waktuSekarang;
+
+      if (!kurangiAnimasi) {
+        // Interpolasi halus (lerp) supaya gerak bintang mengikuti mouse
+        // dengan lembut, bukan langsung meloncat ke posisi baru.
+        mouseHalusX += (arahX - mouseHalusX) * 0.04;
+        mouseHalusY += (arahY - mouseHalusY) * 0.04;
+      }
+
+      if (!ctx || !canvas) return;
+      ctx.clearRect(0, 0, lebar, tinggi);
+
+      // Langit galaxy: gradien gelap navy -> hijau tua sangat pekat,
+      // supaya kartu Login putih di atasnya kelihatan menonjol seperti
+      // jendela pesawat luar angkasa.
+      const gradien = ctx.createRadialGradient(
+        lebar * 0.5,
+        tinggi * 0.35,
+        0,
+        lebar * 0.5,
+        tinggi * 0.5,
+        Math.max(lebar, tinggi) * 0.9,
+      );
+      gradien.addColorStop(0, "#0f2f27");
+      gradien.addColorStop(0.55, "#08181a");
+      gradien.addColorStop(1, "#020608");
+      ctx.fillStyle = gradien;
+      ctx.fillRect(0, 0, lebar, tinggi);
+
+      const JANGKAUAN_MAKS = 70; // px pergeseran maksimum bintang terdekat
+
+      for (const bintang of bintangList) {
+        const dx = mouseHalusX * JANGKAUAN_MAKS * bintang.depth;
+        const dy = mouseHalusY * JANGKAUAN_MAKS * bintang.depth;
+        const px = bintang.x * lebar + dx;
+        const py = bintang.y * tinggi + dy;
+
+        const kedip = kurangiAnimasi
+          ? 0.85
+          : 0.5 + 0.5 * Math.sin(t * bintang.kecepatanKedip + bintang.faseKedip);
+        const alpha = 0.25 + kedip * 0.75 * bintang.depth + 0.1;
+
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(255,255,255,${Math.min(alpha, 1).toFixed(3)})`;
+        ctx.arc(px, py, bintang.radius * (0.7 + bintang.depth * 0.6), 0, Math.PI * 2);
+        ctx.fill();
+
+        // Bintang besar/dekat diberi sedikit cahaya (glow) tipis —
+        // aksen galaxy, bukan sekadar titik polos.
+        if (bintang.depth > 0.7) {
+          ctx.beginPath();
+          ctx.fillStyle = `rgba(110,231,183,${(alpha * 0.35).toFixed(3)})`;
+          ctx.arc(px, py, bintang.radius * 2.6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // --- Bintang jatuh sesekali (aksen, bukan elemen utama) ---
+      if (!kurangiAnimasi) {
+        waktuBintangJatuhBerikutnya -= dtMs;
+        if (waktuBintangJatuhBerikutnya <= 0) {
+          waktuBintangJatuhBerikutnya = JEDA_BINTANG_JATUH_MS + Math.random() * 3500;
+          bintangJatuhList.push({
+            x: Math.random() * lebar * 0.6 + lebar * 0.2,
+            y: Math.random() * tinggi * 0.25,
+            panjang: Math.random() * 60 + 60,
+            sudut: (Math.PI / 4) * (Math.random() * 0.4 + 0.8),
+            kecepatan: Math.random() * 6 + 8,
+            umur: 0,
+            umurMaksimal: 700 + Math.random() * 300,
+          });
+        }
+        for (let i = bintangJatuhList.length - 1; i >= 0; i -= 1) {
+          const bj = bintangJatuhList[i];
+          bj.umur += dtMs;
+          bj.x += Math.cos(bj.sudut) * bj.kecepatan;
+          bj.y += Math.sin(bj.sudut) * bj.kecepatan;
+          const progres = bj.umur / bj.umurMaksimal;
+          if (progres >= 1) {
+            bintangJatuhList.splice(i, 1);
+            continue;
+          }
+          const alphaEkor = Math.sin(Math.PI * (1 - progres)) * 0.8;
+          const ekorX = bj.x - Math.cos(bj.sudut) * bj.panjang;
+          const ekorY = bj.y - Math.sin(bj.sudut) * bj.panjang;
+          const gradienEkor = ctx.createLinearGradient(ekorX, ekorY, bj.x, bj.y);
+          gradienEkor.addColorStop(0, "rgba(255,255,255,0)");
+          gradienEkor.addColorStop(1, `rgba(255,255,255,${alphaEkor.toFixed(3)})`);
+          ctx.strokeStyle = gradienEkor;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(ekorX, ekorY);
+          ctx.lineTo(bj.x, bj.y);
+          ctx.stroke();
+        }
+      }
+
+      frameId = requestAnimationFrame(gambar);
+    }
+    frameId = requestAnimationFrame(gambar);
 
     return () => {
       window.removeEventListener("mousemove", tangkapGerakMouse);
+      window.removeEventListener("resize", aturUkuran);
       cancelAnimationFrame(frameId);
     };
   }, []);
 
   return (
-    <div
+    <canvas
+      ref={refCanvas}
       aria-hidden="true"
-      className="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-gradient-to-br from-emerald-50 via-white to-teal-50"
-    >
-      {DAFTAR_BLOB.map((blob, i) => (
-        <div
-          key={i}
-          ref={(el) => {
-            refBlob.current[i] = el;
-          }}
-          className={`absolute rounded-full blur-3xl will-change-transform ${blob.kelasPosisi} ${blob.kelasUkuran} ${blob.kelasWarna}`}
-        />
-      ))}
-    </div>
+      className="pointer-events-none fixed inset-0 -z-10"
+    />
   );
 }
