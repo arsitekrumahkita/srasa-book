@@ -311,7 +311,7 @@ function RefundIsi() {
   }
 
   return (
-    <main className="animasi-masuk mx-auto w-full max-w-2xl px-4 py-8 sm:px-6">
+    <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Refund</h1>
@@ -322,7 +322,11 @@ function RefundIsi() {
         </p>
       </header>
 
-      <div className="flex flex-col gap-6">
+      {/* Alur 3 langkah (pilih shift -> pilih menu -> isi refund)
+          ditampilkan berdampingan di layar lebar sebagai 3 kolom,
+          bukan ditumpuk vertikal — kelihatan seluruh progres sekaligus
+          tanpa scroll. */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3 xl:items-start">
         <section className="kartu-interaktif rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <label htmlFor="rf-tanggal" className="block text-sm font-semibold text-slate-800">
             Tanggal transaksi asal

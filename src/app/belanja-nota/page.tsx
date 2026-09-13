@@ -374,7 +374,7 @@ function BelanjaBerjalan({
   const sisaKas = modalDiberikan - totalBelanja;
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-center justify-between gap-3">
         <div>
           <KickerOutlet />
@@ -401,9 +401,12 @@ function BelanjaBerjalan({
           totalBelanja={totalBelanja}
         />
 
-        <PenyesuaianStokKartu daftarBahan={daftarBahan} />
-
-        <BatasMinimalStokKartu daftarBahan={daftarBahan} />
+        {/* Dua panel utilitas kecil ini berdampingan di layar lebar —
+            sama-sama pengaturan sampingan, bukan alur utama belanja. */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
+          <PenyesuaianStokKartu daftarBahan={daftarBahan} />
+          <BatasMinimalStokKartu daftarBahan={daftarBahan} />
+        </div>
 
         <NotaKartu belanjaId={belanjaId} notaList={notaList} />
 

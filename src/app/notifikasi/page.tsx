@@ -55,7 +55,7 @@ function NotifikasiIsi() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-8 sm:px-6">
+    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-center gap-2">
         <Bell className="h-5 w-5 text-emerald-700" aria-hidden="true" />
         <div>

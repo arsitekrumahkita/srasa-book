@@ -66,7 +66,7 @@ function ProfilIsi() {
   const bolehAturPerusahaan = profil?.peran === "superadmin" || profil?.peran === "finance";
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Profil Akun</h1>
@@ -75,7 +75,8 @@ function ProfilIsi() {
         </p>
       </header>
 
-      <div className="flex flex-col gap-6">
+      {/* Tiga kartu independen — berdampingan di layar lebar. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
         <BiodataKartu />
         <GantiSandiKartu />
         {bolehAturPerusahaan ? <DetailPerusahaanKartu /> : null}

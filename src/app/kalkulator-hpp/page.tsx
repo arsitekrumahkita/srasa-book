@@ -747,7 +747,7 @@ function KalkulatorHppForm() {
   }
 
   return (
-    <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <button
           type="button"
@@ -767,6 +767,13 @@ function KalkulatorHppForm() {
       </header>
 
       <div className="flex flex-col gap-6">
+        {/* Kolom kiri: input form (Data Menu, Resep, Packaging, Profil
+            Cafe). Kolom kanan: hasil hitung LIVE (Rincian HPP,
+            Rekomendasi Harga, Evaluasi) — mengikuti sambil scroll di
+            layar lebar (xl:sticky) supaya kelihatan terus sambil isi
+            form di kiri, daripada harus scroll bolak-balik. */}
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[3fr_2fr] xl:items-start">
+        <div className="flex flex-col gap-6">
         {/* --- Kartu: Data Menu --- */}
         <section
           aria-labelledby="bagian-menu"
@@ -1214,7 +1221,9 @@ function KalkulatorHppForm() {
             />
           </div>
         </section>
+        </div>
 
+        <div className="flex flex-col gap-6 xl:sticky xl:top-6">
         {/* --- Kartu: Rincian HPP (hasil live) --- */}
         <section
           aria-labelledby="bagian-rincian"
@@ -1367,6 +1376,8 @@ function KalkulatorHppForm() {
             </p>
           )}
         </section>
+        </div>
+        </div>
 
         {/* --- Tombol Simpan --- */}
         <div className="flex justify-end">
@@ -1434,7 +1445,7 @@ function DaftarProdukIsi({
   }, [daftarMenu]);
 
   return (
-    <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-start justify-between gap-3">
         <div>
           <KickerOutlet />
@@ -1491,7 +1502,7 @@ function DaftarProdukIsi({
           menu pertama.
         </p>
       ) : (
-        <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
           {[...perKategori.entries()].map(([kategori, items]) => (
             <section key={kategori}>
               <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">

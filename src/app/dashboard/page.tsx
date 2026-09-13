@@ -914,7 +914,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
   }
 
   return (
-    <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
+    <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
@@ -946,7 +946,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
           Belum ada Bahan Baku tercatat.
         </p>
       ) : (
-        <div className="flex flex-col gap-5">
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
           {[...perKategori.entries()].map(([kategori, items]) => (
             <section
               key={kategori}

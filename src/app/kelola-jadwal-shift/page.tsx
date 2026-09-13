@@ -95,7 +95,7 @@ function KelolaJadwalShiftIsi() {
   }, [outletId]);
 
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-8 sm:px-6">
+    <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Jadwal Shift</h1>
@@ -113,7 +113,7 @@ function KelolaJadwalShiftIsi() {
           Memuat data...
         </div>
       ) : (
-        <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
           <TambahSlotKartu />
           <DaftarSlotKartu daftarSlot={daftarSlot} />
         </div>

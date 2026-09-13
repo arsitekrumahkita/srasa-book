@@ -840,7 +840,7 @@ function ShiftBerjalan({
   }, [menuList]);
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-center justify-between gap-3">
         <div>
           <KickerOutlet />
@@ -887,7 +887,7 @@ function ShiftBerjalan({
               Menyiapkan data resep...
             </p>
           ) : (
-            <div className="mt-4 flex flex-col gap-5">
+            <div className="mt-4 grid grid-cols-1 gap-5 xl:grid-cols-2 xl:items-start">
               {[...menuPerKategori.entries()].map(([kategori, items]) => (
                 <div key={kategori}>
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">

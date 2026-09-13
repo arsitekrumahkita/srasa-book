@@ -94,7 +94,7 @@ function RiwayatIsi() {
   }, [outletId]);
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Riwayat Shift</h1>
@@ -106,8 +106,13 @@ function RiwayatIsi() {
       <div className="mb-6 flex flex-col gap-6">
         <TanggunganKasirKartu />
         <RiwayatRefundKartu />
-        <EksporLaporanKartu daftarShift={daftarShift} />
-        <HitungUlangLabaKartu />
+        {/* Ekspor Laporan & Hitung Ulang sama-sama panel aksi ringkas —
+            berdampingan di layar lebar supaya tidak ada ruang kosong,
+            otomatis turun jadi 1 kolom di layar sempit. */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <EksporLaporanKartu daftarShift={daftarShift} />
+          <HitungUlangLabaKartu />
+        </div>
       </div>
 
       {memuat ? (

@@ -75,7 +75,7 @@ function KelolaOutletIsi() {
   }, []);
 
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-8 sm:px-6">
+    <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
           ARCHIMAX — Food n Beverages Lifestyle Accounting
@@ -95,7 +95,7 @@ function KelolaOutletIsi() {
           Memuat data...
         </div>
       ) : (
-        <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
           <TambahOutletKartu />
           <DaftarOutletKartu daftar={daftar} />
         </div>

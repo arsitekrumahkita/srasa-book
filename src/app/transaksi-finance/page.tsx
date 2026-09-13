@@ -126,7 +126,7 @@ function TransaksiFinanceIsi() {
   }, [outletId]);
 
   return (
-    <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Transaksi Finance</h1>

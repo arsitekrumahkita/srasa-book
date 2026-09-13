@@ -118,7 +118,7 @@ function KelolaAkunIsi() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Kelola Akun</h1>
@@ -285,7 +285,7 @@ function BuatAkunKartu() {
         </h2>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <div>
           <label htmlFor="nama-staff" className="block text-sm font-semibold text-slate-800">
             Nama
@@ -472,7 +472,7 @@ function BarisAkun({
             Peran) — jangan digabung dengan "·" saja supaya jelas
             fieldnya apa, terutama buat pengguna yang belum akrab
             istilah teknis (permintaan pemilik cafe). */}
-        <dl className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-4">
+        <dl className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-4">
           <div className="flex gap-1.5">
             <dt className="font-medium text-slate-400">Email:</dt>
             <dd className="truncate">{akun.email}</dd>
