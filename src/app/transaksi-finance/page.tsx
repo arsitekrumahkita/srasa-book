@@ -20,7 +20,9 @@
 // app-shell.tsx), tapi kedua form di bawah cuma dirender aktif untuk
 // akun berperan "finance" — firestore.rules yang menegakkan
 // sungguhan (create/update transaksi_finance & saldo_finance HANYA
-// isFinance(), bukan isSuperadmin()), UI ini cuma memberi kejelasan.
+// isFinanceOutlet(), bukan isManagerOutlet()), UI ini cuma memberi
+// kejelasan. Semua ini SEKARANG per Outlet (Multi-Cabang) — Finance
+// setara Owner HANYA di dalam Outlet-nya sendiri.
 //
 // Top-level components, tidak bersarang (webrules-hikimori poin 11).
 // ============================================================
@@ -29,9 +31,11 @@ import { useEffect, useState } from "react";
 import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, setDoc } from "firebase/firestore";
 import { ArrowDownCircle, ArrowUpCircle, Landmark, Loader2, Save } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
 import { useAuth } from "@/shared/lib/auth-context";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
@@ -77,6 +81,7 @@ export default function TransaksiFinancePage() {
 
 function TransaksiFinanceIsi() {
   const { profil } = useAuth();
+  const outletId = useOutletId();
   const bisaEksekusi = profil?.peran === "finance";
 
   const [saldo, setSaldo] = useState(0);
@@ -86,7 +91,7 @@ function TransaksiFinanceIsi() {
 
   useEffect(() => {
     const unsub = onSnapshot(
-      doc(db, "saldo_finance", ID_SALDO_FINANCE),
+      doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
       (snap) => {
         setSaldo(snap.exists() ? (snap.data().saldo ?? 0) : 0);
         setMemuatSaldo(false);
@@ -94,11 +99,11 @@ function TransaksiFinanceIsi() {
       () => setMemuatSaldo(false),
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "transaksi_finance"), orderBy("waktu", "desc")),
+      query(collection(db, "outlets", outletId, "transaksi_finance"), orderBy("waktu", "desc")),
       (snap) => {
         setRiwayat(
           snap.docs.slice(0, 50).map((d) => ({
@@ -118,12 +123,12 @@ function TransaksiFinanceIsi() {
       () => setMemuatRiwayat(false),
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   return (
     <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">SRASA BOOK</p>
+        <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Transaksi Finance</h1>
         <p className="mt-1 text-sm text-slate-600">
           Saldo Deposito Finance — sumber dana DI LUAR Omset penjualan (pemberian dana langsung dari
@@ -217,6 +222,7 @@ function TransaksiFinanceIsi() {
 
 function TambahDanaKartu({ saldo }: { saldo: number }) {
   const { user, profil } = useAuth();
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [nominal, setNominal] = useState(0);
   const [keterangan, setKeterangan] = useState("");
@@ -230,7 +236,7 @@ function TambahDanaKartu({ saldo }: { saldo: number }) {
     }
     setSedangSimpan(true);
     try {
-      await addDoc(collection(db, "transaksi_finance"), {
+      await addDoc(collection(db, "outlets", outletId, "transaksi_finance"), {
         arah: "masuk",
         kategori: "Tambah Dana",
         subKategori: "",
@@ -242,7 +248,7 @@ function TambahDanaKartu({ saldo }: { saldo: number }) {
         waktu: serverTimestamp(),
       });
       await setDoc(
-        doc(db, "saldo_finance", ID_SALDO_FINANCE),
+        doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
         { saldo: increment(nominal) },
         { merge: true },
       );
@@ -304,6 +310,7 @@ function TambahDanaKartu({ saldo }: { saldo: number }) {
 
 function CatatTransaksiKeluarKartu({ saldo }: { saldo: number }) {
   const { user, profil } = useAuth();
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [kategori, setKategori] = useState<KategoriKeluar>("Gaji Karyawan");
   const [subKategoriOperasional, setSubKategoriOperasional] = useState<(typeof SUB_KATEGORI_OPERASIONAL)[number]>(
@@ -333,7 +340,7 @@ function CatatTransaksiKeluarKartu({ saldo }: { saldo: number }) {
 
     setSedangSimpan(true);
     try {
-      await addDoc(collection(db, "transaksi_finance"), {
+      await addDoc(collection(db, "outlets", outletId, "transaksi_finance"), {
         arah: "keluar",
         kategori,
         subKategori,
@@ -345,7 +352,7 @@ function CatatTransaksiKeluarKartu({ saldo }: { saldo: number }) {
         waktu: serverTimestamp(),
       });
       await setDoc(
-        doc(db, "saldo_finance", ID_SALDO_FINANCE),
+        doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
         { saldo: increment(-nominal) },
         { merge: true },
       );

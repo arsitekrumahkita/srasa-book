@@ -34,6 +34,8 @@ import {
   Loader2,
 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { useOutletId } from "@/shared/lib/outlet-context";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
@@ -64,13 +66,14 @@ export default function RiwayatPage() {
 }
 
 function RiwayatIsi() {
+  const outletId = useOutletId();
   const [daftarShift, setDaftarShift] = useState<RiwayatShift[]>([]);
   const [memuat, setMemuat] = useState(true);
   const [dibuka, setDibuka] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "shift"), orderBy("tanggal", "desc")),
+      query(collection(db, "outlets", outletId, "shift"), orderBy("tanggal", "desc")),
       (snap) => {
         setDaftarShift(
           snap.docs.map((d) => ({
@@ -88,14 +91,12 @@ function RiwayatIsi() {
       () => setMemuat(false),
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          SRASA BOOK
-        </p>
+        <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Riwayat Shift</h1>
         <p className="mt-1 text-sm text-slate-600">
           Daftar seluruh shift, terbaru di atas.
@@ -188,6 +189,7 @@ function RiwayatIsi() {
  * pencatatan pembayaran tunai di dalam sistem ini).
  */
 function TanggunganKasirKartu() {
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [daftar, setDaftar] = useState<TanggunganKasir[]>([]);
   const [memuat, setMemuat] = useState(true);
@@ -195,7 +197,7 @@ function TanggunganKasirKartu() {
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "tanggungan_kasir"), where("status", "==", "belum_lunas")),
+      query(collection(db, "outlets", outletId, "tanggungan_kasir"), where("status", "==", "belum_lunas")),
       (snap) => {
         setDaftar(
           snap.docs.map((d) => ({
@@ -214,12 +216,12 @@ function TanggunganKasirKartu() {
       () => setMemuat(false),
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   async function tandaiLunas(id: string) {
     setSedangUbah(id);
     try {
-      await updateDoc(doc(db, "tanggungan_kasir", id), { status: "lunas" });
+      await updateDoc(doc(db, "outlets", outletId, "tanggungan_kasir", id), { status: "lunas" });
       showToast("success", "Tanggungan ditandai lunas.");
     } catch (error) {
       showToast(
@@ -294,12 +296,13 @@ interface RiwayatNotaRefund {
  * approval sebelum refund terjadi.
  */
 function RiwayatRefundKartu() {
+  const outletId = useOutletId();
   const [daftar, setDaftar] = useState<RiwayatNotaRefund[]>([]);
   const [memuat, setMemuat] = useState(true);
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "nota_refund"), orderBy("waktuDibuat", "desc")),
+      query(collection(db, "outlets", outletId, "nota_refund"), orderBy("waktuDibuat", "desc")),
       (snap) => {
         setDaftar(
           snap.docs.slice(0, 50).map((d) => ({
@@ -319,7 +322,7 @@ function RiwayatRefundKartu() {
       () => setMemuat(false),
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   if (memuat || daftar.length === 0) return null;
 
@@ -555,6 +558,7 @@ function tanggalIniISO(): string {
  * belakangan, atau Owner belum sempat buka Dashboard hari itu).
  */
 function HitungUlangLabaKartu() {
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [tanggal, setTanggal] = useState(tanggalIniISO());
   const [sedangHitung, setSedangHitung] = useState(false);
@@ -562,7 +566,7 @@ function HitungUlangLabaKartu() {
   async function handleHitung() {
     setSedangHitung(true);
     try {
-      const hasil = await hitungLabaHarian(tanggal);
+      const hasil = await hitungLabaHarian(outletId, tanggal);
       // Ringkasan harian ditulis ULANG dari sumber aslinya (dokumen shift
       // + subkoleksi penjualan), bukan sekadar menambah labaBersih.
       // summary_harian normalnya dibentuk lewat increment() oleh Kasir
@@ -573,7 +577,7 @@ function HitungUlangLabaKartu() {
       // pemulihannya: menimpa semua angka hari itu dengan hasil hitung
       // ulang yang otoritatif.
       await setDoc(
-        doc(db, "summary_harian", tanggal),
+        doc(db, "outlets", outletId, "summary_harian", tanggal),
         {
           totalOmset: hasil.totalOmset,
           omsetTunai: hasil.omsetTunai,

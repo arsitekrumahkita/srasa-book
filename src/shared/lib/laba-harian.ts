@@ -78,8 +78,10 @@ const DEFAULTS_PROFIL_CAFE: ProfilHppDefault = {
   metodeHargaDefault: "margin",
 };
 
-export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian> {
-  const shiftSnap = await getDocs(query(collection(db, "shift"), where("tanggal", "==", tanggal)));
+export async function hitungLabaHarian(outletId: string, tanggal: string): Promise<HasilLabaHarian> {
+  const shiftSnap = await getDocs(
+    query(collection(db, "outlets", outletId, "shift"), where("tanggal", "==", tanggal)),
+  );
 
   let totalOmset = 0;
   let totalKasKeluar = 0;
@@ -102,7 +104,7 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
   //   asli yang sudah final).
   const refundNonTunaiSnap = await getDocs(
     query(
-      collection(db, "nota_refund"),
+      collection(db, "outlets", outletId, "nota_refund"),
       where("tanggalRefund", "==", tanggal),
       where("metode", "==", "non_tunai"),
     ),
@@ -126,7 +128,9 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
     // datanya baik-baik saja. Dengan satu sumber yang sama, angkanya
     // konsisten kapan pun dibuka, dan hasilnya tetap identik setelah
     // shift ditutup.
-    const penjualanSnap = await getDocs(collection(db, "shift", shiftDoc.id, "penjualan"));
+    const penjualanSnap = await getDocs(
+      collection(db, "outlets", outletId, "shift", shiftDoc.id, "penjualan"),
+    );
 
     // Rincian metode bayar (Tunai/QRIS-Non-Tunai) SEKARANG dicatat per
     // ITEM sejak Kasir memilih metode bayar saat input penjualan (lihat
@@ -182,7 +186,7 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
   async function ambilHargaBahan(bahanId: string): Promise<number> {
     const cached = cacheHargaBahan.get(bahanId);
     if (cached !== undefined) return cached;
-    const snap = await getDoc(doc(db, "bahan_baku", bahanId));
+    const snap = await getDoc(doc(db, "outlets", outletId, "bahan_baku", bahanId));
     const harga = snap.exists() ? (snap.data().hargaSatuanTerakhir ?? 0) : 0;
     cacheHargaBahan.set(bahanId, harga);
     return harga;
@@ -192,7 +196,7 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
   const rincianPerMenu: RincianLabaMenu[] = [];
 
   for (const [menuId, info] of qtyPerMenu.entries()) {
-    const menuSnap = await getDoc(doc(db, "menu", menuId));
+    const menuSnap = await getDoc(doc(db, "outlets", outletId, "menu", menuId));
     const menuData = menuSnap.exists() ? menuSnap.data() : null;
 
     // Resep dan Packaging Cost disimpan di SUBKOLEKSI YANG SAMA
@@ -204,7 +208,7 @@ export async function hitungLabaHarian(tanggal: string): Promise<HasilLabaHarian
     // diedit, sedangkan di sini kita mau angka yang selalu mutakhir
     // (harga bahan & kemasan bisa berubah kapan pun Purchasing belanja
     // lagi, tanpa Owner perlu membuka-tutup Kalkulator HPP lagi).
-    const resepSnap = await getDocs(collection(db, "menu", menuId, "resep"));
+    const resepSnap = await getDocs(collection(db, "outlets", outletId, "menu", menuId, "resep"));
     let hppBahan = 0;
     let biayaKemasan = 0;
     for (const r of resepSnap.docs) {

@@ -1,14 +1,16 @@
 "use client";
 
 // ============================================================
-// Baca/tulis Detail Perusahaan (profil_cafe/utama). Dipakai LINTAS
-// HALAMAN — Profil Akun (Owner mengaturnya) dan Riwayat (ekspor
+// Baca/tulis Detail Perusahaan (outlets/{outletId}/profil_cafe/utama
+// — per Outlet, Multi-Cabang). Dipakai LINTAS HALAMAN — Profil Akun
+// (Owner/Finance outlet itu mengaturnya) dan Riwayat (ekspor
 // memakainya sebagai KOP surat) -> shared (Rule of Two terpenuhi).
 // ============================================================
 
 import { useEffect, useState } from "react";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "./firebase";
+import { useOutlet } from "./outlet-context";
 import {
   DETAIL_PERUSAHAAN_KOSONG,
   ID_DOKUMEN_PERUSAHAAN,
@@ -28,9 +30,11 @@ function bacaDokumen(data: Record<string, unknown> | undefined): DetailPerusahaa
   };
 }
 
-export async function ambilDetailPerusahaan(): Promise<DetailPerusahaan> {
+export async function ambilDetailPerusahaan(outletId: string): Promise<DetailPerusahaan> {
   try {
-    const snap = await getDoc(doc(db, "profil_cafe", ID_DOKUMEN_PERUSAHAAN));
+    const snap = await getDoc(
+      doc(db, "outlets", outletId, "profil_cafe", ID_DOKUMEN_PERUSAHAAN),
+    );
     return bacaDokumen(snap.data());
   } catch {
     // Gagal baca (offline/izin) -> kembalikan yang kosong. Ekspor tetap
@@ -40,26 +44,33 @@ export async function ambilDetailPerusahaan(): Promise<DetailPerusahaan> {
   }
 }
 
-export async function simpanDetailPerusahaan(detail: DetailPerusahaan): Promise<void> {
+export async function simpanDetailPerusahaan(
+  outletId: string,
+  detail: DetailPerusahaan,
+): Promise<void> {
   await setDoc(
-    doc(db, "profil_cafe", ID_DOKUMEN_PERUSAHAAN),
+    doc(db, "outlets", outletId, "profil_cafe", ID_DOKUMEN_PERUSAHAAN),
     { ...detail, updatedAt: serverTimestamp() },
     { merge: true },
   );
 }
 
-/** Versi hook untuk dipakai di komponen (Profil Akun & kartu Ekspor). */
+/** Versi hook untuk dipakai di komponen (Profil Akun & kartu Ekspor).
+ *  Outlet diambil otomatis dari useOutlet() — komponen pemanggil
+ *  TIDAK perlu meneruskannya manual. */
 export function useDetailPerusahaan(): {
   detail: DetailPerusahaan;
   memuat: boolean;
   setDetail: (d: DetailPerusahaan) => void;
 } {
+  const { outletId } = useOutlet();
   const [detail, setDetail] = useState<DetailPerusahaan>(DETAIL_PERUSAHAAN_KOSONG);
   const [memuat, setMemuat] = useState(true);
 
   useEffect(() => {
+    if (!outletId) return;
     let dibatalkan = false;
-    ambilDetailPerusahaan().then((hasil) => {
+    ambilDetailPerusahaan(outletId).then((hasil) => {
       if (dibatalkan) return;
       setDetail(hasil);
       setMemuat(false);
@@ -67,7 +78,7 @@ export function useDetailPerusahaan(): {
     return () => {
       dibatalkan = true;
     };
-  }, []);
+  }, [outletId]);
 
   return { detail, memuat, setDetail };
 }

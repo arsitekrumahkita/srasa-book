@@ -53,8 +53,10 @@ import {
   YAxis,
 } from "recharts";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useAuth } from "@/shared/lib/auth-context";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { useNotifikasiGabungan } from "@/shared/lib/notifikasi";
@@ -121,6 +123,7 @@ function DashboardRouter() {
 }
 
 function DashboardIsi() {
+  const outletId = useOutletId();
   const [ringkasanHarian, setRingkasanHarian] = useState<SummaryHarian | null>(null);
   const [ringkasanKemarin, setRingkasanKemarin] = useState<SummaryHarian | null>(null);
   const [ringkasanBulanan, setRingkasanBulanan] = useState<SummaryHarian | null>(null);
@@ -166,7 +169,7 @@ function DashboardIsi() {
         setErrorTren(null);
       }
     });
-    ambilTren(periodeTren, opsiTren)
+    ambilTren(outletId, periodeTren, opsiTren)
       .then((hasil) => {
         if (!dibatalkan) setDataTren(hasil);
       })
@@ -179,7 +182,7 @@ function DashboardIsi() {
     return () => {
       dibatalkan = true;
     };
-  }, [periodeTren, opsiTren]);
+  }, [outletId, periodeTren, opsiTren]);
 
   // --- Rekap Metode Bayar (Tunai/Non-Tunai) + Best Seller/Slow Moving,
   // untuk rentang PeriodeTren yang sama dengan grafik di atas (atas
@@ -196,7 +199,7 @@ function DashboardIsi() {
         setErrorRingkasanPeriode(null);
       }
     });
-    ambilRingkasanPeriode(periodeTren, opsiTren)
+    ambilRingkasanPeriode(outletId, periodeTren, opsiTren)
       .then((hasil) => {
         if (!dibatalkan) setRingkasanPeriode(hasil);
       })
@@ -209,7 +212,7 @@ function DashboardIsi() {
     return () => {
       dibatalkan = true;
     };
-  }, [periodeTren, opsiTren]);
+  }, [outletId, periodeTren, opsiTren]);
 
   // Banner Stok Menipis — kriteria "Batas Minimal Stok" ditentukan
   // manual per bahan (lihat Belanja & Nota / Kelola Produk). Owner/
@@ -218,7 +221,7 @@ function DashboardIsi() {
   // Kasir/Purchasing).
   const [bahanMenipis, setBahanMenipis] = useState<{ id: string; nama: string; stokSaatIni: number; satuan: string; batasMinimalStok: number }[]>([]);
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "bahan_baku"), (snap) => {
+    const unsub = onSnapshot(collection(db, "outlets", outletId, "bahan_baku"), (snap) => {
       setBahanMenipis(
         snap.docs
           .map((d) => ({
@@ -232,7 +235,7 @@ function DashboardIsi() {
       );
     });
     return unsub;
-  }, []);
+  }, [outletId]);
 
   useEffect(() => {
     const idHarian = tanggalKe(0);
@@ -240,7 +243,7 @@ function DashboardIsi() {
     const idBulanan = bulanIni();
 
     const unsubHarian = onSnapshot(
-      doc(db, "summary_harian", idHarian),
+      doc(db, "outlets", outletId, "summary_harian", idHarian),
       (snap) => {
         setRingkasanHarian(snap.exists() ? (snap.data() as SummaryHarian) : null);
         setMemuat(false);
@@ -251,11 +254,11 @@ function DashboardIsi() {
       },
     );
 
-    const unsubKemarin = onSnapshot(doc(db, "summary_harian", idKemarin), (snap) => {
+    const unsubKemarin = onSnapshot(doc(db, "outlets", outletId, "summary_harian", idKemarin), (snap) => {
       setRingkasanKemarin(snap.exists() ? (snap.data() as SummaryHarian) : null);
     });
 
-    const unsubBulanan = onSnapshot(doc(db, "summary_bulanan", idBulanan), (snap) => {
+    const unsubBulanan = onSnapshot(doc(db, "outlets", outletId, "summary_bulanan", idBulanan), (snap) => {
       setRingkasanBulanan(snap.exists() ? (snap.data() as SummaryHarian) : null);
     });
 
@@ -264,7 +267,7 @@ function DashboardIsi() {
       unsubKemarin();
       unsubBulanan();
     };
-  }, []);
+  }, [outletId]);
 
   // --- Laba Bersih & HPP Terjual OTOMATIS, dihitung dari Resep +
   // harga bahan TERKINI (lihat src/shared/lib/laba-harian.ts) —
@@ -279,10 +282,10 @@ function DashboardIsi() {
     if (sudahHitungLabaRef.current) return;
     sudahHitungLabaRef.current = true;
     const tanggal = tanggalKe(0);
-    hitungLabaHarian(tanggal)
+    hitungLabaHarian(outletId, tanggal)
       .then((hasil) =>
         setDoc(
-          doc(db, "summary_harian", tanggal),
+          doc(db, "outlets", outletId, "summary_harian", tanggal),
           { labaBersih: hasil.labaBersih, totalHpp: hasil.totalHppTerjual },
           { merge: true },
         ),
@@ -290,7 +293,7 @@ function DashboardIsi() {
       .catch(() => {
         // Diamkan — kartu Laba Bersih cukup menampilkan nilai lama/0.
       });
-  }, []);
+  }, [outletId]);
 
   const komposisiHariIni = useMemo(() => {
     if (!ringkasanHarian) return [];
@@ -313,9 +316,7 @@ function DashboardIsi() {
   return (
     <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          SRASA BOOK
-        </p>
+        <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
         <p className="mt-1 text-sm text-slate-600">
           Ringkasan hari ini, analitik tren, dan aktivitas terbaru.
@@ -862,13 +863,14 @@ interface BarisStok {
 }
 
 function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
+  const outletId = useOutletId();
   const [daftar, setDaftar] = useState<BarisStok[]>([]);
   const [memuat, setMemuat] = useState(true);
 
   useEffect(() => {
     const koleksi = peran === "purchasing" ? "bahan_baku" : "stok_kasir";
     const unsub = onSnapshot(
-      collection(db, koleksi),
+      collection(db, "outlets", outletId, koleksi),
       (snap) => {
         setDaftar(
           snap.docs.map((d) => ({
@@ -885,7 +887,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
       () => setMemuat(false),
     );
     return unsub;
-  }, [peran]);
+  }, [outletId, peran]);
 
   const menipis = useMemo(
     () => daftar.filter((b) => b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok),
@@ -914,9 +916,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
   return (
     <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          SRASA BOOK
-        </p>
+        <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
         <p className="mt-1 text-sm text-slate-600">Rincian stok bahan baku gudang.</p>
       </header>

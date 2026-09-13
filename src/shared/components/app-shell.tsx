@@ -26,12 +26,15 @@ import { signOut } from "firebase/auth";
 import {
   Bell,
   History,
+  Building2,
   CalendarClock,
+  DatabaseBackup,
   Landmark,
   LayoutDashboard,
   LogOut,
   Menu,
   Package,
+  Repeat,
   RotateCcw,
   ShoppingBasket,
   UserRound,
@@ -41,14 +44,27 @@ import {
 } from "lucide-react";
 import { auth } from "@/shared/lib/firebase";
 import { useAuth, type PeranPengguna } from "@/shared/lib/auth-context";
+import { useOutlet } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { AutoLogout } from "@/shared/components/auto-logout";
+
+/** Nama brand APLIKASI (global, lintas Outlet) — SRASA BOOK sekarang
+ *  adalah nama Outlet PERTAMA, bukan lagi nama aplikasi (permintaan
+ *  pemilik cafe: Multi-Cabang dengan satu Owner terpusat). Dipakai di
+ *  header sidebar/topbar; nama Outlet aktif ditampilkan terpisah di
+ *  bawahnya lewat useOutlet(). */
+const NAMA_BRAND = "ARCHIMAX";
+const TAGLINE_BRAND = "Food n Beverages Lifestyle Accounting";
 
 interface NavItem {
   href: string;
   label: string;
   icon: typeof LayoutDashboard;
   peran: PeranPengguna[];
+  /** true HANYA untuk halaman lintas-Outlet khusus Owner murni (mis.
+   *  Kelola Outlet) — mengecualikan "finance" walau finance ada di
+   *  daftar peran superadmin+finance yang biasa. */
+  khususOwnerMurni?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -108,6 +124,26 @@ const NAV_ITEMS: NavItem[] = [
     peran: ["superadmin", "finance"],
   },
   {
+    href: "/kelola-outlet",
+    label: "Kelola Outlet",
+    icon: Building2,
+    // Lintas-Outlet (tambah/nonaktifkan Outlet) — khusus Owner murni,
+    // BUKAN Finance. Ini keputusan STRUKTURAL (Outlet apa saja yang
+    // ada), beda dari data operasional DI DALAM Outlet yang sudah
+    // setara penuh untuk Finance sejak revisi "Finance juga terpusat".
+    peran: ["superadmin"],
+    khususOwnerMurni: true,
+  },
+  {
+    href: "/backup-data",
+    label: "Backup Data",
+    icon: DatabaseBackup,
+    // Owner & Finance (keduanya terpusat) bisa mengunduh backup JSON
+    // — Semua Outlet sekaligus, atau satu Outlet saja. Lihat
+    // src/app/backup-data/page.tsx & src/shared/lib/backup.ts.
+    peran: ["superadmin", "finance"],
+  },
+  {
     href: "/notifikasi",
     label: "Notifikasi",
     icon: Bell,
@@ -135,7 +171,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="min-h-full flex-1 bg-[var(--color-app-bg)]">
       {/* --- Topbar mobile (hilang di md ke atas) --- */}
       <header className="aman-notch-atas sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 md:hidden">
-        <span className="text-sm font-bold text-emerald-700">SRASA BOOK</span>
+        <BrandTopbarMobile />
         <button
           type="button"
           onClick={() => setDrawerTerbuka(true)}
@@ -168,6 +204,18 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
+function BrandTopbarMobile() {
+  const { outletNama } = useOutlet();
+  return (
+    <span className="min-w-0 leading-tight">
+      <span className="block truncate text-sm font-bold text-emerald-700">{NAMA_BRAND}</span>
+      {outletNama ? (
+        <span className="block truncate text-[11px] text-slate-500">{outletNama}</span>
+      ) : null}
+    </span>
+  );
+}
+
 function Sidebar({
   drawerTerbuka,
   onTutupDrawer,
@@ -178,10 +226,17 @@ function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { profil } = useAuth();
+  const { outletNama, bisaGantiOutlet, gantiOutlet } = useOutlet();
   const { showToast } = useToast();
 
   const items = NAV_ITEMS.filter((item) => profil && item.peran.includes(profil.peran));
   const inisial = (profil?.nama ?? "?").trim().charAt(0).toUpperCase() || "?";
+
+  function handleGantiOutlet() {
+    gantiOutlet();
+    onTutupDrawer();
+    router.push("/pilih-outlet");
+  }
 
   async function handleLogout() {
     try {
@@ -204,7 +259,12 @@ function Sidebar({
       aria-label="Navigasi utama"
     >
       <div className="flex items-center justify-between px-5 py-5">
-        <span className="text-base font-bold text-emerald-700">SRASA BOOK</span>
+        <span className="min-w-0 leading-tight">
+          <span className="block text-base font-bold text-emerald-700">{NAMA_BRAND}</span>
+          <span className="block text-[10px] uppercase tracking-wide text-slate-400">
+            {TAGLINE_BRAND}
+          </span>
+        </span>
         <button
           type="button"
           onClick={onTutupDrawer}
@@ -214,6 +274,26 @@ function Sidebar({
           <X className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
+
+      {outletNama ? (
+        <div className="mx-4 mb-4 flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2">
+          <span className="min-w-0">
+            <span className="block text-[10px] uppercase tracking-wide text-slate-400">Outlet</span>
+            <span className="block truncate text-sm font-semibold text-slate-800">{outletNama}</span>
+          </span>
+          {bisaGantiOutlet ? (
+            <button
+              type="button"
+              onClick={handleGantiOutlet}
+              aria-label="Ganti Outlet"
+              title="Ganti Outlet"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-emerald-700 motion-safe:transition hover:bg-emerald-100"
+            >
+              <Repeat className="h-4 w-4" aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {profil ? (
         <Link

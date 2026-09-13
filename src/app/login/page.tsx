@@ -190,7 +190,7 @@ export default function LoginPage() {
       <main className="mx-auto flex min-h-full max-w-sm flex-1 flex-col items-center justify-center px-4 py-16 text-center">
         <p className="text-sm text-slate-700">
           Akun Anda berhasil masuk, tapi profil pengguna belum diaktifkan Owner
-          di SRASA BOOK. Hubungi Owner untuk mengaktifkan akses Anda.
+          di Archimax. Hubungi Owner untuk mengaktifkan akses Anda.
         </p>
         <button
           type="button"
@@ -208,11 +208,12 @@ export default function LoginPage() {
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="mb-8 text-center">
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-700 to-emerald-500 text-lg font-bold text-white shadow-sm">
-            S
+            A
           </div>
           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-            SRASA BOOK
+            ARCHIMAX
           </p>
+          <p className="text-[11px] text-slate-400">Food n Beverages Lifestyle Accounting</p>
           <h1 className="mt-1 text-2xl font-bold text-slate-900">Masuk Aplikasi</h1>
         </div>
 

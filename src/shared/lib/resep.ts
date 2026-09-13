@@ -5,6 +5,10 @@
 // harga bahan) DAN Shift (Kasir, baca takaran SAJA untuk mengurangi
 // stok gudang saat penjualan tercatat) -> shared (Rule of Two).
 //
+// Semua path sekarang di bawah outlets/{outletId}/... (Multi-Cabang,
+// permintaan pemilik cafe) — setiap fungsi WAJIB diberi outletId
+// eksplisit oleh pemanggil.
+//
 // KEAMANAN (penting): menu/{menuId}/resep/{bahanId} HANYA berisi
 // bahanId, bahanNama, takaran, satuan — TIDAK ADA Rupiah apa pun.
 // Kasir diberi izin BACA subkoleksi ini di firestore.rules justru
@@ -33,8 +37,8 @@ import { collection, doc, getDocs, increment, setDoc, writeBatch } from "firebas
 import { db } from "./firebase";
 import type { ResepItem, SatuanBahan } from "@/shared/types/inventaris";
 
-export async function ambilResepMenu(menuId: string): Promise<ResepItem[]> {
-  const snap = await getDocs(collection(db, "menu", menuId, "resep"));
+export async function ambilResepMenu(outletId: string, menuId: string): Promise<ResepItem[]> {
+  const snap = await getDocs(collection(db, "outlets", outletId, "menu", menuId, "resep"));
   return snap.docs.map((d) => ({
     id: d.id,
     bahanId: d.data().bahanId ?? d.id,
@@ -53,6 +57,7 @@ export async function ambilResepMenu(menuId: string): Promise<ResepItem[]> {
  * membaca dokumen bahan_baku — lihat catatan keamanan di atas.
  */
 export async function terapkanPerubahanStok(
+  outletId: string,
   resep: ResepItem[],
   deltaQty: number,
 ): Promise<void> {
@@ -62,7 +67,7 @@ export async function terapkanPerubahanStok(
   for (const item of resep) {
     if (!item.bahanId || item.takaran <= 0) continue;
     const perubahan = -(item.takaran * deltaQty);
-    batch.update(doc(db, "bahan_baku", item.bahanId), {
+    batch.update(doc(db, "outlets", outletId, "bahan_baku", item.bahanId), {
       stokSaatIni: increment(perubahan),
     });
     // Cermin ke stok_kasir — pakai set({merge:true}) BUKAN update(),
@@ -71,7 +76,7 @@ export async function terapkanPerubahanStok(
     // diberi izin menulis field stokSaatIni di sini (lihat
     // firestore.rules), sama seperti batasannya di bahan_baku.
     batch.set(
-      doc(db, "stok_kasir", item.bahanId),
+      doc(db, "outlets", outletId, "stok_kasir", item.bahanId),
       { stokSaatIni: increment(perubahan) },
       { merge: true },
     );
@@ -89,6 +94,7 @@ export async function terapkanPerubahanStok(
  * — itulah inti kerahasiaannya dari Kasir.
  */
 export async function setMirrorStokKasir(
+  outletId: string,
   bahanId: string,
   data: {
     nama: string;
@@ -99,5 +105,5 @@ export async function setMirrorStokKasir(
     aktif: boolean;
   },
 ): Promise<void> {
-  await setDoc(doc(db, "stok_kasir", bahanId), data, { merge: true });
+  await setDoc(doc(db, "outlets", outletId, "stok_kasir", bahanId), data, { merge: true });
 }

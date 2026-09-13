@@ -57,9 +57,11 @@ import {
 } from "firebase/firestore";
 import { Loader2, RotateCcw, Save } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
 import { useAuth } from "@/shared/lib/auth-context";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
@@ -105,6 +107,7 @@ export default function RefundPage() {
 
 function RefundIsi() {
   const { user, profil } = useAuth();
+  const outletId = useOutletId();
   const { showToast } = useToast();
 
   const [tanggal, setTanggal] = useState(tanggalHariIni());
@@ -134,7 +137,7 @@ function RefundIsi() {
       setMemuatShift(true);
     });
     getDocs(
-      query(collection(db, "shift"), where("kasirUid", "==", user.uid), where("tanggal", "==", tanggal)),
+      query(collection(db, "outlets", outletId, "shift"), where("kasirUid", "==", user.uid), where("tanggal", "==", tanggal)),
     )
       .then((snap) => {
         setDaftarShift(
@@ -158,7 +161,7 @@ function RefundIsi() {
     return () => {
       dibatalkan = true;
     };
-  }, [user, tanggal, showToast]);
+  }, [user, tanggal, outletId, showToast]);
 
   // --- Langkah 2: ambil item yang terjual di shift itu + berapa yang
   // sudah pernah direfund sebelumnya (supaya tidak bisa direfund dobel
@@ -173,8 +176,8 @@ function RefundIsi() {
     });
 
     Promise.all([
-      getDocs(collection(db, "shift", shiftDipilih.id, "penjualan")),
-      getDocs(query(collection(db, "nota_refund"), where("shiftId", "==", shiftDipilih.id))),
+      getDocs(collection(db, "outlets", outletId, "shift", shiftDipilih.id, "penjualan")),
+      getDocs(query(collection(db, "outlets", outletId, "nota_refund"), where("shiftId", "==", shiftDipilih.id))),
     ])
       .then(([penjualanSnap, refundSnap]) => {
         const sudahDirefundPerMenu = new Map<string, number>();
@@ -209,7 +212,7 @@ function RefundIsi() {
     return () => {
       dibatalkan = true;
     };
-  }, [shiftDipilih, showToast]);
+  }, [shiftDipilih, outletId, showToast]);
 
   function pilihItem(item: ItemRefundable) {
     setItemDipilih(item);
@@ -236,7 +239,7 @@ function RefundIsi() {
       const totalRefund = jumlah * itemDipilih.hargaSatuan;
       const tanggalRefund = tanggalHariIni();
 
-      await addDoc(collection(db, "nota_refund"), {
+      await addDoc(collection(db, "outlets", outletId, "nota_refund"), {
         shiftId: shiftDipilih.id,
         tanggalTransaksiAsal: shiftDipilih.tanggal,
         menuId: itemDipilih.menuId,
@@ -258,7 +261,7 @@ function RefundIsi() {
         // saat Tutup Shift nanti tetap cocok dengan uang fisik di laci.
         const shiftHariIniSnap = await getDocs(
           query(
-            collection(db, "shift"),
+            collection(db, "outlets", outletId, "shift"),
             where("kasirUid", "==", user.uid),
             where("tanggal", "==", tanggalRefund),
           ),
@@ -273,13 +276,13 @@ function RefundIsi() {
               " supaya kas fisik tetap cocok.",
           );
         } else {
-          await addDoc(collection(db, "shift", shiftHariIni.id, "kas_keluar"), {
+          await addDoc(collection(db, "outlets", outletId, "shift", shiftHariIni.id, "kas_keluar"), {
             kategori: "Refund Tunai",
             nominal: totalRefund,
             keterangan: `Refund "${itemDipilih.menuNama}" x${jumlah} dari transaksi ${shiftDipilih.tanggal}`,
             waktu: serverTimestamp(),
           });
-          await updateDoc(doc(db, "shift", shiftHariIni.id), {
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftHariIni.id), {
             totalKasKeluar: increment(totalRefund),
           });
         }
@@ -310,7 +313,7 @@ function RefundIsi() {
   return (
     <main className="animasi-masuk mx-auto w-full max-w-2xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">SRASA BOOK</p>
+        <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Refund</h1>
         <p className="mt-1 text-sm text-slate-600">
           Untuk transaksi dari shift yang sudah ditutup (hari ini atau hari sebelumnya). Kalau

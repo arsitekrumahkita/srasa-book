@@ -36,9 +36,11 @@ import {
 } from "firebase/firestore";
 import { AlertTriangle, Camera, CheckCircle2, Loader2, Plus, ShoppingBasket } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
 import { useAuth } from "@/shared/lib/auth-context";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah, formatRupiahSatuan } from "@/shared/lib/format";
@@ -113,6 +115,7 @@ export default function BelanjaNotaPage() {
 
 function BelanjaNotaIsi() {
   const { user, profil } = useAuth();
+  const outletId = useOutletId();
   const { showToast } = useToast();
 
   const [memuat, setMemuat] = useState(true);
@@ -127,16 +130,16 @@ function BelanjaNotaIsi() {
   // diberi baca, bukan Kasir, khusus untuk kebutuhan ini).
   const [saldoFinance, setSaldoFinance] = useState(0);
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "saldo_finance", ID_SALDO_FINANCE), (snap) => {
+    const unsub = onSnapshot(doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE), (snap) => {
       setSaldoFinance(snap.exists() ? (snap.data().saldo ?? 0) : 0);
     });
     return unsub;
-  }, []);
+  }, [outletId]);
 
   useEffect(() => {
     if (!user) return;
     const q = query(
-      collection(db, "kas_belanja"),
+      collection(db, "outlets", outletId, "kas_belanja"),
       where("purchasingUid", "==", user.uid),
       where("tanggal", "==", tanggalHariIni()),
       where("status", "==", "terbuka"),
@@ -160,7 +163,7 @@ function BelanjaNotaIsi() {
       () => setMemuat(false),
     );
     return unsub;
-  }, [user]);
+  }, [user, outletId]);
 
   async function handleMulaiBelanja() {
     if (!user || !profil) return;
@@ -179,7 +182,7 @@ function BelanjaNotaIsi() {
 
     setSedangMulai(true);
     try {
-      await addDoc(collection(db, "kas_belanja"), {
+      await addDoc(collection(db, "outlets", outletId, "kas_belanja"), {
         tanggal: tanggalHariIni(),
         purchasingUid: user.uid,
         purchasingNama: profil.nama,
@@ -192,7 +195,7 @@ function BelanjaNotaIsi() {
 
       if (sumberDana === "saldo_finance") {
         await setDoc(
-          doc(db, "saldo_finance", ID_SALDO_FINANCE),
+          doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
           { saldo: increment(-modalDiberikan) },
           { merge: true },
         );
@@ -315,13 +318,14 @@ function BelanjaBerjalan({
   modalDiberikan: number;
   sumberDana: "kas_resto" | "saldo_finance";
 }) {
+  const outletId = useOutletId();
   const [daftarBahan, setDaftarBahan] = useState<BahanBaku[]>([]);
   const [itemBelanja, setItemBelanja] = useState<ItemBelanja[]>([]);
   const [notaList, setNotaList] = useState<NotaItem[]>([]);
   const [sedangSelesai, setSedangSelesai] = useState(false);
 
   useEffect(() => {
-    const unsubBahan = onSnapshot(collection(db, "bahan_baku"), (snap) => {
+    const unsubBahan = onSnapshot(collection(db, "outlets", outletId, "bahan_baku"), (snap) => {
       setDaftarBahan(
         snap.docs.map((d) => ({
           id: d.id,
@@ -335,7 +339,7 @@ function BelanjaBerjalan({
         })),
       );
     });
-    const unsubItem = onSnapshot(collection(db, "kas_belanja", belanjaId, "item"), (snap) => {
+    const unsubItem = onSnapshot(collection(db, "outlets", outletId, "kas_belanja", belanjaId, "item"), (snap) => {
       setItemBelanja(
         snap.docs.map((d) => ({
           id: d.id,
@@ -347,7 +351,7 @@ function BelanjaBerjalan({
         })),
       );
     });
-    const unsubNota = onSnapshot(collection(db, "kas_belanja", belanjaId, "nota"), (snap) => {
+    const unsubNota = onSnapshot(collection(db, "outlets", outletId, "kas_belanja", belanjaId, "nota"), (snap) => {
       setNotaList(
         snap.docs.map((d) => ({
           id: d.id,
@@ -361,7 +365,7 @@ function BelanjaBerjalan({
       unsubItem();
       unsubNota();
     };
-  }, [belanjaId]);
+  }, [belanjaId, outletId]);
 
   const totalBelanja = useMemo(
     () => itemBelanja.reduce((total, item) => total + item.subtotal, 0),
@@ -373,9 +377,7 @@ function BelanjaBerjalan({
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-            SRASA BOOK
-          </p>
+          <KickerOutlet />
           <h1 className="text-2xl font-bold text-slate-900">Belanja & Nota</h1>
           <p className="mt-0.5 text-xs text-slate-500">
             Sumber dana: {sumberDana === "saldo_finance" ? "Saldo Finance" : "Kas Resto/Outlet"}
@@ -431,6 +433,7 @@ function TambahItemKartu({
 }) {
   const { showToast } = useToast();
   const { user } = useAuth();
+  const outletId = useOutletId();
   const [namaBahan, setNamaBahan] = useState("");
   const [qty, setQty] = useState(1);
   const [satuanBahanBaru, setSatuanBahanBaru] = useState<SatuanBahan>("gram");
@@ -497,7 +500,7 @@ function TambahItemKartu({
       const hargaSatuan = hargaPerSatuanOtomatis;
       const subtotal = totalHarga;
 
-      await addDoc(collection(db, "kas_belanja", belanjaId, "item"), {
+      await addDoc(collection(db, "outlets", outletId, "kas_belanja", belanjaId, "item"), {
         bahanId: bahanCocok?.id ?? null,
         bahanNama: namaBahan.trim(),
         qty,
@@ -505,7 +508,7 @@ function TambahItemKartu({
         hargaSatuan,
         subtotal,
       });
-      await updateDoc(doc(db, "kas_belanja", belanjaId), { totalBelanja: increment(subtotal) });
+      await updateDoc(doc(db, "outlets", outletId, "kas_belanja", belanjaId), { totalBelanja: increment(subtotal) });
 
       if (bahanCocok) {
         // Bahan sudah ada -> cek kenaikan harga & catat riwayat, LALU
@@ -513,13 +516,13 @@ function TambahItemKartu({
         const hargaLama = bahanCocok.hargaSatuanTerakhir;
         if (hargaLama > 0 && hargaSatuan !== hargaLama) {
           const selisihPersen = (hargaSatuan - hargaLama) / hargaLama;
-          await addDoc(collection(db, "bahan_baku", bahanCocok.id, "riwayat_harga"), {
+          await addDoc(collection(db, "outlets", outletId, "bahan_baku", bahanCocok.id, "riwayat_harga"), {
             harga: hargaSatuan,
             tanggal: tanggalHariIni(),
             selisihPersen,
           });
           if (selisihPersen > AMBANG_KENAIKAN_HARGA) {
-            await addDoc(collection(db, "notifikasi"), {
+            await addDoc(collection(db, "outlets", outletId, "notifikasi"), {
               untukPeran: "superadmin",
               tipe: "kenaikan_harga_bahan",
               prioritas: "sedang",
@@ -530,7 +533,7 @@ function TambahItemKartu({
             });
           }
         }
-        await updateDoc(doc(db, "bahan_baku", bahanCocok.id), {
+        await updateDoc(doc(db, "outlets", outletId, "bahan_baku", bahanCocok.id), {
           hargaSatuanTerakhir: hargaSatuan,
           stokSaatIni: increment(qty),
           updatedAt: serverTimestamp(),
@@ -538,7 +541,7 @@ function TambahItemKartu({
         // Cermin stok_kasir ikut diperbarui (TANPA hargaSatuanTerakhir)
         // supaya Dashboard Kasir menampilkan stok yang benar — lihat
         // komentar keamanan di src/shared/lib/resep.ts.
-        await setMirrorStokKasir(bahanCocok.id, {
+        await setMirrorStokKasir(outletId, bahanCocok.id, {
           nama: bahanCocok.nama,
           kategori: bahanCocok.kategori,
           satuan,
@@ -549,7 +552,7 @@ function TambahItemKartu({
       } else {
         // Bahan baru -> buat dokumen inventaris, stok awal = qty yang
         // baru saja dibeli (bukan 0 seperti sebelumnya).
-        const bahanBaruRef = doc(collection(db, "bahan_baku"));
+        const bahanBaruRef = doc(collection(db, "outlets", outletId, "bahan_baku"));
         await setDoc(bahanBaruRef, {
           nama: namaBahan.trim(),
           kategori: "Umum",
@@ -560,7 +563,7 @@ function TambahItemKartu({
           aktif: true,
           updatedAt: serverTimestamp(),
         });
-        await setMirrorStokKasir(bahanBaruRef.id, {
+        await setMirrorStokKasir(outletId, bahanBaruRef.id, {
           nama: namaBahan.trim(),
           kategori: "Umum",
           satuan,
@@ -752,6 +755,7 @@ function PeringatanStokMinus({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
 
 function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
   const { user, profil } = useAuth();
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [bahanId, setBahanId] = useState("");
   const [jumlah, setJumlah] = useState(0);
@@ -778,7 +782,7 @@ function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
     setSedangSimpan(true);
     try {
       const hasilFoto = await uploadNotaImage(file, "penyesuaian-stok");
-      await addDoc(collection(db, "bahan_baku", bahan.id, "penyesuaian_stok"), {
+      await addDoc(collection(db, "outlets", outletId, "bahan_baku", bahan.id, "penyesuaian_stok"), {
         bahanId: bahan.id,
         bahanNama: bahan.nama,
         jumlah,
@@ -791,11 +795,11 @@ function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
         waktu: serverTimestamp(),
       });
       // Langsung kurangi stok — TANPA approval, sesuai permintaan.
-      await updateDoc(doc(db, "bahan_baku", bahan.id), {
+      await updateDoc(doc(db, "outlets", outletId, "bahan_baku", bahan.id), {
         stokSaatIni: increment(-jumlah),
         updatedAt: serverTimestamp(),
       });
-      await setMirrorStokKasir(bahan.id, {
+      await setMirrorStokKasir(outletId, bahan.id, {
         nama: bahan.nama,
         kategori: bahan.kategori,
         satuan: bahan.satuan,
@@ -938,6 +942,7 @@ function PenyesuaianStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
  * sini juga). 0 = belum diatur, tidak ada peringatan untuk bahan itu.
  */
 function BatasMinimalStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [sedangSimpan, setSedangSimpan] = useState<string | null>(null);
   const [draf, setDraf] = useState<Record<string, number>>({});
@@ -947,11 +952,11 @@ function BatasMinimalStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
     if (nilai === bahan.batasMinimalStok) return;
     setSedangSimpan(bahan.id);
     try {
-      await updateDoc(doc(db, "bahan_baku", bahan.id), {
+      await updateDoc(doc(db, "outlets", outletId, "bahan_baku", bahan.id), {
         batasMinimalStok: nilai,
         updatedAt: serverTimestamp(),
       });
-      await setMirrorStokKasir(bahan.id, {
+      await setMirrorStokKasir(outletId, bahan.id, {
         nama: bahan.nama,
         kategori: bahan.kategori,
         satuan: bahan.satuan,
@@ -1019,6 +1024,7 @@ function BatasMinimalStokKartu({ daftarBahan }: { daftarBahan: BahanBaku[] }) {
 }
 
 function NotaKartu({ belanjaId, notaList }: { belanjaId: string; notaList: NotaItem[] }) {
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [nominalTertera, setNominalTertera] = useState(0);
   const [sedangUnggah, setSedangUnggah] = useState(false);
@@ -1035,7 +1041,7 @@ function NotaKartu({ belanjaId, notaList }: { belanjaId: string; notaList: NotaI
     setSedangUnggah(true);
     try {
       const hasil = await uploadNotaImage(file);
-      await addDoc(collection(db, "kas_belanja", belanjaId, "nota"), {
+      await addDoc(collection(db, "outlets", outletId, "kas_belanja", belanjaId, "nota"), {
         cloudinaryUrl: hasil.url,
         publicId: hasil.publicId,
         nominalTertera,
@@ -1130,18 +1136,19 @@ function SelesaikanBelanjaKartu({
   sedangSelesai: boolean;
   setSedangSelesai: (v: boolean) => void;
 }) {
+  const outletId = useOutletId();
   const { showToast } = useToast();
 
   async function handleSelesai() {
     setSedangSelesai(true);
     try {
-      await updateDoc(doc(db, "kas_belanja", belanjaId), {
+      await updateDoc(doc(db, "outlets", outletId, "kas_belanja", belanjaId), {
         totalBelanja,
         sisaKas,
         status: "selesai",
       });
       await setDoc(
-        doc(db, "summary_harian", tanggalHariIni()),
+        doc(db, "outlets", outletId, "summary_harian", tanggalHariIni()),
         { totalBelanja: increment(totalBelanja) },
         { merge: true },
       );

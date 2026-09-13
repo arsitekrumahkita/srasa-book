@@ -21,9 +21,11 @@
 import { doc, updateDoc } from "firebase/firestore";
 import { Bell, Check, Loader2 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { useNotifikasiGabungan } from "@/shared/lib/notifikasi";
 
 export default function NotifikasiPage() {
@@ -38,11 +40,12 @@ export default function NotifikasiPage() {
 
 function NotifikasiIsi() {
   const { showToast } = useToast();
+  const outletId = useOutletId();
   const { daftar: gabungan, memuat } = useNotifikasiGabungan();
 
   async function tandaiDibaca(id: string) {
     try {
-      await updateDoc(doc(db, "notifikasi", id), { dibaca: true });
+      await updateDoc(doc(db, "outlets", outletId, "notifikasi", id), { dibaca: true });
     } catch (error) {
       showToast(
         "error",
@@ -56,9 +59,7 @@ function NotifikasiIsi() {
       <header className="mb-6 flex items-center gap-2">
         <Bell className="h-5 w-5 text-emerald-700" aria-hidden="true" />
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-            SRASA BOOK
-          </p>
+          <KickerOutlet />
           <h1 className="text-2xl font-bold text-slate-900">Notifikasi</h1>
         </div>
       </header>

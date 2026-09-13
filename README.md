@@ -1,7 +1,11 @@
-# SRASA BOOK
+# Archimax — Food n Beverages Lifestyle Accounting
 
 Aplikasi accounting pendamping Majoo POS — omset, kas, dan HPP dalam satu
-layar. Lihat PRD lengkap untuk konteks bisnis, rumus, dan roadmap.
+layar. **Archimax** adalah nama aplikasi/brand globalnya; **SRASA BOOK**
+adalah nama Outlet PERTAMA di dalamnya (lihat bagian Multi-Cabang di
+bawah — aplikasi ini sekarang mendukung banyak Outlet/cabang dalam satu
+akun Owner terpusat). Lihat PRD lengkap untuk konteks bisnis, rumus, dan
+roadmap.
 
 Firebase project: `srasa-book` (Spark Plan).
 
@@ -82,6 +86,118 @@ create/update/delete miliknya.
   angka), bukan tebakan tetap. `kolom.lebar` di pemanggil sekarang jadi
   batas minimum saja, bukan menimpa hasil autofit.
 
+## Multi-Cabang (Multi-Outlet) — Owner & Finance terpusat, Kasir/Purchasing per Outlet
+
+Permintaan pemilik cafe: bisnis akan berkembang jadi beberapa Outlet/cabang.
+Owner DAN Finance **keduanya terpusat** — satu akun masing-masing bisa
+melihat/mengelola SEMUA Outlet (revisi: "Finance juga terpusat login pilih
+outlet") — sementara Kasir/Purchasing masing-masing bekerja HANYA untuk
+satu Outlet tempat mereka ditugaskan.
+
+**Alur Login sekarang** (perubahan dari sebelumnya yang langsung ke
+Dashboard):
+
+```
+Login → (Owner ATAU Finance) Pilih Outlet → Dashboard
+Login → (Kasir/Purchasing) langsung → Dashboard
+```
+
+Kasir/Purchasing SENGAJA tidak melihat layar "Pilih Outlet" sama sekali —
+akun mereka terkunci permanen ke satu Outlet sejak dibuat (field
+`outletId` di `users/{uid}`), jadi tidak ada apa pun untuk dipilih. Owner
+DAN Finance TIDAK punya `outletId` tetap — keduanya memilih Outlet mana
+yang sedang "aktif" di sesi browsernya lewat halaman `/pilih-outlet`,
+tersimpan di `localStorage` (per-uid, jadi dua akun/perangkat berbeda tidak
+bertabrakan) supaya tidak perlu memilih ulang setiap kali refresh. Tombol
+"Ganti Outlet" ada di sidebar (`AppShell`, untuk Owner maupun Finance)
+untuk berpindah Outlet kapan saja tanpa logout.
+
+**Arsitektur data — isolasi per path, bukan per field** (`firestore.rules`
+& `src/shared/lib/outlet-context.tsx`):
+
+Semua data operasional (bahan_baku, menu, shift, kas_belanja, summary
+harian/bulanan, notifikasi, dst — daftar lengkap ada di komentar kepala
+`scripts/hapus-data-lama.mjs`) sekarang hidup di bawah
+`outlets/{outletId}/{koleksi}/...`, BUKAN lagi koleksi top-level datar.
+Ini dipilih dibanding menambah field `outletId` ke setiap dokumen karena
+isolasi ditegakkan oleh LOKASI dokumen (path Firestore), bukan sebuah
+field yang secara teori bisa salah/dipalsukan — jauh lebih aman & mudah
+diverifikasi di `firestore.rules`.
+
+Yang TETAP global (top-level, tidak dipindah per Outlet):
+
+- `users/{uid}` — profil semua akun, lintas Outlet (perlu tetap global
+  supaya akun Owner/Finance bisa dicek aksesnya dari Outlet manapun).
+  HANYA Kasir/Purchasing yang punya field `outletId` (wajib, tetap);
+  Owner & Finance tidak punya field ini sama sekali.
+- `usernames/{username}` — lookup publik username→email dipakai halaman
+  Login SEBELUM ada sesi/Outlet yang diketahui.
+- `outlets/{outletId}` — daftar Outlet itu sendiri (`nama`, `alamat`,
+  `aktif`), dikelola dari halaman **Kelola Outlet** di bawah.
+
+**Halaman baru:**
+
+- **`/pilih-outlet`** (Owner & Finance) — daftar Outlet aktif, tekan satu
+  untuk masuk ke Dashboard Outlet itu.
+- **`/kelola-outlet`** (Owner MURNI saja, `hanyaOwnerMurni`) — tambah
+  Outlet baru dan aktifkan/nonaktifkan Outlet yang sudah ada. Ini
+  keputusan struktural lintas-Outlet, bukan wewenang Finance walau
+  Finance kini setara Owner di hampir semua data operasional. SENGAJA
+  tidak ada tombol hapus permanen (hanya nonaktifkan) supaya data lama di
+  `outlets/{id}/...` milik Outlet itu tidak pernah menjadi yatim/hilang
+  rujukan.
+
+**`firestore.rules` — helper baru** menggantikan pola lama `isSuperadmin()`:
+
+- `isOwner()` — Owner global sungguhan (`peran == "superadmin"`), berlaku
+  di SEMUA Outlet.
+- `isFinance()` — SEJAK revisi ini, Finance JUGA global/terpusat seperti
+  Owner (tidak punya `outletId` tetap, berlaku di SEMUA Outlet).
+- `myOutletId()` — HANYA berarti untuk Kasir/Purchasing (Outlet tempat
+  akunnya terkunci).
+- `isKasirOutlet(outletId)` / `isPurchasingOutlet(outletId)` — true hanya
+  kalau perannya cocok DAN `outletId` yang diminta sama dengan Outlet akun
+  itu sendiri. `isFinanceOutlet(outletId)` dipertahankan sebagai alias
+  (kini identik dengan `isFinance()`, parameter `outletId`-nya diabaikan)
+  supaya seluruh pemanggilnya di `firestore.rules` tidak perlu diganti
+  satu-satu.
+- `isManagerOutlet(outletId)` — pengganti `isSuperadmin()` lama:
+  `isOwner() || isFinance()`. Dipakai di hampir semua koleksi per-Outlet,
+  lolos untuk Owner MAUPUN Finance di Outlet manapun.
+- **Pengecualian yang tetap dipertahankan** (satu-satunya beda perilaku
+  Owner vs Finance yang tersisa): Saldo Deposito Finance
+  (`saldo_finance`/`transaksi_finance`) TETAP memakai `isFinance()` murni
+  (BUKAN `isManagerOutlet()`) untuk mencatat transaksi — Owner tetap hanya
+  boleh memantau, tidak mengeksekusi uang masuk/keluar sehari-hari, sama
+  seperti sebelum fitur Multi-Cabang ada.
+
+**Kelola Akun (`/kelola-akun`) sekarang outlet-aware:**
+
+- Owner DAN Finance (keduanya terpusat) melihat & bisa membuat akun untuk
+  **Outlet manapun** tanpa batasan — daftar akun menampilkan SEMUA akun
+  lintas Outlet untuk keduanya.
+- Dropdown pilihan Outlet di form "Buat Akun Staff" HANYA muncul saat
+  Peran yang dipilih **Kasir atau Purchasing** — begitu Peran diganti ke
+  Finance, dropdown itu hilang (Finance sengaja TIDAK diberi `outletId`
+  sama sekali, siapa pun yang membuatnya).
+
+**Data lama (dummy/trial) — dihapus, bukan dimigrasikan:**
+
+Data yang sempat tersimpan di koleksi top-level lama (sebelum fitur
+Multi-Cabang) sudah dikonfirmasi hanya data uji coba, bukan data produksi
+— jadi TIDAK dipindahkan, cukup dibersihkan lewat skrip Node.js terpisah:
+`scripts/hapus-data-lama.mjs`. Skrip ini menghapus SEMUA koleksi
+top-level lama beserta seluruh sub-koleksinya (ditemukan otomatis lewat
+`listCollections()`), dan SAMA SEKALI TIDAK menyentuh `users`,
+`usernames`, atau `outlets` (akun login & daftar Outlet tetap ada). Lihat
+komentar lengkap di kepala berkas skrip untuk cara pakai step-by-step
+(butuh Service Account Key dari Firebase Console + `npm install
+firebase-admin`, dijalankan manual di komputer — TIDAK bisa dijalankan
+dari sandbox pengembangan ini karena kredensial admin tidak boleh
+tersimpan di kode aplikasi). Setelah dijalankan, buat Outlet pertama
+("SRASA BOOK") lewat halaman **Kelola Outlet** dan mulai input data dari
+nol di struktur baru.
+
 ## Aturan Struktur Proyek (WAJIB dibaca sebelum menambah halaman)
 
 **Satu route = satu folder**, mengikuti konvensi Next.js App Router secara
@@ -155,10 +271,28 @@ langsung di Firebase Console:
    | `email` | string | sama seperti langkah 2   |
 5. **Firestore Database → Rules** → tempel isi `firestore.rules` dari
    proyek ini → **Publish**.
+6. Kalau ada data dummy/trial dari sebelum fitur Multi-Cabang ada,
+   jalankan `scripts/hapus-data-lama.mjs` dulu untuk membersihkannya
+   (lihat bagian Multi-Cabang di atas) — SEBELUM lanjut ke langkah 7.
+7. Login ke aplikasi sebagai Owner (akun dari langkah 1-2) → akan
+   diarahkan ke `/pilih-outlet`, yang masih kosong → buka `/kelola-outlet`
+   secara langsung (lewat tautan/alamat, karena Dashboard sendiri butuh
+   Outlet terpilih lebih dulu) → tambahkan Outlet pertama, **nama:
+   "SRASA BOOK"** → kembali ke `/pilih-outlet`, pilih Outlet itu → masuk
+   Dashboard.
 
 Setelah ini, akun Owner bisa login lewat Email ATAU Username yang baru
-dibuat. Staff (Kasir/Purchasing) berikutnya semuanya dibuat lewat halaman
-`/kelola-akun` di aplikasi — tidak perlu ulangi langkah manual ini lagi.
+dibuat. Staff berikutnya semuanya dibuat lewat halaman `/kelola-akun` di
+aplikasi — tidak perlu ulangi langkah manual ini lagi:
+
+- **Finance** dibuat sama seperti Owner: TIDAK terikat satu Outlet,
+  login → `/pilih-outlet` → Dashboard, bisa berpindah Outlet kapan saja.
+- **Kasir/Purchasing** dibuat dengan Outlet tujuan dipilih dari dropdown
+  (Owner ATAU Finance yang membuatnya bisa memilih Outlet manapun) —
+  akun ini langsung ke Dashboard tanpa layar pilih Outlet.
+
+Outlet baru (cabang kedua dst) dibuat lewat halaman `/kelola-outlet`,
+bukan lewat Firebase Console.
 
 ## Skrip yang Tersedia
 
@@ -172,8 +306,23 @@ dibuat. Staff (Kasir/Purchasing) berikutnya semuanya dibuat lewat halaman
 
 ## Status Implementasi (lihat PRD bagian 13 untuk roadmap lengkap)
 
+> Catatan penting soal riwayat di bawah: banyak entri lama menyebut
+> `isSuperadmin()` di `firestore.rules` — nama itu sudah DIGANTI jadi
+> `isOwner()`/`isManagerOutlet()`/`isFinance()` dkk sejak fitur
+> Multi-Cabang (lihat bagian "Multi-Cabang" di atas untuk arsitektur
+> terkini). Perilaku yang dideskripsikan (Finance setara Owner kecuali
+> Saldo Deposito Finance) TIDAK berubah — Finance malah SEKARANG makin
+> setara Owner (sama-sama terpusat, akses semua Outlet), hanya
+> Kasir/Purchasing yang masih terkunci per-Outlet.
+
 Seluruh halaman P0 (dasar) sudah ada dan saling terhubung lewat Login +
 peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
+
+- [x] **Multi-Cabang (Multi-Outlet)** — Owner & Finance terpusat, bisa
+  mengakses semua Outlet (`/pilih-outlet`, `/kelola-outlet` khusus
+  Owner); Kasir/Purchasing masing-masing terkunci ke satu Outlet. Lihat
+  bagian "Multi-Cabang" di atas untuk detail arsitektur, alur login
+  baru, dan skrip pembersihan data lama.
 
 - [x] Sprint 0 — Fondasi proyek (Next.js, TypeScript, Tailwind, struktur folder)
 - [x] Autentikasi (`/login`) & konteks peran (`src/shared/lib/auth-context.tsx`, `RequireAuth`, `AppShell`) — SUPERADMIN (Owner) / Finance / Kasir / Purchasing
@@ -306,6 +455,18 @@ peran, memakai Firestore & Cloudinary sungguhan (bukan simulasi lagi):
   hitungan kas fisik), dan Tambah Item Belanja. Draf dikunci per-uid
   sehingga dua kasir yang memakai satu tablet tidak pernah tertukar, dan
   otomatis kedaluwarsa setelah 48 jam.
+- [x] **Backup Data (`/backup-data`, PRD 9.10)** — Owner & Finance
+  (keduanya terpusat) bisa mengunduh backup JSON dengan CAKUPAN pilihan:
+  **Semua Outlet sekaligus** (satu file, dikelompokkan per Outlet,
+  termasuk Outlet yang sedang dinonaktifkan) atau **satu Outlet saja**
+  (dropdown pilihan). Backup MANUAL (Spark Plan, tidak ada Cloud
+  Functions untuk backup terjadwal otomatis) — tombol memicu unduhan
+  file `.json` langsung dari browser lewat Blob, tanpa server perantara.
+  Timestamp Firestore dikonversi ke string ISO 8601 supaya hasilnya JSON
+  murni yang valid. Lihat `src/shared/lib/backup.ts` (struktur koleksi +
+  sub-koleksi yang dicadangkan didaftar manual di sana — SDK client
+  Firestore tidak punya `listCollections()` seperti Admin SDK, beda
+  dengan `scripts/hapus-data-lama.mjs`).
 
 **Perbaikan bug penting (pasca-rilis fitur Resep + Inventaris):**
 
@@ -604,8 +765,9 @@ transisi pergantian shift yang jam-nya beririsan):**
 - Alur "Ajukan Koreksi" (tiket approval, PRD 7.5) untuk data yang sudah
   terkunci belum dibangun sebagai UI (skema `tiket_approval` sudah ada di
   firestore.rules, siap dipakai nanti).
-- Analisis Produk, Saran Strategi, Catatan Owner, Export Excel/PDF, dan
-  Backup JSON (PRD 9.5, 9.8, 9.10) — sepenuhnya belum dikerjakan (P1/P2).
+- Analisis Produk, Saran Strategi, dan Catatan Owner (PRD 9.5, 9.8) —
+  sepenuhnya belum dikerjakan (P1/P2). Export Excel/PDF SUDAH ADA (lihat
+  bagian Status Implementasi di atas).
 
 ## Sebelum Menyambungkan Firebase (Sprint 1 lanjutan)
 

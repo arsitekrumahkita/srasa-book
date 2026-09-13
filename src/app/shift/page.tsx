@@ -69,9 +69,11 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
 import { useAuth } from "@/shared/lib/auth-context";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
@@ -219,6 +221,7 @@ export default function ShiftPage() {
 
 function ShiftIsi() {
   const { user, profil } = useAuth();
+  const outletId = useOutletId();
   const { showToast } = useToast();
 
   const [memuatShiftAktif, setMemuatShiftAktif] = useState(true);
@@ -243,7 +246,7 @@ function ShiftIsi() {
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "slot_shift"), where("aktif", "==", true)),
+      query(collection(db, "outlets", outletId, "slot_shift"), where("aktif", "==", true)),
       (snap) => {
         setDaftarSlotAktif(
           snap.docs.map((d) => ({
@@ -258,7 +261,7 @@ function ShiftIsi() {
       () => setMemuatSlot(false),
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   // Slot efektif yang dipakai untuk membuat shift: kalau cuma ada 0/1
   // slot aktif, dipilih otomatis (tidak perlu Kasir menyentuh apa pun).
@@ -284,7 +287,7 @@ function ShiftIsi() {
   useEffect(() => {
     if (!user) return;
     const q = query(
-      collection(db, "shift"),
+      collection(db, "outlets", outletId, "shift"),
       where("kasirUid", "==", user.uid),
       where("tanggal", "==", tanggalHariIni()),
     );
@@ -312,7 +315,7 @@ function ShiftIsi() {
       () => setMemuatShiftAktif(false),
     );
     return unsub;
-  }, [user]);
+  }, [user, outletId]);
 
   // --- Auto-provisioning: TIDAK ADA lagi tombol "Buka Shift". Begitu
   // dipastikan belum ada shift hari ini (dan slot sudah bisa
@@ -324,7 +327,7 @@ function ShiftIsi() {
     if (sedangMenyiapkanRef.current) return;
     sedangMenyiapkanRef.current = true;
 
-    addDoc(collection(db, "shift"), {
+    addDoc(collection(db, "outlets", outletId, "shift"), {
       tanggal: tanggalHariIni(),
       kasirUid: user.uid,
       kasirNama: profil.nama,
@@ -357,6 +360,7 @@ function ShiftIsi() {
     shiftAktif,
     user,
     profil,
+    outletId,
     memuatSlot,
     perluPilihSlot,
     slotEfektif,
@@ -463,6 +467,7 @@ function ShiftBerjalan({
   slotJamMulai?: string;
   slotJamSelesai?: string;
 }) {
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [menuList, setMenuList] = useState<MenuHarga[]>([]);
   const [penjualan, setPenjualan] = useState<PenjualanItem[]>([]);
@@ -494,7 +499,7 @@ function ShiftBerjalan({
 
   useEffect(() => {
     const unsubMenu = onSnapshot(
-      query(collection(db, "menu_harga"), where("aktif", "==", true)),
+      query(collection(db, "outlets", outletId, "menu_harga"), where("aktif", "==", true)),
       (snap) => {
         const daftar = snap.docs.map((d) => ({
           id: d.id,
@@ -511,7 +516,7 @@ function ShiftBerjalan({
         Promise.all(
           daftar.map(async (m) => {
             try {
-              return [m.id, await ambilResepMenu(m.id)] as [string, ResepItem[]];
+              return [m.id, await ambilResepMenu(outletId, m.id)] as [string, ResepItem[]];
             } catch {
               return [m.id, [] as ResepItem[]] as [string, ResepItem[]];
             }
@@ -524,7 +529,7 @@ function ShiftBerjalan({
     );
 
     const unsubPenjualan = onSnapshot(
-      query(collection(db, "shift", shiftId, "penjualan"), orderBy("menuNama")),
+      query(collection(db, "outlets", outletId, "shift", shiftId, "penjualan"), orderBy("menuNama")),
       (snap) => {
         setPenjualan(
           snap.docs.map((d) => ({
@@ -548,7 +553,7 @@ function ShiftBerjalan({
     );
 
     const unsubKasKeluar = onSnapshot(
-      collection(db, "shift", shiftId, "kas_keluar"),
+      collection(db, "outlets", outletId, "shift", shiftId, "kas_keluar"),
       (snap) => {
         setKasKeluar(
           snap.docs.map((d) => ({
@@ -566,7 +571,7 @@ function ShiftBerjalan({
       unsubPenjualan();
       unsubKasKeluar();
     };
-  }, [shiftId]);
+  }, [shiftId, outletId]);
 
   const totalOmset = useMemo(
     () => penjualan.reduce((total, item) => total + item.subtotal, 0),
@@ -600,7 +605,7 @@ function ShiftBerjalan({
     try {
       if (!existing) {
         if (delta <= 0) return;
-        await setDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+        await setDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
           menuId: item.id,
           menuNama: item.nama,
           kategori: item.kategori,
@@ -624,14 +629,14 @@ function ShiftBerjalan({
           // increment), supaya tidak pernah minus akibat klik cepat
           // berulang saat qty sedang di angka kecil.
           if (metode === "tunai") {
-            await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
               qtyTunai: 0,
               subtotalTunai: 0,
               qty: increment(-qtyBucketLama),
               subtotal: increment(-qtyBucketLama * item.hargaJual),
             });
           } else {
-            await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+            await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
               qtyNonTunai: 0,
               subtotalNonTunai: 0,
               qty: increment(-qtyBucketLama),
@@ -639,14 +644,14 @@ function ShiftBerjalan({
             });
           }
         } else if (metode === "tunai") {
-          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
             qtyTunai: increment(delta),
             subtotalTunai: increment(perubahanSubtotal),
             qty: increment(delta),
             subtotal: increment(perubahanSubtotal),
           });
         } else {
-          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
             qtyNonTunai: increment(delta),
             subtotalNonTunai: increment(perubahanSubtotal),
             qty: increment(delta),
@@ -662,7 +667,7 @@ function ShiftBerjalan({
       // metode bayar, jadi logikanya sama persis seperti sebelumnya.
       const resep = resepPerMenu.get(item.id);
       if (resep && resep.length > 0) {
-        terapkanPerubahanStok(resep, delta).catch(() => {
+        terapkanPerubahanStok(outletId, resep, delta).catch(() => {
           showToast(
             "error",
             `Penjualan tercatat, tapi stok gudang untuk "${item.nama}" gagal diperbarui otomatis.`,
@@ -693,7 +698,7 @@ function ShiftBerjalan({
     try {
       if (!existing) {
         if (delta <= 0) return;
-        await setDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+        await setDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
           menuId: item.id,
           menuNama: item.nama,
           kategori: item.kategori,
@@ -711,9 +716,9 @@ function ShiftBerjalan({
       } else {
         const bonusBaru = existing.qtyBonus + delta;
         if (bonusBaru <= 0) {
-          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), { qtyBonus: 0 });
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), { qtyBonus: 0 });
         } else {
-          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
             qtyBonus: increment(delta),
           });
         }
@@ -723,7 +728,7 @@ function ShiftBerjalan({
       // produk Bonus/Gratis SUNGGUH dibuat & diberikan ke pembeli.
       const resep = resepPerMenu.get(item.id);
       if (resep && resep.length > 0) {
-        terapkanPerubahanStok(resep, delta).catch(() => {
+        terapkanPerubahanStok(outletId, resep, delta).catch(() => {
           showToast(
             "error",
             `Bonus tercatat, tapi stok gudang untuk "${item.nama}" gagal diperbarui otomatis.`,
@@ -775,7 +780,7 @@ function ShiftBerjalan({
         }
         const dariNonTunai = existing.qtyNonTunai > 0;
         if (dariNonTunai) {
-          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
             qtyNonTunai: increment(-1),
             subtotalNonTunai: increment(-existing.hargaJualSnapshot),
             qtyRefundNonTunai: increment(1),
@@ -784,7 +789,7 @@ function ShiftBerjalan({
             subtotal: increment(-existing.hargaJualSnapshot),
           });
         } else {
-          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
             qtyTunai: increment(-1),
             subtotalTunai: increment(-existing.hargaJualSnapshot),
             qty: increment(-1),
@@ -796,7 +801,7 @@ function ShiftBerjalan({
         if (existing.qtyRefund <= 0) return;
         const dariNonTunai = existing.qtyRefundNonTunai > 0;
         if (dariNonTunai) {
-          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
             qtyNonTunai: increment(1),
             subtotalNonTunai: increment(existing.hargaJualSnapshot),
             qtyRefundNonTunai: increment(-1),
@@ -805,7 +810,7 @@ function ShiftBerjalan({
             subtotal: increment(existing.hargaJualSnapshot),
           });
         } else {
-          await updateDoc(doc(db, "shift", shiftId, "penjualan", item.id), {
+          await updateDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
             qtyTunai: increment(1),
             subtotalTunai: increment(existing.hargaJualSnapshot),
             qty: increment(1),
@@ -838,9 +843,7 @@ function ShiftBerjalan({
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-            SRASA BOOK
-          </p>
+          <KickerOutlet />
           <h1 className="text-2xl font-bold text-slate-900">
             Shift Berjalan{slotNama ? ` — ${slotNama}` : ""}
           </h1>
@@ -1106,6 +1109,7 @@ function KasKeluarKartu({
   daftar: KasKeluarItem[];
   total: number;
 }) {
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [kategori, setKategori] = useState<(typeof KATEGORI_KAS_KELUAR)[number]>(
     KATEGORI_KAS_KELUAR[0],
@@ -1121,13 +1125,13 @@ function KasKeluarKartu({
     }
     setSedangSimpan(true);
     try {
-      await addDoc(collection(db, "shift", shiftId, "kas_keluar"), {
+      await addDoc(collection(db, "outlets", outletId, "shift", shiftId, "kas_keluar"), {
         kategori,
         nominal,
         keterangan: keterangan.trim(),
         waktu: serverTimestamp(),
       });
-      await updateDoc(doc(db, "shift", shiftId), { totalKasKeluar: increment(nominal) });
+      await updateDoc(doc(db, "outlets", outletId, "shift", shiftId), { totalKasKeluar: increment(nominal) });
       showToast("success", `Kas keluar ${formatRupiah(nominal)} (${kategori}) dicatat.`);
       setNominal(0);
       setKeterangan("");
@@ -1255,6 +1259,7 @@ function KasKeluarKartu({
  */
 function SerahTerimaKasKartu({ shiftId }: { shiftId: string }) {
   const { user, profil } = useAuth();
+  const outletId = useOutletId();
   const { showToast } = useToast();
   const [daftar, setDaftar] = useState<SerahTerimaKas[]>([]);
   const [nominal, setNominal] = useState(0);
@@ -1264,7 +1269,7 @@ function SerahTerimaKasKartu({ shiftId }: { shiftId: string }) {
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "serah_terima_kas"), where("tanggal", "==", tanggalHariIni())),
+      query(collection(db, "outlets", outletId, "serah_terima_kas"), where("tanggal", "==", tanggalHariIni())),
       (snap) => {
         const list = snap.docs.map((d) => ({
           id: d.id,
@@ -1278,7 +1283,7 @@ function SerahTerimaKasKartu({ shiftId }: { shiftId: string }) {
       },
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   async function catatSerahTerima() {
     if (!user || !profil) return;
@@ -1288,7 +1293,7 @@ function SerahTerimaKasKartu({ shiftId }: { shiftId: string }) {
     }
     setSedangSimpan(true);
     try {
-      await addDoc(collection(db, "serah_terima_kas"), {
+      await addDoc(collection(db, "outlets", outletId, "serah_terima_kas"), {
         tanggal: tanggalHariIni(),
         shiftIdAsal: shiftId,
         dariUid: user.uid,
@@ -1419,6 +1424,7 @@ function TutupShiftKartu({
 }) {
   const { showToast } = useToast();
   const { user, profil } = useAuth();
+  const outletId = useOutletId();
   const [kasFisik, setKasFisik] = useState(0);
   const [keteranganSelisih, setKeteranganSelisih] = useState("");
   const [sedangTutup, setSedangTutup] = useState(false);
@@ -1471,7 +1477,7 @@ function TutupShiftKartu({
 
     setSedangTutup(true);
     try {
-      await updateDoc(doc(db, "shift", shiftId), {
+      await updateDoc(doc(db, "outlets", outletId, "shift", shiftId), {
         totalOmset,
         omsetTunai,
         omsetNonTunai,
@@ -1496,7 +1502,7 @@ function TutupShiftKartu({
       // (lihat src/shared/lib/laba-harian.ts & Dashboard).
       const tanggal = tanggalHariIni();
       await setDoc(
-        doc(db, "summary_harian", tanggal),
+        doc(db, "outlets", outletId, "summary_harian", tanggal),
         {
           totalOmset: increment(totalOmset),
           omsetTunai: increment(omsetTunai),
@@ -1512,7 +1518,7 @@ function TutupShiftKartu({
       // Kasir, supaya Owner/Finance punya jejak untuk tuntutan ganti
       // rugi (di luar aplikasi). Owner menandai lunas dari Riwayat.
       if (selisihKas < 0) {
-        await addDoc(collection(db, "tanggungan_kasir"), {
+        await addDoc(collection(db, "outlets", outletId, "tanggungan_kasir"), {
           shiftId,
           tanggal,
           kasirUid: user.uid,

@@ -35,6 +35,16 @@ export interface ProfilPengguna {
   email: string;
   peran: PeranPengguna;
   aktif: boolean;
+  // Outlet tetap milik akun ini (permintaan pemilik cafe: Multi-Cabang
+  // dengan satu Owner terpusat, tapi Finance/Kasir/Purchasing masing-
+  // masing akun TERPISAH per Outlet). Owner (peran "superadmin") TIDAK
+  // punya outletId tetap — satu akun Owner mengakses SEMUA Outlet,
+  // memilih salah satu tiap sesi lewat /pilih-outlet (lihat
+  // outlet-context.tsx). Untuk peran lain, field ini WAJIB terisi dan
+  // TIDAK BISA diubah sendiri oleh pemilik akun (lihat firestore.rules
+  // — hanya Owner/Finance outlet terkait yang menentukannya saat akun
+  // dibuat di Kelola Akun).
+  outletId?: string;
 }
 
 interface AuthContextValue {
@@ -95,6 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 email: data.email ?? user.email ?? "",
                 peran: data.peran,
                 aktif: data.aktif === true,
+                outletId: data.outletId || undefined,
               }
             : null,
         });

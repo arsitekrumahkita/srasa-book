@@ -1,18 +1,38 @@
 rules_version = '2';
 
 // ============================================================
-// Firestore Security Rules — SRASA BOOK
-// Menegakkan matriks hak akses PRD bagian 6.2, berdasarkan skema
-// data PRD bagian 10. Ditulis untuk Spark Plan: TIDAK ada Cloud
-// Functions/custom claims, jadi peran (role) dibaca langsung dari
-// dokumen users/{uid} setiap kali dicek (via get()).
+// Firestore Security Rules — ARCHIMAX (Food n Beverages Lifestyle
+// Accounting). Ditulis untuk Spark Plan: TIDAK ada Cloud Functions/
+// custom claims, jadi peran (role) dibaca langsung dari dokumen
+// users/{uid} setiap kali dicek (via get()).
+//
+// MULTI-CABANG (revisi permintaan pemilik cafe: "Finance juga
+// terpusat login pilih outlet"): Owner (peran "superadmin") DAN
+// Finance SAMA-SAMA terpusat — satu akun mengakses SEMUA Outlet,
+// tidak py outletId tetap. HANYA Kasir/Purchasing yang masing-masing
+// TERTAUT ke SATU Outlet tetap (field `outletId` di users/{uid},
+// ditentukan Owner/Finance saat akun dibuat di Kelola Akun — tidak
+// bisa diubah sendiri, lihat aturan `users` di bawah).
+//
+// SELURUH data operasional (menu, bahan baku, shift, kas, saldo
+// finance, dst — semua yang dulunya koleksi top-level) sekarang
+// hidup di bawah SUB-KOLEKSI per Outlet: `outlets/{outletId}/...`.
+// Ini SENGAJA dipilih (bukan sekadar field `outletId` di koleksi
+// lama) supaya isolasi antar Outlet ditentukan oleh LOKASI/PATH data
+// itu sendiri, bukan field yang secara teori bisa saja salah/
+// dipalsukan klien — jauh lebih aman & lebih sederhana dicerna di
+// setiap match di bawah (tinggal bandingkan `outletId` dari path
+// dengan outletId akun, bukan `resource.data.outletId`).
+//
+// SRASA BOOK adalah Outlet PERTAMA (dokumen di koleksi top-level
+// `outlets`) — bukan lagi nama aplikasi (lihat README).
 //
 // Data menu SUDAH DIPECAH jadi dua koleksi terpisah dengan menuId
-// yang sama (PRD bagian 6.3 & 10): `menu_harga` (nama, kategori,
-// harga jual — boleh dibaca Kasir) dan `menu` (HPP, resep, margin —
-// khusus Owner). Ini menutup celah yang sebelumnya ada saat harga
-// dan HPP masih tercampur di satu dokumen — Security Rules bekerja
-// di level dokumen, jadi pemisahan fisik ini yang benar-benar
+// yang sama: `menu_harga` (nama, kategori, harga jual — boleh dibaca
+// Kasir) dan `menu` (HPP, resep, margin — khusus Owner/Finance
+// outlet itu). Ini menutup celah yang sebelumnya ada saat harga dan
+// HPP masih tercampur di satu dokumen — Security Rules bekerja di
+// level dokumen, jadi pemisahan fisik ini yang benar-benar
 // menegakkan kerahasiaan, bukan sekadar menyembunyikannya di UI.
 // ============================================================
 
@@ -39,20 +59,26 @@ service cloud.firestore {
       return userDoc().peran;
     }
 
-    // "finance" adalah peran tambahan yang aksesnya SENGAJA dibuat
-    // setara penuh dengan Owner (superadmin) — termasuk Kelola Akun
-    // — atas permintaan pemilik cafe. Daripada menulis ulang setiap
-    // baris `isSuperadmin()` di seluruh rules ini menjadi
-    // `isSuperadmin() || isFinance()`, fungsi isSuperadmin() di sini
-    // SENGAJA mencakup keduanya, supaya satu tempat ini menjadi
-    // satu-satunya sumber kebenaran untuk "akses level Owner". Kalau
-    // suatu saat Finance perlu dibedakan (mis. tidak boleh Kelola
-    // Akun), pisahkan lagi jadi dua fungsi lalu ubah pemanggilnya
-    // satu per satu.
-    function isSuperadmin() {
-      return isActiveUser() && (role() == 'superadmin' || role() == 'finance');
+    /** Outlet TETAP milik akun ini — HANYA berarti untuk Kasir/
+     *  Purchasing sejak revisi "Finance juga terpusat". Owner DAN
+     *  Finance tidak punya nilai berarti di sini — keduanya
+     *  ditentukan lewat isOwner()/isFinance(), bukan pencocokan
+     *  outletId. */
+    function myOutletId() {
+      return userDoc().outletId;
     }
 
+    /** Owner (superadmin) — satu akun terpusat untuk SEMUA Outlet. */
+    function isOwner() {
+      return isActiveUser() && role() == 'superadmin';
+    }
+
+    /** Finance — SEJAK REVISI "Finance juga terpusat login pilih
+     *  outlet", Finance SAMA seperti Owner: satu akun terpusat untuk
+     *  SEMUA Outlet, TIDAK terikat outletId tetap. Satu-satunya beda
+     *  dari Owner tetap dipertahankan di bawah (lihat SECTION
+     *  saldo_finance/transaksi_finance): Finance yang mengeksekusi
+     *  Uang Masuk/Keluar Saldo Deposito, bukan Owner. */
     function isFinance() {
       return isActiveUser() && role() == 'finance';
     }
@@ -65,28 +91,66 @@ service cloud.firestore {
       return isActiveUser() && role() == 'purchasing';
     }
 
+    /** Alias historis — SEJAK Finance terpusat (tidak py outletId
+     *  tetap), ini identik dengan isFinance() dan mengabaikan
+     *  `outletId` yang dioper. Dipertahankan (bukan dihapus & diganti
+     *  satu-satu di seluruh berkas) supaya SEMUA pemanggilan
+     *  isFinanceOutlet(outletId) di bawah — yang menyertakan outletId
+     *  dari path match, bukan dari akun Finance — tetap benar tanpa
+     *  perlu disentuh satu per satu. */
+    function isFinanceOutlet(outletId) {
+      return isFinance();
+    }
+
+    function isKasirOutlet(outletId) {
+      return isKasir() && myOutletId() == outletId;
+    }
+
+    function isPurchasingOutlet(outletId) {
+      return isPurchasing() && myOutletId() == outletId;
+    }
+
+    /** "Setara Owner di Outlet manapun" — pengganti isSuperadmin()
+     *  versi lama untuk SEMUA data yang sekarang hidup di bawah
+     *  outlets/{outletId}/... Owner DAN Finance SELALU lolos di
+     *  outlet manapun (keduanya terpusat) — parameter outletId
+     *  dipertahankan untuk konsistensi pemanggilan, bukan dipakai
+     *  langsung di sini lagi. */
+    function isManagerOutlet(outletId) {
+      return isOwner() || isFinanceOutlet(outletId);
+    }
+
     // ------------------------------------------------------------
-    // SECTION: users — profil & peran setiap akun
-    // Hanya Owner yang membuat/mengubah akun staff (PRD 9.7: staff
-    // tidak mendaftar sendiri). Setiap orang boleh membaca dokumennya
-    // sendiri (untuk tahu perannya sendiri saat login).
+    // SECTION: users — profil, peran & Outlet tetap setiap akun
+    // (GLOBAL, TIDAK di bawah outlets/{outletId} — dibutuhkan untuk
+    // resolusi peran/Outlet SEBELUM tahu sedang membuka Outlet mana).
+    // Owner DAN Finance (KEDUANYA terpusat, revisi: "Finance juga
+    // terpusat login pilih outlet") sama-sama boleh membuat/mengubah
+    // akun untuk Outlet MANAPUN — tidak ada lagi pembatasan
+    // resource.data.outletId == myOutletId() untuk Finance, karena
+    // Finance sendiri tidak lagi punya outletId tetap (Kelola Akun,
+    // PRD 9.7: staff — Kasir/Purchasing — tidak mendaftar sendiri).
     // ------------------------------------------------------------
 
     match /users/{userId} {
-      allow get: if isSignedIn() && (request.auth.uid == userId || isSuperadmin());
-      allow list: if isSuperadmin();
-      allow create, update, delete: if isSuperadmin();
+      allow get: if isSignedIn()
+        && (request.auth.uid == userId || isOwner() || isFinance());
+      allow list: if isOwner() || isFinance();
+      allow create: if (isOwner() || isFinance())
+        && request.resource.data.peran in ['kasir', 'purchasing', 'finance'];
+      allow update, delete: if isOwner() || isFinance();
 
       // Halaman Profil Akun: setiap orang boleh memperbaiki NAMA-nya
-      // sendiri (salah ketik saat akun dibuat Owner, dsb).
+      // sendiri (salah ketik saat akun dibuat, dsb).
       //
       // Dibatasi hasOnly(['nama']) dan BUKAN sekadar "boleh ubah
-      // dokumen sendiri" — ini bedanya krusial: kalau `peran` ikut
-      // boleh berubah, Kasir bisa menaikkan dirinya sendiri jadi
-      // superadmin hanya lewat devtools browser, dan SELURUH matriks
-      // hak akses di berkas ini jadi tidak berarti. `aktif` juga
-      // ditahan, supaya akun yang dinonaktifkan Owner tidak bisa
-      // menghidupkan dirinya kembali.
+      // dokumen sendiri" — ini bedanya krusial: kalau `peran` ATAU
+      // `outletId` ikut boleh berubah, Kasir bisa menaikkan dirinya
+      // sendiri jadi superadmin ATAU memindahkan dirinya ke Outlet
+      // lain hanya lewat devtools browser, dan SELURUH matriks hak
+      // akses & isolasi antar-Outlet di berkas ini jadi tidak
+      // berarti. `aktif` juga ditahan, supaya akun yang dinonaktifkan
+      // tidak bisa menghidupkan dirinya kembali.
       allow update: if isSignedIn()
         && request.auth.uid == userId
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["nama"]);
@@ -95,417 +159,344 @@ service cloud.firestore {
     // ------------------------------------------------------------
     // SECTION: usernames — pemetaan "username publik" -> email asli,
     // KHUSUS supaya Login bisa menerima Username selain Email (PRD
-    // 9.7 lanjutan). Firebase Auth sendiri TIDAK PUNYA konsep
-    // username, hanya email/password — jadi halaman Login membaca
-    // dokumen ini DULU (sebelum request.auth ada sama sekali, karena
-    // proses ini terjadi SEBELUM sign-in berhasil) untuk menerjemahkan
-    // username -> email, baru memanggil signInWithEmailAndPassword
-    // dengan email hasil terjemahan itu.
+    // 9.7 lanjutan). GLOBAL (lintas Outlet) karena Login terjadi
+    // SEBELUM tahu Outlet mana pun. Firebase Auth sendiri TIDAK PUNYA
+    // konsep username, hanya email/password — jadi halaman Login
+    // membaca dokumen ini DULU (sebelum request.auth ada sama
+    // sekali) untuk menerjemahkan username -> email.
     //
-    // Isinya SENGAJA minimal (cuma uid + email, bukan salinan profil
-    // lengkap) supaya aman dibaca publik tanpa membocorkan data lain.
-    // Hanya Owner yang menulis (dibuat bersamaan saat akun staff baru
-    // dibuat di Kelola Akun, atau manual untuk akun Owner pertama).
+    // Isinya SENGAJA minimal (cuma uid + email) supaya aman dibaca
+    // publik. Ditulis bersamaan saat akun staff baru dibuat di Kelola
+    // Akun (Owner ATAU Finance outlet manapun boleh — usernames
+    // sendiri tidak membocorkan Outlet apa pun, keamanan sungguhan
+    // ada di rules `users` di atas).
     // ------------------------------------------------------------
 
     match /usernames/{username} {
       allow read: if true;
-      allow write: if isSuperadmin();
+      allow write: if isOwner() || isFinance();
     }
 
     // ------------------------------------------------------------
-    // SECTION: profil_cafe — pengaturan umum (termasuk default % HPP)
-    // Semua peran aktif perlu baca (ambang notifikasi dsb), hanya
-    // Owner yang boleh mengubah.
+    // SECTION: outlets — daftar Outlet (Cabang). GLOBAL, TOP-LEVEL —
+    // struktur ini hidup DI ATAS seluruh data per-Outlet lainnya.
+    // Semua peran aktif boleh BACA (staff perlu tahu nama Outletnya
+    // sendiri untuk header/ekspor; Owner & Finance perlu daftar
+    // lengkap untuk layar Pilih Outlet & pengalih Outlet, keduanya
+    // terpusat). Hanya Owner MURNI yang menulis (tambah/nonaktifkan
+    // Outlet) — ini keputusan struktural lintas-Outlet, BUKAN
+    // wewenang Finance walau Finance kini setara Owner di hampir
+    // semua data operasional (lihat isManagerOutlet()).
     // ------------------------------------------------------------
 
-    match /profil_cafe/{cafeId} {
+    match /outlets/{outletId} {
       allow read: if isActiveUser();
-      allow write: if isSuperadmin();
-    }
+      allow write: if isOwner();
 
-    // ------------------------------------------------------------
-    // SECTION: bahan_baku — inventaris & harga bahan
-    // Purchasing mengelola penuh (input belanja & update harga),
-    // Owner akses penuh, Kasir TIDAK punya akses sama sekali
-    // (sesuai matriks 6.2).
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: bahan_baku — inventaris & harga bahan (per Outlet)
+      // --------------------------------------------------------
 
-    match /bahan_baku/{bahanId} {
-      allow read, write: if isSuperadmin() || isPurchasing();
+      match /bahan_baku/{bahanId} {
+        allow read, write: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
 
-      // Kasir TIDAK BOLEH baca bahan_baku sama sekali (harga tetap
-      // rahasia), tapi Resep (lihat menu/{id}/resep di bawah) butuh
-      // stok gudang otomatis berkurang saat Kasir mencatat penjualan.
-      // Izin ini SENGAJA hanya "update", bukan "read" — dan dibatasi
-      // hanya boleh mengubah field `stokSaatIni` (via increment()),
-      // tidak pernah `hargaSatuanTerakhir` atau field lain. Kasir
-      // menulis TANPA PERNAH membaca isi dokumennya (pola "tulis
-      // tanpa baca", sama seperti summary_harian) — lihat komentar
-      // src/shared/lib/resep.ts untuk penjelasan lengkap.
-      allow update: if isKasir()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["stokSaatIni"]);
+        // Kasir TIDAK BOLEH baca bahan_baku sama sekali (harga tetap
+        // rahasia), tapi Resep butuh stok gudang otomatis berkurang
+        // saat Kasir mencatat penjualan. Izin ini SENGAJA hanya
+        // "update", dibatasi hanya field `stokSaatIni` (pola "tulis
+        // tanpa baca").
+        allow update: if isKasirOutlet(outletId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["stokSaatIni"]);
 
-      match /riwayat_harga/{riwayatId} {
-        allow read: if isSuperadmin() || isPurchasing();
-        // Riwayat harga dibuat otomatis oleh klien saat harga berubah,
-        // tidak pernah diedit/dihapus manual — jaga integritas jejak audit.
-        allow create: if isSuperadmin() || isPurchasing();
-        allow update, delete: if isSuperadmin();
+        match /riwayat_harga/{riwayatId} {
+          allow read: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+          allow create: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+          allow update, delete: if isManagerOutlet(outletId);
+        }
+
+        match /penyesuaian_stok/{penyesuaianId} {
+          allow read: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+          allow create: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+          allow update, delete: if isManagerOutlet(outletId);
+        }
       }
 
-      // Penyesuaian stok manual TANPA approval (bahan rusak/
-      // kedaluwarsa) — wajib foto, tapi tidak perlu persetujuan Owner
-      // (atas permintaan pemilik cafe). Purchasing & Owner/Finance
-      // boleh mencatat; jejaknya permanen (tidak bisa diedit/dihapus,
-      // sama seperti riwayat_harga).
-      match /penyesuaian_stok/{penyesuaianId} {
-        allow read: if isSuperadmin() || isPurchasing();
-        allow create: if isSuperadmin() || isPurchasing();
-        allow update, delete: if isSuperadmin();
-      }
-    }
+      // --------------------------------------------------------
+      // SECTION: stok_kasir — CERMIN bahan_baku TANPA harga (per Outlet)
+      // --------------------------------------------------------
 
-    // ------------------------------------------------------------
-    // SECTION: stok_kasir — CERMIN bahan_baku TANPA hargaSatuanTerakhir
-    // (nama, kategori, satuan, stokSaatIni, batasMinimalStok, aktif).
-    // Dashboard Kasir menampilkan rincian stok gudang (atas permintaan
-    // pemilik cafe) — Kasir tidak boleh diberi `read` ke bahan_baku
-    // sama sekali karena itu akan membocorkan harga, jadi dokumen
-    // TERPISAH ini yang dibaca Kasir, ditulis ulang oleh Purchasing/
-    // Owner/Finance setiap kali field non-harga bahan_baku berubah
-    // (lihat setMirrorStokKasir() di src/shared/lib/resep.ts).
-    // ------------------------------------------------------------
-
-    match /stok_kasir/{bahanId} {
-      allow read: if isSuperadmin() || isPurchasing() || isKasir();
-      allow create, update, delete: if isSuperadmin() || isPurchasing();
-
-      // Kasir hanya boleh menulis stokSaatIni (dikurangi otomatis lewat
-      // Resep saat penjualan tercatat) — pola "tulis tanpa baca" yang
-      // sama seperti bahan_baku di atas, TIDAK PERNAH field lain.
-      allow update: if isKasir()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["stokSaatIni"]);
-    }
-
-    // ------------------------------------------------------------
-    // SECTION: menu_harga — nama, kategori, harga jual (PUBLIK)
-    // Kasir boleh baca (butuh ini untuk input penjualan per menu).
-    // Purchasing TIDAK punya akses (matriks 6.2: baris menu = "-").
-    // Hanya Owner yang menulis (menu dikelola lewat Kalkulator HPP).
-    // ------------------------------------------------------------
-
-    match /menu_harga/{menuId} {
-      allow read: if isSuperadmin() || isKasir();
-      allow write: if isSuperadmin();
-
-      match /varian/{varianId} {
-        allow read: if isSuperadmin() || isKasir();
-        allow write: if isSuperadmin();
-      }
-    }
-
-    // ------------------------------------------------------------
-    // SECTION: menu — HPP, resep, margin (PRIVAT, khusus Owner)
-    // menuId-nya SAMA dengan menu_harga/{menuId} di atas, tapi ini
-    // koleksi terpisah — bukan sub-koleksi — supaya Kasir yang punya
-    // akses ke menu_harga tidak otomatis ikut punya akses ke sini.
-    // ------------------------------------------------------------
-
-    match /menu/{menuId} {
-      allow read, write: if isSuperadmin();
-
-      match /varian/{varianId} {
-        allow read, write: if isSuperadmin();
+      match /stok_kasir/{bahanId} {
+        allow read: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId) || isKasirOutlet(outletId);
+        allow create, update, delete: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+        allow update: if isKasirOutlet(outletId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["stokSaatIni"]);
       }
 
-      // Resep (bahan + takaran) SENGAJA boleh dibaca Kasir juga —
-      // isinya cuma bahanId + takaran + satuan, TIDAK ADA Rupiah,
-      // supaya Kasir bisa mengurangi stok gudang otomatis saat
-      // mencatat penjualan (lihat src/shared/lib/resep.ts). Dokumen
-      // induk menu/{menuId} (HPP, breakdown biaya) TETAP privat.
-      match /resep/{resepId} {
-        allow read: if isSuperadmin() || isKasir();
-        allow write: if isSuperadmin();
+      // --------------------------------------------------------
+      // SECTION: menu_harga — nama, kategori, harga jual (PUBLIK di
+      // dalam Outlet). menu — HPP, resep, margin (PRIVAT).
+      // --------------------------------------------------------
+
+      match /menu_harga/{menuId} {
+        allow read: if isManagerOutlet(outletId) || isKasirOutlet(outletId);
+        allow write: if isManagerOutlet(outletId);
+
+        match /varian/{varianId} {
+          allow read: if isManagerOutlet(outletId) || isKasirOutlet(outletId);
+          allow write: if isManagerOutlet(outletId);
+        }
       }
 
-      match /biaya_tambahan/{biayaId} {
-        allow read, write: if isSuperadmin();
-      }
-    }
+      match /menu/{menuId} {
+        allow read, write: if isManagerOutlet(outletId);
 
-    // ------------------------------------------------------------
-    // SECTION: shift — buka/tutup shift, penjualan, kas keluar
-    // Kasir hanya boleh baca/ubah shift MILIKNYA SENDIRI dan hanya
-    // selagi belum terkunci; Owner akses penuh semua shift.
-    // Purchasing TIDAK punya akses (matriks 6.2).
-    // ------------------------------------------------------------
+        match /varian/{varianId} {
+          allow read, write: if isManagerOutlet(outletId);
+        }
 
-    match /shift/{shiftId} {
-      allow read: if isSuperadmin()
-        || (isKasir() && resource.data.kasirUid == request.auth.uid);
-      allow create: if isSuperadmin() || isKasir();
-      allow update: if isSuperadmin()
-        || (isKasir()
-            && resource.data.kasirUid == request.auth.uid
-            && resource.data.status != 'terkunci');
-      allow delete: if isSuperadmin();
+        // Resep (bahan + takaran) SENGAJA boleh dibaca Kasir juga —
+        // isinya cuma bahanId + takaran + satuan, TIDAK ADA Rupiah.
+        match /resep/{resepId} {
+          allow read: if isManagerOutlet(outletId) || isKasirOutlet(outletId);
+          allow write: if isManagerOutlet(outletId);
+        }
 
-      match /penjualan/{itemId} {
-        allow read: if isSuperadmin()
-          || (isKasir()
-              && get(/databases/$(database)/documents/shift/$(shiftId)).data.kasirUid == request.auth.uid);
-        allow create, update: if isSuperadmin()
-          || (isKasir()
-              && get(/databases/$(database)/documents/shift/$(shiftId)).data.kasirUid == request.auth.uid
-              && get(/databases/$(database)/documents/shift/$(shiftId)).data.status != 'terkunci');
-        allow delete: if isSuperadmin();
+        match /biaya_tambahan/{biayaId} {
+          allow read, write: if isManagerOutlet(outletId);
+        }
       }
 
-      match /kas_keluar/{kasKeluarId} {
-        allow read: if isSuperadmin()
-          || (isKasir()
-              && get(/databases/$(database)/documents/shift/$(shiftId)).data.kasirUid == request.auth.uid);
-        allow create, update: if isSuperadmin()
-          || (isKasir()
-              && get(/databases/$(database)/documents/shift/$(shiftId)).data.kasirUid == request.auth.uid
-              && get(/databases/$(database)/documents/shift/$(shiftId)).data.status != 'terkunci');
-        allow delete: if isSuperadmin();
+      // --------------------------------------------------------
+      // SECTION: shift — buka/tutup shift, penjualan, kas keluar
+      // (per Outlet). Kasir hanya boleh baca/ubah shift MILIKNYA
+      // SENDIRI dan hanya selagi belum terkunci.
+      // --------------------------------------------------------
+
+      match /shift/{shiftId} {
+        allow read: if isManagerOutlet(outletId)
+          || (isKasirOutlet(outletId) && resource.data.kasirUid == request.auth.uid);
+        allow create: if isManagerOutlet(outletId) || isKasirOutlet(outletId);
+        allow update: if isManagerOutlet(outletId)
+          || (isKasirOutlet(outletId)
+              && resource.data.kasirUid == request.auth.uid
+              && resource.data.status != 'terkunci');
+        allow delete: if isManagerOutlet(outletId);
+
+        match /penjualan/{itemId} {
+          allow read: if isManagerOutlet(outletId)
+            || (isKasirOutlet(outletId)
+                && get(/databases/$(database)/documents/outlets/$(outletId)/shift/$(shiftId)).data.kasirUid == request.auth.uid);
+          allow create, update: if isManagerOutlet(outletId)
+            || (isKasirOutlet(outletId)
+                && get(/databases/$(database)/documents/outlets/$(outletId)/shift/$(shiftId)).data.kasirUid == request.auth.uid
+                && get(/databases/$(database)/documents/outlets/$(outletId)/shift/$(shiftId)).data.status != 'terkunci');
+          allow delete: if isManagerOutlet(outletId);
+        }
+
+        match /kas_keluar/{kasKeluarId} {
+          allow read: if isManagerOutlet(outletId)
+            || (isKasirOutlet(outletId)
+                && get(/databases/$(database)/documents/outlets/$(outletId)/shift/$(shiftId)).data.kasirUid == request.auth.uid);
+          allow create, update: if isManagerOutlet(outletId)
+            || (isKasirOutlet(outletId)
+                && get(/databases/$(database)/documents/outlets/$(outletId)/shift/$(shiftId)).data.kasirUid == request.auth.uid
+                && get(/databases/$(database)/documents/outlets/$(outletId)/shift/$(shiftId)).data.status != 'terkunci');
+          allow delete: if isManagerOutlet(outletId);
+        }
       }
-    }
 
-    // ------------------------------------------------------------
-    // SECTION: kas_belanja — belanja harian & nota
-    // Purchasing hanya boleh baca/ubah entri MILIKNYA SENDIRI dan
-    // selagi belum terkunci; Owner akses penuh. Kasir TIDAK punya
-    // akses (matriks 6.2).
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: kas_belanja — belanja harian & nota (per Outlet)
+      // --------------------------------------------------------
 
-    match /kas_belanja/{belanjaId} {
-      allow read: if isSuperadmin()
-        || (isPurchasing() && resource.data.purchasingUid == request.auth.uid);
-      allow create: if isSuperadmin() || isPurchasing();
-      allow update: if isSuperadmin()
-        || (isPurchasing()
-            && resource.data.purchasingUid == request.auth.uid
-            && resource.data.status != 'terkunci');
-      allow delete: if isSuperadmin();
+      match /kas_belanja/{belanjaId} {
+        allow read: if isManagerOutlet(outletId)
+          || (isPurchasingOutlet(outletId) && resource.data.purchasingUid == request.auth.uid);
+        allow create: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+        allow update: if isManagerOutlet(outletId)
+          || (isPurchasingOutlet(outletId)
+              && resource.data.purchasingUid == request.auth.uid
+              && resource.data.status != 'terkunci');
+        allow delete: if isManagerOutlet(outletId);
 
-      match /item/{itemId} {
-        allow read: if isSuperadmin()
-          || (isPurchasing()
-              && get(/databases/$(database)/documents/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid);
-        allow create, update: if isSuperadmin()
-          || (isPurchasing()
-              && get(/databases/$(database)/documents/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid
-              && get(/databases/$(database)/documents/kas_belanja/$(belanjaId)).data.status != 'terkunci');
-        allow delete: if isSuperadmin();
+        match /item/{itemId} {
+          allow read: if isManagerOutlet(outletId)
+            || (isPurchasingOutlet(outletId)
+                && get(/databases/$(database)/documents/outlets/$(outletId)/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid);
+          allow create, update: if isManagerOutlet(outletId)
+            || (isPurchasingOutlet(outletId)
+                && get(/databases/$(database)/documents/outlets/$(outletId)/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid
+                && get(/databases/$(database)/documents/outlets/$(outletId)/kas_belanja/$(belanjaId)).data.status != 'terkunci');
+          allow delete: if isManagerOutlet(outletId);
+        }
+
+        match /nota/{notaId} {
+          allow read: if isManagerOutlet(outletId)
+            || (isPurchasingOutlet(outletId)
+                && get(/databases/$(database)/documents/outlets/$(outletId)/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid);
+          allow create: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+          allow update, delete: if isManagerOutlet(outletId);
+        }
       }
 
-      match /nota/{notaId} {
-        allow read: if isSuperadmin()
-          || (isPurchasing()
-              && get(/databases/$(database)/documents/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid);
-        allow create: if isSuperadmin() || isPurchasing();
-        allow update, delete: if isSuperadmin();
+      // --------------------------------------------------------
+      // SECTION: summary_harian & summary_bulanan — dasar Dashboard
+      // (per Outlet). Owner/Finance outlet ini untuk BACA; Kasir &
+      // Purchasing outlet ini tetap diberi izin TULIS (update saja)
+      // supaya klien mereka bisa memutakhirkan lewat increment() saat
+      // tutup shift/nota disimpan, TANPA perlu membaca dokumennya
+      // lebih dulu ("tulis tanpa baca").
+      // --------------------------------------------------------
+
+      match /summary_harian/{tanggal} {
+        allow read: if isManagerOutlet(outletId);
+        allow write: if isManagerOutlet(outletId) || isKasirOutlet(outletId) || isPurchasingOutlet(outletId);
       }
-    }
 
-    // ------------------------------------------------------------
-    // SECTION: summary_harian & summary_bulanan — dasar Dashboard
-    // Owner-only untuk BACA (data laba/margin sensitif). Kasir &
-    // Purchasing tetap diberi izin TULIS (update saja, bukan baca)
-    // supaya klien mereka bisa memutakhirkan angka ringkasan lewat
-    // FieldValue.increment() saat tutup shift/nota disimpan, TANPA
-    // perlu membaca isi dokumennya lebih dulu (lihat README bagian
-    // implementasi client). Ini pola standar Firestore untuk
-    // "tulis tanpa baca".
-    // ------------------------------------------------------------
+      match /summary_bulanan/{bulan} {
+        allow read: if isManagerOutlet(outletId);
+        allow write: if isManagerOutlet(outletId) || isKasirOutlet(outletId) || isPurchasingOutlet(outletId);
+      }
 
-    match /summary_harian/{tanggal} {
-      allow read: if isSuperadmin();
-      allow write: if isSuperadmin() || isKasir() || isPurchasing();
-    }
+      // --------------------------------------------------------
+      // SECTION: tiket_approval — pengajuan koreksi data terkunci
+      // (per Outlet)
+      // --------------------------------------------------------
 
-    match /summary_bulanan/{bulan} {
-      allow read: if isSuperadmin();
-      allow write: if isSuperadmin() || isKasir() || isPurchasing();
-    }
+      match /tiket_approval/{tiketId} {
+        allow read: if isManagerOutlet(outletId)
+          || (myOutletId() == outletId && resource.data.diajukanOlehUid == request.auth.uid);
+        allow create: if isActiveUser()
+          && myOutletId() == outletId
+          && request.resource.data.diajukanOlehUid == request.auth.uid
+          && request.resource.data.status == 'menunggu';
+        allow update, delete: if isManagerOutlet(outletId);
+      }
 
-    // ------------------------------------------------------------
-    // SECTION: tiket_approval — pengajuan koreksi data terkunci
-    // Semua peran aktif boleh mengajukan (create) dan membaca
-    // tiket MILIKNYA SENDIRI; hanya Owner yang bisa mengubah status
-    // (setujui/tolak) dan menghapus.
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: profil_cafe — Detail Perusahaan/KOP surat (per Outlet)
+      // --------------------------------------------------------
 
-    match /tiket_approval/{tiketId} {
-      allow read: if isSuperadmin()
-        || (isActiveUser() && resource.data.diajukanOlehUid == request.auth.uid);
-      allow create: if isActiveUser()
-        && request.resource.data.diajukanOlehUid == request.auth.uid
-        && request.resource.data.status == 'menunggu';
-      allow update: if isSuperadmin();
-      allow delete: if isSuperadmin();
-    }
+      match /profil_cafe/{cafeId} {
+        allow read: if isActiveUser() && (isOwner() || isFinance() || myOutletId() == outletId);
+        allow write: if isManagerOutlet(outletId);
+      }
 
-    // ------------------------------------------------------------
-    // SECTION: notifikasi — Pusat Notifikasi (lintas peran)
-    // Setiap orang membaca notifikasi yang ditujukan ke uid-nya
-    // ATAU ke perannya; siapa saja yang aktif boleh MEMBUAT
-    // notifikasi untuk orang lain (misalnya Kasir memicu notifikasi
-    // "kas keluar besar" untuk Owner); hanya penerima yang boleh
-    // mengubahnya (menandai sudah dibaca).
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: notifikasi — Pusat Notifikasi (per Outlet, lintas peran
+      // DI DALAM Outlet itu)
+      // --------------------------------------------------------
 
-    match /notifikasi/{notifId} {
-      allow read: if isActiveUser()
-        && (resource.data.untukUid == request.auth.uid || resource.data.untukPeran == role());
-      allow create: if isActiveUser();
-      allow update: if isActiveUser() && resource.data.untukUid == request.auth.uid;
-      allow delete: if isSuperadmin();
-    }
+      match /notifikasi/{notifId} {
+        allow read: if isActiveUser()
+          && (isOwner() || isFinance() || myOutletId() == outletId)
+          && (resource.data.untukUid == request.auth.uid || resource.data.untukPeran == role());
+        allow create: if isActiveUser() && (isOwner() || isFinance() || myOutletId() == outletId);
+        allow update: if isActiveUser() && resource.data.untukUid == request.auth.uid;
+        allow delete: if isManagerOutlet(outletId);
+      }
 
-    // ------------------------------------------------------------
-    // SECTION: tanggungan_kasir — dibuat otomatis saat Tutup Shift
-    // dengan Selisih Kas negatif (kekurangan), sebagai jejak
-    // tanggung jawab ganti rugi Kasir (atas permintaan pemilik
-    // cafe). Kasir boleh membuat tanggungannya SENDIRI (uid harus
-    // cocok) dan membaca miliknya sendiri; hanya Owner/Finance yang
-    // bisa menandai lunas atau menghapus.
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: tanggungan_kasir — ganti rugi selisih kas (per Outlet)
+      // --------------------------------------------------------
 
-    match /tanggungan_kasir/{tanggunganId} {
-      allow read: if isSuperadmin()
-        || (isKasir() && resource.data.kasirUid == request.auth.uid);
-      allow create: if isKasir() && request.resource.data.kasirUid == request.auth.uid;
-      allow update, delete: if isSuperadmin();
-    }
+      match /tanggungan_kasir/{tanggunganId} {
+        allow read: if isManagerOutlet(outletId)
+          || (isKasirOutlet(outletId) && resource.data.kasirUid == request.auth.uid);
+        allow create: if isKasirOutlet(outletId) && request.resource.data.kasirUid == request.auth.uid;
+        allow update, delete: if isManagerOutlet(outletId);
+      }
 
-    // ------------------------------------------------------------
-    // SECTION: nota_refund — refund lintas hari/shift yang SUDAH
-    // ditutup/terkunci (beda dengan qtyRefund cepat di
-    // shift/{id}/penjualan yang hanya untuk shift hari ini yang
-    // masih berjalan — lihat komentar src/app/shift/page.tsx).
-    //
-    // Dipakai saat customer baru komplain setelah shift asalnya
-    // ditutup (bisa beda hari). Bahan baku TIDAK disentuh sama
-    // sekali di sini (sudah terpakai & tidak dikembalikan ke stok,
-    // sama seperti qtyRefund) — dokumen ini murni catatan finansial
-    // + jejak audit yang merujuk ke shift/menu asal, dibaca
-    // hitungLabaHarian() untuk mengurangi Omset pada TANGGAL REFUND
-    // terjadi (bukan mengedit ulang laporan hari transaksi asli yang
-    // sudah final).
-    //
-    // Kasir boleh MEMBUAT sendiri (atas permintaan pemilik cafe:
-    // tanpa approval Owner, supaya operasional tetap cepat), tapi
-    // TIDAK BOLEH mengubah/menghapusnya lagi setelah dibuat — jaga
-    // integritas jejak audit, sama seperti riwayat_harga & tanggungan_kasir.
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: nota_refund — refund lintas hari/shift (per Outlet)
+      // --------------------------------------------------------
 
-    match /nota_refund/{refundId} {
-      allow read: if isSuperadmin()
-        || (isKasir() && resource.data.kasirUid == request.auth.uid);
-      allow create: if isKasir() && request.resource.data.kasirUid == request.auth.uid;
-      allow update, delete: if isSuperadmin();
-    }
+      match /nota_refund/{refundId} {
+        allow read: if isManagerOutlet(outletId)
+          || (isKasirOutlet(outletId) && resource.data.kasirUid == request.auth.uid);
+        allow create: if isKasirOutlet(outletId) && request.resource.data.kasirUid == request.auth.uid;
+        allow update, delete: if isManagerOutlet(outletId);
+      }
 
-    // ------------------------------------------------------------
-    // SECTION: saldo_finance & transaksi_finance — Deposito Finance
-    // (permintaan pemilik cafe): sumber dana yang SENGAJA dipisah dari
-    // uang hasil penjualan (Omset) — dipakai untuk Gaji Karyawan, Biaya
-    // Operasional yang diinput Finance, dan modal belanja Purchasing
-    // kalau memilih sumber "Saldo Finance" (lihat kas_belanja di bawah).
-    //
-    // NUANSA AKSES KHUSUS di sini (beda dari seluruh rules lain di
-    // berkas ini): peran "finance" biasanya setara PENUH dengan
-    // superadmin (lihat isSuperadmin()) — TAPI untuk domain Deposito
-    // Finance ini, Owner (superadmin) SENGAJA hanya boleh MEMBACA/
-    // memantau, TIDAK BOLEH mengeksekusi Uang Masuk/Keluar sama sekali
-    // (atas permintaan eksplisit pemilik cafe: "Owner tidak bisa").
-    // Itulah kenapa create/update/delete di sini memakai isFinance()
-    // sendirian, BUKAN isSuperadmin(). UI (src/app/transaksi-finance/
-    // page.tsx) juga menyembunyikan tombolnya untuk Owner, tapi rules
-    // inilah yang menegakkannya sungguhan.
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: saldo_finance & transaksi_finance — Deposito
+      // Finance (per Outlet). NUANSA AKSES KHUSUS (beda dari seluruh
+      // rules lain di berkas ini, TETAP DIPERTAHANKAN walau Finance
+      // sekarang terpusat seperti Owner): di Outlet manapun, Owner
+      // SENGAJA hanya boleh MEMBACA/memantau saldo & riwayat (plus
+      // admin override update saldo untuk koreksi data, lihat di
+      // bawah), TIDAK BOLEH mencatat transaksi/menjadi pelaksana Uang
+      // Masuk-Keluar sehari-hari (permintaan eksplisit pemilik cafe:
+      // "Owner tidak bisa") — itulah kenapa create transaksi & update/
+      // delete transaksi di sini memakai isFinanceOutlet() (=
+      // isFinance(), lihat helper di atas) sendirian, BUKAN
+      // isManagerOutlet().
+      // --------------------------------------------------------
 
-    match /saldo_finance/{dokId} {
-      // Purchasing SENGAJA diberi baca (bukan Kasir) — perlu tahu sisa
-      // saldo untuk memutuskan sumber dana saat "Mulai Belanja" (lihat
-      // kas_belanja di bawah), sebelum memilih "Saldo Finance".
-      allow read: if isSuperadmin() || isPurchasing();
-      allow create: if isSuperadmin() || isFinance();
+      match /saldo_finance/{dokId} {
+        // Purchasing outlet ini SENGAJA diberi baca (bukan Kasir) —
+        // perlu tahu sisa saldo sebelum memilih "Saldo Finance" saat
+        // "Mulai Belanja".
+        allow read: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+        allow create: if isOwner() || isFinanceOutlet(outletId);
 
-      // Purchasing HANYA boleh MENGURANGI saldo (lewat increment negatif
-      // saat memilih sumber "Saldo Finance" ke kas_belanja), TIDAK
-      // PERNAH field lain. Finance boleh menambah ATAU mengurangi
-      // (Tambah Dana / transaksi keluar). Kedua jalur non-Owner ini
-      // WAJIB menjaga saldo tidak pernah minus (request.resource.data
-      // di rules mencerminkan nilai SETELAH increment() diterapkan,
-      // jadi validasi ini sungguhan menegakkan batas, bukan sekadar
-      // client-side). Owner (superadmin) tetap dapat admin override
-      // penuh tanpa batas minus itu, untuk koreksi data.
-      allow update: if isSuperadmin()
-        || ((isFinance() || isPurchasing())
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["saldo"])
-            && request.resource.data.saldo >= 0);
-    }
+        // Purchasing outlet ini HANYA boleh MENGURANGI saldo (lewat
+        // increment negatif), TIDAK PERNAH field lain. Finance outlet
+        // ini boleh menambah ATAU mengurangi. Kedua jalur non-Owner
+        // ini WAJIB menjaga saldo tidak pernah minus. Owner (global)
+        // tetap dapat admin override penuh tanpa batas minus itu,
+        // untuk koreksi data di Outlet manapun.
+        allow update: if isOwner()
+          || ((isFinanceOutlet(outletId) || isPurchasingOutlet(outletId))
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["saldo"])
+              && request.resource.data.saldo >= 0);
+      }
 
-    match /transaksi_finance/{transaksiId} {
-      allow read: if isSuperadmin();
-      allow create: if isFinance() && request.resource.data.financeUid == request.auth.uid;
-      // SENGAJA isFinance() saja (bukan isSuperadmin()) — koreksi/hapus
-      // transaksi Deposito Finance juga termasuk "uang masuk/keluar"
-      // yang tidak boleh dieksekusi Owner, sesuai permintaan di atas.
-      allow update, delete: if isFinance();
-    }
+      match /transaksi_finance/{transaksiId} {
+        allow read: if isManagerOutlet(outletId);
+        allow create: if isFinanceOutlet(outletId) && request.resource.data.financeUid == request.auth.uid;
+        // SENGAJA isFinanceOutlet() saja (bukan isManagerOutlet()) —
+        // koreksi/hapus transaksi Deposito Finance juga "uang masuk/
+        // keluar" yang tidak boleh dieksekusi Owner.
+        allow update, delete: if isFinanceOutlet(outletId);
+      }
 
-    // ------------------------------------------------------------
-    // SECTION: slot_shift — Jadwal Shift (permintaan pemilik cafe:
-    // "Finance juga yang atur pembagian shift"). Daftar SLOT (nama +
-    // jam mulai/selesai, mis. "Shift 1: 08.00-17.00") yang dikelola
-    // Finance/Owner — Kasir sendiri yang memilih slot mana saat buka
-    // shift (self-service, bukan penugasan manual per tanggal). Ini
-    // domain PENJADWALAN, bukan uang masuk/keluar, jadi TIDAK memakai
-    // nuansa "Owner tidak bisa" seperti saldo_finance — Owner & Finance
-    // sama-sama boleh kelola, seperti pola biasa di seluruh app ini.
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: slot_shift — Jadwal Shift (per Outlet). Domain
+      // PENJADWALAN, bukan uang masuk/keluar, jadi Owner & Finance
+      // outlet ini sama-sama boleh kelola (isManagerOutlet biasa).
+      // --------------------------------------------------------
 
-    match /slot_shift/{slotId} {
-      // Semua peran aktif boleh baca (Kasir WAJIB baca ini untuk
-      // memilih slot saat buka shift).
-      allow read: if isActiveUser();
-      allow write: if isSuperadmin();
-    }
+      match /slot_shift/{slotId} {
+        allow read: if isActiveUser() && (isOwner() || isFinance() || myOutletId() == outletId);
+        allow write: if isManagerOutlet(outletId);
+      }
 
-    // ------------------------------------------------------------
-    // SECTION: serah_terima_kas — jejak audit serah terima kas fisik
-    // antar Kasir saat transisi pergantian shift yang lacinya masih
-    // sama/tumpang tindih jam (permintaan pemilik cafe). SENGAJA
-    // TIDAK ditargetkan ke satu Kasir penerima tertentu (uid tujuan) —
-    // Kasir tidak punya akses `list` ke koleksi users untuk memilih
-    // nama, jadi cukup dicatat "dari siapa, jam berapa, berapa" dan
-    // SEMUA Kasir aktif boleh membaca daftar ini (bukan cuma
-    // pembuatnya) supaya siapa pun yang baru mulai shift bisa lihat
-    // riwayat serah terima hari ini tanpa perlu penargetan uid.
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: serah_terima_kas — audit serah terima kas fisik
+      // antar Kasir (per Outlet). SENGAJA TIDAK ditargetkan ke uid
+      // penerima tertentu — Kasir tidak punya akses `list` ke
+      // koleksi users untuk memilih nama, jadi SEMUA Kasir outlet ini
+      // boleh membaca daftar hari ini.
+      // --------------------------------------------------------
 
-    match /serah_terima_kas/{id} {
-      allow read: if isSuperadmin() || isKasir();
-      allow create: if isKasir() && request.resource.data.dariUid == request.auth.uid;
-      allow update, delete: if isSuperadmin();
-    }
+      match /serah_terima_kas/{id} {
+        allow read: if isManagerOutlet(outletId) || isKasirOutlet(outletId);
+        allow create: if isKasirOutlet(outletId) && request.resource.data.dariUid == request.auth.uid;
+        allow update, delete: if isManagerOutlet(outletId);
+      }
 
-    // ------------------------------------------------------------
-    // SECTION: catatan_owner & backup_log — Owner-only sepenuhnya
-    // ------------------------------------------------------------
+      // --------------------------------------------------------
+      // SECTION: catatan_owner & backup_log — setara Owner Outlet ini
+      // --------------------------------------------------------
 
-    match /catatan_owner/{catatanId} {
-      allow read, write: if isSuperadmin();
-    }
+      match /catatan_owner/{catatanId} {
+        allow read, write: if isManagerOutlet(outletId);
+      }
 
-    match /backup_log/{logId} {
-      allow read, write: if isSuperadmin();
+      match /backup_log/{logId} {
+        allow read, write: if isManagerOutlet(outletId);
+      }
     }
 
     // ------------------------------------------------------------

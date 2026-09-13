@@ -35,10 +35,12 @@ import {
 } from "firebase/auth";
 import { Building2, KeyRound, Loader2, Save, UserRound } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useAuth, type PeranPengguna } from "@/shared/lib/auth-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { simpanDetailPerusahaan, useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import type { DetailPerusahaan } from "@/shared/types/perusahaan";
 
@@ -66,9 +68,7 @@ function ProfilIsi() {
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          SRASA BOOK
-        </p>
+        <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Profil Akun</h1>
         <p className="mt-1 text-sm text-slate-600">
           Data diri dan keamanan akun Anda.
@@ -358,6 +358,7 @@ function GantiSandiKartu() {
 
 function DetailPerusahaanKartu() {
   const { showToast } = useToast();
+  const outletId = useOutletId();
   const { detail, memuat, setDetail } = useDetailPerusahaan();
   const [sedangSimpan, setSedangSimpan] = useState(false);
 
@@ -372,7 +373,7 @@ function DetailPerusahaanKartu() {
     }
     setSedangSimpan(true);
     try {
-      await simpanDetailPerusahaan(detail);
+      await simpanDetailPerusahaan(outletId, detail);
       showToast("success", "Detail perusahaan tersimpan dan langsung dipakai di kop ekspor.");
     } catch (error) {
       showToast(

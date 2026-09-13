@@ -54,6 +54,7 @@ export interface RingkasanPeriode {
 }
 
 export async function ambilRingkasanPeriode(
+  outletId: string,
   periode: PeriodeTren,
   opsi: OpsiRentang = {},
 ): Promise<RingkasanPeriode | null> {
@@ -62,7 +63,11 @@ export async function ambilRingkasanPeriode(
   const { mulai, selesai } = rentang;
 
   const shiftSnap = await getDocs(
-    query(collection(db, "shift"), where("tanggal", ">=", mulai), where("tanggal", "<=", selesai)),
+    query(
+      collection(db, "outlets", outletId, "shift"),
+      where("tanggal", ">=", mulai),
+      where("tanggal", "<=", selesai),
+    ),
   );
 
   let omsetTunai = 0;
@@ -70,7 +75,9 @@ export async function ambilRingkasanPeriode(
   const perMenu = new Map<string, { nama: string; qty: number; omset: number }>();
 
   for (const shiftDoc of shiftSnap.docs) {
-    const penjualanSnap = await getDocs(collection(db, "shift", shiftDoc.id, "penjualan"));
+    const penjualanSnap = await getDocs(
+      collection(db, "outlets", outletId, "shift", shiftDoc.id, "penjualan"),
+    );
     for (const item of penjualanSnap.docs) {
       const d = item.data();
       const menuId = d.menuId as string | undefined;
@@ -91,7 +98,9 @@ export async function ambilRingkasanPeriode(
   // Sertakan menu AKTIF yang sama sekali tidak muncul di penjualan
   // manapun pada rentang ini (qty 0) — supaya benar-benar terlihat
   // sebagai "paling tidak laku", bukan cuma yang laku sedikit.
-  const menuAktifSnap = await getDocs(query(collection(db, "menu_harga"), where("aktif", "==", true)));
+  const menuAktifSnap = await getDocs(
+    query(collection(db, "outlets", outletId, "menu_harga"), where("aktif", "==", true)),
+  );
   for (const m of menuAktifSnap.docs) {
     if (!perMenu.has(m.id)) {
       perMenu.set(m.id, { nama: m.data().nama ?? "", qty: 0, omset: 0 });

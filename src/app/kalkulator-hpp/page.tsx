@@ -32,6 +32,7 @@ import {
 import { NumberField } from "@/shared/components/number-field";
 import { ResultRow } from "@/shared/components/result-row";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import {
   hitungKalkulatorHpp,
@@ -48,6 +49,7 @@ import {
   type DrafTersimpan,
 } from "@/shared/lib/draf";
 import { useAuth } from "@/shared/lib/auth-context";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import type { ProfilHppDefault } from "@/shared/types/hpp";
@@ -118,6 +120,7 @@ export default function KalkulatorHppPage() {
 // hanya jalan setelah RequireAuth memastikan user login & berperan
 // superadmin — tetap top-level, tidak bersarang (webrules-hikimori 11).
 function KalkulatorHppForm() {
+  const outletId = useOutletId();
   const { showToast } = useToast();
 
   // --- Input dasar menu ---
@@ -150,7 +153,7 @@ function KalkulatorHppForm() {
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "bahan_baku"), where("aktif", "==", true)),
+      query(collection(db, "outlets", outletId, "bahan_baku"), where("aktif", "==", true)),
       (snap) => {
         setDaftarBahan(
           snap.docs.map((d) => ({
@@ -166,7 +169,7 @@ function KalkulatorHppForm() {
       },
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   // --- Mode edit menu ---
   //
@@ -195,7 +198,7 @@ function KalkulatorHppForm() {
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "menu_harga"), orderBy("nama")),
+      query(collection(db, "outlets", outletId, "menu_harga"), orderBy("nama")),
       (snap) => {
         setDaftarMenu(
           snap.docs.map((d) => ({
@@ -209,7 +212,7 @@ function KalkulatorHppForm() {
       },
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   // Harga bahan diambil ulang dari daftarBahan (data live dari
   // Firestore), bukan dari angka yang tersimpan di baris resep. Jadi
@@ -332,7 +335,7 @@ function KalkulatorHppForm() {
     }
     setSedangTambahBahan(true);
     try {
-      const ref = doc(collection(db, "bahan_baku"));
+      const ref = doc(collection(db, "outlets", outletId, "bahan_baku"));
       const data = {
         nama,
         kategori: "Umum",
@@ -344,7 +347,7 @@ function KalkulatorHppForm() {
         updatedAt: serverTimestamp(),
       };
       await setDoc(ref, data);
-      await setMirrorStokKasir(ref.id, {
+      await setMirrorStokKasir(outletId, ref.id, {
         nama,
         kategori: "Umum",
         satuan: satuanBahanBaru,
@@ -547,9 +550,9 @@ function KalkulatorHppForm() {
     setMemuatMenu(true);
     try {
       const [hargaSnap, rahasiaSnap, resepSnap] = await Promise.all([
-        getDoc(doc(db, "menu_harga", menuId)),
-        getDoc(doc(db, "menu", menuId)),
-        getDocs(collection(db, "menu", menuId, "resep")),
+        getDoc(doc(db, "outlets", outletId, "menu_harga", menuId)),
+        getDoc(doc(db, "outlets", outletId, "menu", menuId)),
+        getDocs(collection(db, "outlets", outletId, "menu", menuId, "resep")),
       ]);
 
       setNamaMenu(hargaSnap.data()?.nama ?? ringkas?.nama ?? "");
@@ -621,13 +624,13 @@ function KalkulatorHppForm() {
       //     src/shared/lib/resep.ts).
       // Menu yang sedang diedit ditimpa memakai ID-nya sendiri; kalau
       // tidak ada yang diedit, barulah ID baru dibuat.
-      const menuId = menuDiedit !== MENU_BARU ? menuDiedit : doc(collection(db, "menu_harga")).id;
+      const menuId = menuDiedit !== MENU_BARU ? menuDiedit : doc(collection(db, "outlets", outletId, "menu_harga")).id;
       const hargaJualUntukDisimpan =
         hargaJual > 0
           ? hargaJual
           : (hasil.rekomendasi.hargaJualIdealMargin ?? 0);
 
-      await setDoc(doc(db, "menu_harga", menuId), {
+      await setDoc(doc(db, "outlets", outletId, "menu_harga", menuId), {
         nama: namaMenu.trim(),
         kategori: kategoriMenu.trim() || "Umum",
         punyaVarian: false,
@@ -636,7 +639,7 @@ function KalkulatorHppForm() {
         updatedAt: serverTimestamp(),
       });
 
-      await setDoc(doc(db, "menu", menuId), {
+      await setDoc(doc(db, "outlets", outletId, "menu", menuId), {
         hppCache: hasil.breakdown.hppTotal,
         foodCostPersen: hasil.evaluasi?.foodCostPersen ?? null,
         // Kedua field harga di bawah ini murni CACHE untuk ditampilkan
@@ -662,7 +665,7 @@ function KalkulatorHppForm() {
       // seperti bahan baku.
       await Promise.all([
         ...resepRows.map((row) =>
-          setDoc(doc(db, "menu", menuId, "resep", row.bahanId), {
+          setDoc(doc(db, "outlets", outletId, "menu", menuId, "resep", row.bahanId), {
             bahanId: row.bahanId,
             bahanNama: row.bahanNama,
             takaran: row.takaran,
@@ -671,7 +674,7 @@ function KalkulatorHppForm() {
           }),
         ),
         ...kemasanRows.map((row) =>
-          setDoc(doc(db, "menu", menuId, "resep", row.bahanId), {
+          setDoc(doc(db, "outlets", outletId, "menu", menuId, "resep", row.bahanId), {
             bahanId: row.bahanId,
             bahanNama: row.bahanNama,
             takaran: row.takaran,
@@ -691,7 +694,7 @@ function KalkulatorHppForm() {
       ]);
       const idDihapus = resepIdTersimpan.filter((id) => !idDipakai.has(id));
       await Promise.all(
-        idDihapus.map((id) => deleteDoc(doc(db, "menu", menuId, "resep", id))),
+        idDihapus.map((id) => deleteDoc(doc(db, "outlets", outletId, "menu", menuId, "resep", id))),
       );
 
       showToast(
@@ -753,9 +756,7 @@ function KalkulatorHppForm() {
         >
           ← Kembali ke Daftar Produk
         </button>
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          SRASA BOOK — Kelola Produk
-        </p>
+        <KickerOutlet akhiran="Kelola Produk" />
         <h1 className="text-2xl font-bold text-slate-900">
           {menuDiedit !== MENU_BARU ? "Ubah Menu" : "Tambah Menu Baru"}
         </h1>
@@ -1436,9 +1437,7 @@ function DaftarProdukIsi({
     <main className="animasi-masuk mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-            SRASA BOOK
-          </p>
+          <KickerOutlet />
           <h1 className="text-2xl font-bold text-slate-900">Kelola Produk</h1>
           <p className="mt-1 text-sm text-slate-600">
             Semua menu, dikelompokkan per kategori. Tekan salah satu untuk

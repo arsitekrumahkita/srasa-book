@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { useAuth } from "./auth-context";
+import { useOutlet } from "./outlet-context";
 import { db } from "./firebase";
 
 export interface Notifikasi {
@@ -39,12 +40,13 @@ function petakanNotifikasi(id: string, data: Record<string, unknown>): Notifikas
 
 export function useNotifikasiGabungan(): { daftar: Notifikasi[]; memuat: boolean } {
   const { user, profil } = useAuth();
+  const { outletId } = useOutlet();
   const [untukSaya, setUntukSaya] = useState<Notifikasi[]>([]);
   const [untukPeran, setUntukPeran] = useState<Notifikasi[]>([]);
   const [memuat, setMemuat] = useState(true);
 
   useEffect(() => {
-    if (!user || !profil) return;
+    if (!user || !profil || !outletId) return;
     let sisaListener = 2;
     const selesaiSatu = () => {
       sisaListener -= 1;
@@ -52,7 +54,10 @@ export function useNotifikasiGabungan(): { daftar: Notifikasi[]; memuat: boolean
     };
 
     const unsub1 = onSnapshot(
-      query(collection(db, "notifikasi"), where("untukUid", "==", user.uid)),
+      query(
+        collection(db, "outlets", outletId, "notifikasi"),
+        where("untukUid", "==", user.uid),
+      ),
       (snap) => {
         setUntukSaya(snap.docs.map((d) => petakanNotifikasi(d.id, d.data())));
         selesaiSatu();
@@ -61,7 +66,10 @@ export function useNotifikasiGabungan(): { daftar: Notifikasi[]; memuat: boolean
     );
 
     const unsub2 = onSnapshot(
-      query(collection(db, "notifikasi"), where("untukPeran", "==", profil.peran)),
+      query(
+        collection(db, "outlets", outletId, "notifikasi"),
+        where("untukPeran", "==", profil.peran),
+      ),
       (snap) => {
         setUntukPeran(snap.docs.map((d) => petakanNotifikasi(d.id, d.data())));
         selesaiSatu();
@@ -73,7 +81,7 @@ export function useNotifikasiGabungan(): { daftar: Notifikasi[]; memuat: boolean
       unsub1();
       unsub2();
     };
-  }, [user, profil]);
+  }, [user, profil, outletId]);
 
   const daftar = useMemo(() => {
     const semua = [...untukSaya, ...untukPeran];

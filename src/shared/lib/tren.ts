@@ -53,13 +53,14 @@ interface RingkasanMentah {
 export { formatBulanId, formatTanggalId, daftarBulanAntara, daftarTanggalAntara } from "./tren-tanggal";
 
 async function ambilRangeSummary(
+  outletId: string,
   koleksi: "summary_harian" | "summary_bulanan",
   idMulai: string,
   idSelesai: string,
 ): Promise<Map<string, RingkasanMentah>> {
   const snap = await getDocs(
     query(
-      collection(db, koleksi),
+      collection(db, "outlets", outletId, koleksi),
       where(documentId(), ">=", idMulai),
       where(documentId(), "<=", idSelesai),
       orderBy(documentId(), "asc"),
@@ -71,10 +72,10 @@ async function ambilRangeSummary(
 }
 
 /** Harian: N hari terakhir, satu titik per hari (default 14 hari). */
-export async function ambilTrenHarian(jumlahHari = 14): Promise<TitikTren[]> {
+export async function ambilTrenHarian(outletId: string, jumlahHari = 14): Promise<TitikTren[]> {
   const selesai = tanggalKe(0);
   const mulai = tanggalKe(jumlahHari - 1);
-  const map = await ambilRangeSummary("summary_harian", mulai, selesai);
+  const map = await ambilRangeSummary(outletId, "summary_harian", mulai, selesai);
   const hasil: TitikTren[] = [];
   for (let i = jumlahHari - 1; i >= 0; i--) {
     const id = tanggalKe(i);
@@ -85,10 +86,10 @@ export async function ambilTrenHarian(jumlahHari = 14): Promise<TitikTren[]> {
 }
 
 /** Mingguan: N minggu terakhir, dijumlahkan per 7 hari (default 8 minggu). */
-export async function ambilTrenMingguan(jumlahMinggu = 8): Promise<TitikTren[]> {
+export async function ambilTrenMingguan(outletId: string, jumlahMinggu = 8): Promise<TitikTren[]> {
   const selesai = tanggalKe(0);
   const mulai = tanggalKe(jumlahMinggu * 7 - 1);
-  const map = await ambilRangeSummary("summary_harian", mulai, selesai);
+  const map = await ambilRangeSummary(outletId, "summary_harian", mulai, selesai);
   const hasil: TitikTren[] = [];
   for (let w = jumlahMinggu - 1; w >= 0; w--) {
     let omset = 0;
@@ -106,12 +107,12 @@ export async function ambilTrenMingguan(jumlahMinggu = 8): Promise<TitikTren[]> 
 }
 
 /** Bulanan: N bulan terakhir dari summary_bulanan (default 6 bulan). */
-export async function ambilTrenBulanan(jumlahBulan = 6): Promise<TitikTren[]> {
+export async function ambilTrenBulanan(outletId: string, jumlahBulan = 6): Promise<TitikTren[]> {
   const sekarang = new Date();
   const bulanMulaiDate = new Date(sekarang.getFullYear(), sekarang.getMonth() - (jumlahBulan - 1), 1);
   const mulai = formatBulanId(bulanMulaiDate);
   const selesai = formatBulanId(sekarang);
-  const map = await ambilRangeSummary("summary_bulanan", mulai, selesai);
+  const map = await ambilRangeSummary(outletId, "summary_bulanan", mulai, selesai);
   const hasil: TitikTren[] = [];
   for (let i = jumlahBulan - 1; i >= 0; i--) {
     const d = new Date(sekarang.getFullYear(), sekarang.getMonth() - i, 1);
@@ -129,6 +130,7 @@ export async function ambilTrenBulanan(jumlahBulan = 6): Promise<TitikTren[]> {
 /** Custom rentang tanggal bebas. Rentang > 35 hari dikelompokkan per minggu
  *  supaya grafik tetap terbaca (bukan dipadatkan puluhan/ratusan titik). */
 export async function ambilTrenCustomTanggal(
+  outletId: string,
   tanggalMulaiInput: string,
   tanggalSelesaiInput: string,
 ): Promise<TitikTren[]> {
@@ -136,7 +138,7 @@ export async function ambilTrenCustomTanggal(
   const selesai = tanggalMulaiInput <= tanggalSelesaiInput ? tanggalSelesaiInput : tanggalMulaiInput;
   const semuaTanggal = daftarTanggalAntara(mulai, selesai);
   if (semuaTanggal.length === 0) return [];
-  const map = await ambilRangeSummary("summary_harian", mulai, selesai);
+  const map = await ambilRangeSummary(outletId, "summary_harian", mulai, selesai);
 
   if (semuaTanggal.length > 35) {
     const hasil: TitikTren[] = [];
@@ -166,6 +168,7 @@ export async function ambilTrenCustomTanggal(
 
 /** Custom rentang bulan bebas ("YYYY-MM" ke "YYYY-MM"). */
 export async function ambilTrenCustomBulan(
+  outletId: string,
   bulanMulaiInput: string,
   bulanSelesaiInput: string,
 ): Promise<TitikTren[]> {
@@ -173,7 +176,7 @@ export async function ambilTrenCustomBulan(
   const selesai = bulanMulaiInput <= bulanSelesaiInput ? bulanSelesaiInput : bulanMulaiInput;
   const semuaBulan = daftarBulanAntara(mulai, selesai);
   if (semuaBulan.length === 0) return [];
-  const map = await ambilRangeSummary("summary_bulanan", mulai, selesai);
+  const map = await ambilRangeSummary(outletId, "summary_bulanan", mulai, selesai);
   return semuaBulan.map((id) => {
     const v = map.get(id);
     const [y, m] = id.split("-").map(Number);
@@ -187,20 +190,24 @@ export async function ambilTrenCustomBulan(
 
 /** Titik masuk tunggal dipakai Dashboard — memilihkan fungsi yang sesuai
  *  berdasarkan periode yang aktif. */
-export async function ambilTren(periode: PeriodeTren, opsi: OpsiTren = {}): Promise<TitikTren[]> {
+export async function ambilTren(
+  outletId: string,
+  periode: PeriodeTren,
+  opsi: OpsiTren = {},
+): Promise<TitikTren[]> {
   switch (periode) {
     case "harian":
-      return ambilTrenHarian();
+      return ambilTrenHarian(outletId);
     case "mingguan":
-      return ambilTrenMingguan();
+      return ambilTrenMingguan(outletId);
     case "bulanan":
-      return ambilTrenBulanan();
+      return ambilTrenBulanan(outletId);
     case "custom-tanggal":
       if (!opsi.tanggalMulai || !opsi.tanggalSelesai) return [];
-      return ambilTrenCustomTanggal(opsi.tanggalMulai, opsi.tanggalSelesai);
+      return ambilTrenCustomTanggal(outletId, opsi.tanggalMulai, opsi.tanggalSelesai);
     case "custom-bulan":
       if (!opsi.bulanMulai || !opsi.bulanSelesai) return [];
-      return ambilTrenCustomBulan(opsi.bulanMulai, opsi.bulanSelesai);
+      return ambilTrenCustomBulan(outletId, opsi.bulanMulai, opsi.bulanSelesai);
     default:
       return [];
   }

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ToastProvider } from "@/shared/components/toast";
 import { AuthProvider } from "@/shared/lib/auth-context";
+import { OutletProvider } from "@/shared/lib/outlet-context";
 
 // Sengaja memakai font sistem (bukan next/font/google) supaya build
 // tidak bergantung pada koneksi ke Google Fonts sama sekali — lebih
@@ -9,9 +10,9 @@ import { AuthProvider } from "@/shared/lib/auth-context";
 // dan menghindari satu titik kegagalan eksternal yang tidak perlu.
 
 export const metadata: Metadata = {
-  title: "SRASA BOOK",
+  title: "Archimax — Food n Beverages Lifestyle Accounting",
   description:
-    "Aplikasi accounting pendamping Majoo POS — omset, kas, dan HPP dalam satu layar.",
+    "Aplikasi accounting multi-outlet untuk bisnis Food & Beverages — omset, kas, dan HPP dalam satu layar, satu Owner terpusat untuk semua Outlet.",
 };
 
 // Wajib untuk PWA/mobile-friendly (webrules-hikimori poin 5). Batas zoom
@@ -30,7 +31,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="id" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
         <ToastProvider>
-          <AuthProvider>{children}</AuthProvider>
+          <AuthProvider>
+            <OutletProvider>{children}</OutletProvider>
+          </AuthProvider>
         </ToastProvider>
       </body>
     </html>

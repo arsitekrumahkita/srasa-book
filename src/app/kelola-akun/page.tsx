@@ -4,9 +4,21 @@
 // Halaman: Kelola Akun (PRD bagian 9.7). Peran UI: Owner
 // (superadmin) dan Finance — staff tidak bisa mendaftar sendiri,
 // sesuai firestore.rules (users: create/update/delete khusus
-// isOwnerLevel(), yaitu superadmin ATAU finance — akses Finance
-// dibuat setara Owner atas permintaan, lihat helper isOwnerLevel()
-// di firestore.rules).
+// isOwner() ATAU isFinance() — keduanya "terpusat", bisa mengelola
+// akun di Outlet MANAPUN, lihat komentar di firestore.rules & di
+// src/shared/lib/outlet-context.tsx).
+//
+// MULTI-CABANG (revisi: "Finance juga terpusat login pilih outlet"):
+// - Owner (superadmin) DAN Finance TIDAK punya outletId tetap sama
+//   sekali (bisa akses SEMUA Outlet, memilih Outlet aktifnya sendiri
+//   lewat /pilih-outlet) — keduanya melihat & bisa membuat akun untuk
+//   Outlet MANAPUN tanpa batasan.
+// - HANYA Kasir & Purchasing yang punya `outletId` tetap (field di
+//   dokumen users/{uid}), ditentukan lewat dropdown Outlet saat
+//   akunnya dibuat di sini — begitu dibuat, tidak bisa mereka ubah
+//   sendiri. Dropdown Outlet di form Buat Akun karena itu HANYA
+//   muncul saat Peran yang dipilih Kasir/Purchasing, tidak untuk
+//   Finance (yang justru sengaja TIDAK diberi outletId).
 //
 // CATATAN TEKNIS PENTING: `createUserWithEmailAndPassword` pada
 // Firebase Auth client SDK otomatis membuat sesi baru itu AKTIF di
@@ -24,8 +36,10 @@ import { createUserWithEmailAndPassword, getAuth } from "firebase/auth";
 import { collection, doc, getDoc, onSnapshot, orderBy, query, setDoc, updateDoc } from "firebase/firestore";
 import { Loader2, ShieldCheck, ShieldOff, UserPlus } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
+import { useOutlet } from "@/shared/lib/outlet-context";
 import { db, firebaseConfig } from "@/shared/lib/firebase";
 import type { PeranPengguna } from "@/shared/lib/auth-context";
 
@@ -36,6 +50,7 @@ interface AkunStaff {
   username: string;
   peran: PeranPengguna;
   aktif: boolean;
+  outletId?: string;
 }
 
 /** username hanya huruf kecil/angka/titik/underscore, TANPA spasi —
@@ -67,10 +82,15 @@ export default function KelolaAkunPage() {
 }
 
 function KelolaAkunIsi() {
+  const { daftarOutletAktif } = useOutlet();
   const [daftarAkun, setDaftarAkun] = useState<AkunStaff[]>([]);
   const [memuat, setMemuat] = useState(true);
 
   useEffect(() => {
+    // Owner DAN Finance keduanya "terpusat" (isOwner() || isFinance()
+    // di firestore.rules punya akses list tanpa batas) — jadi query di
+    // sini SELALU tanpa filter Outlet, sama untuk siapa pun yang
+    // membuka halaman ini (peranDiizinkan sudah membatasi ke keduanya).
     const unsub = onSnapshot(
       query(collection(db, "users"), orderBy("nama")),
       (snap) => {
@@ -82,6 +102,7 @@ function KelolaAkunIsi() {
             username: d.data().username ?? "",
             peran: d.data().peran,
             aktif: d.data().aktif === true,
+            outletId: d.data().outletId ?? undefined,
           })),
         );
         setMemuat(false);
@@ -91,12 +112,15 @@ function KelolaAkunIsi() {
     return unsub;
   }, []);
 
+  function namaOutlet(id?: string): string {
+    if (!id) return "—";
+    return daftarOutletAktif.find((o) => o.id === id)?.nama ?? id;
+  }
+
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          SRASA BOOK
-        </p>
+        <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Kelola Akun</h1>
         <p className="mt-1 text-sm text-slate-600">
           Buat akun staff baru dan aktifkan/nonaktifkan akun yang sudah ada.
@@ -129,7 +153,7 @@ function KelolaAkunIsi() {
           ) : (
             <ul className="mt-3 divide-y divide-slate-100">
               {daftarAkun.map((akun) => (
-                <BarisAkun key={akun.uid} akun={akun} />
+                <BarisAkun key={akun.uid} akun={akun} namaOutlet={namaOutlet} tampilkanOutlet />
               ))}
             </ul>
           )}
@@ -141,20 +165,49 @@ function KelolaAkunIsi() {
 
 function BuatAkunKartu() {
   const { showToast } = useToast();
+  const { daftarOutletAktif } = useOutlet();
   const [nama, setNama] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [nomorHp, setNomorHp] = useState("");
   const [password, setPassword] = useState("");
   const [peran, setPeran] = useState<PeranPengguna>("kasir");
+  // Dropdown Outlet HANYA relevan untuk Kasir/Purchasing — keduanya
+  // SATU-SATUNYA peran yang masih terkunci ke satu Outlet tetap.
+  // Finance sekarang terpusat sama seperti Owner (revisi: "Finance
+  // juga terpusat login pilih outlet"), jadi TIDAK diberi outletId
+  // sama sekali, apa pun siapa yang membuatnya (Owner atau Finance).
+  const perluOutlet = peran === "kasir" || peran === "purchasing";
+  const [outletTujuan, setOutletTujuan] = useState<string>("");
   const [sedangMembuat, setSedangMembuat] = useState(false);
+
+  useEffect(() => {
+    if (!perluOutlet) return;
+    if (outletTujuan || daftarOutletAktif.length === 0) return;
+    let dibatalkan = false;
+    Promise.resolve().then(() => {
+      if (!dibatalkan) setOutletTujuan(daftarOutletAktif[0].id);
+    });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [perluOutlet, daftarOutletAktif, outletTujuan]);
 
   async function handleBuatAkun() {
     const usernameBersih = bersihkanUsername(username);
-    if (!nama.trim() || !usernameBersih || !email.trim() || password.length < 6) {
+    const outletUntukAkunBaru = perluOutlet ? outletTujuan : undefined;
+    if (
+      !nama.trim() ||
+      !usernameBersih ||
+      !email.trim() ||
+      password.length < 6 ||
+      (perluOutlet && !outletUntukAkunBaru)
+    ) {
       showToast(
         "error",
-        "Nama, username, dan email wajib diisi, kata sandi minimal 6 karakter.",
+        perluOutlet
+          ? "Nama, username, email, dan Outlet tujuan wajib diisi, kata sandi minimal 6 karakter."
+          : "Nama, username, dan email wajib diisi, kata sandi minimal 6 karakter.",
       );
       return;
     }
@@ -184,6 +237,9 @@ function BuatAkunKartu() {
         username: usernameBersih,
         nomorHp: nomorHp.trim() || null,
         peran,
+        // Finance SENGAJA tidak diberi field outletId sama sekali —
+        // terpusat seperti Owner, lihat komentar kepala berkas.
+        ...(outletUntukAkunBaru ? { outletId: outletUntukAkunBaru } : {}),
         aktif: true,
         dibuatPada: new Date().toISOString(),
       });
@@ -206,6 +262,8 @@ function BuatAkunKartu() {
       setNomorHp("");
       setPassword("");
     } catch (error) {
+      // (outletTujuan sengaja TIDAK direset supaya Owner bisa buat
+      // beberapa akun berturut-turut untuk Outlet yang sama)
       showToast("error", pesanErrorBuatAkun(error));
     } finally {
       // Aplikasi sementara tidak diperlukan lagi setelah user dibuat —
@@ -255,6 +313,27 @@ function BuatAkunKartu() {
             <option value="finance">Finance</option>
           </select>
         </div>
+        {perluOutlet && (
+          <div>
+            <label htmlFor="outlet-staff" className="block text-sm font-semibold text-slate-800">
+              Outlet
+            </label>
+            <select
+              id="outlet-staff"
+              value={outletTujuan}
+              onChange={(event) => setOutletTujuan(event.target.value)}
+              className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+            >
+              {daftarOutletAktif.length === 0 && <option value="">Belum ada Outlet aktif</option>}
+              {daftarOutletAktif.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.nama}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-slate-500">Akun ini akan terikat ke Outlet yang dipilih.</p>
+          </div>
+        )}
         <div>
           <label htmlFor="username-staff" className="block text-sm font-semibold text-slate-800">
             Username
@@ -344,7 +423,15 @@ function BuatAkunKartu() {
   );
 }
 
-function BarisAkun({ akun }: { akun: AkunStaff }) {
+function BarisAkun({
+  akun,
+  namaOutlet,
+  tampilkanOutlet,
+}: {
+  akun: AkunStaff;
+  namaOutlet: (id?: string) => string;
+  tampilkanOutlet: boolean;
+}) {
   const { showToast } = useToast();
   const [sedangUbah, setSedangUbah] = useState(false);
 
@@ -385,7 +472,7 @@ function BarisAkun({ akun }: { akun: AkunStaff }) {
             Peran) — jangan digabung dengan "·" saja supaya jelas
             fieldnya apa, terutama buat pengguna yang belum akrab
             istilah teknis (permintaan pemilik cafe). */}
-        <dl className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-3">
+        <dl className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-4">
           <div className="flex gap-1.5">
             <dt className="font-medium text-slate-400">Email:</dt>
             <dd className="truncate">{akun.email}</dd>
@@ -398,6 +485,12 @@ function BarisAkun({ akun }: { akun: AkunStaff }) {
             <dt className="font-medium text-slate-400">Peran:</dt>
             <dd>{LABEL_PERAN[akun.peran] ?? akun.peran}</dd>
           </div>
+          {tampilkanOutlet && (
+            <div className="flex gap-1.5">
+              <dt className="font-medium text-slate-400">Outlet:</dt>
+              <dd className="truncate">{namaOutlet(akun.outletId)}</dd>
+            </div>
+          )}
         </dl>
       </div>
       {akun.peran === "superadmin" ? (

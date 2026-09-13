@@ -45,8 +45,10 @@ import {
 } from "firebase/firestore";
 import { CalendarClock, Loader2, Plus, Trash2 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
+import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
+import { useOutletId } from "@/shared/lib/outlet-context";
 import { db } from "@/shared/lib/firebase";
 
 interface SlotShift {
@@ -68,12 +70,13 @@ export default function KelolaJadwalShiftPage() {
 }
 
 function KelolaJadwalShiftIsi() {
+  const outletId = useOutletId();
   const [memuat, setMemuat] = useState(true);
   const [daftarSlot, setDaftarSlot] = useState<SlotShift[]>([]);
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "slot_shift"), orderBy("jamMulai")),
+      query(collection(db, "outlets", outletId, "slot_shift"), orderBy("jamMulai")),
       (snap) => {
         setDaftarSlot(
           snap.docs.map((d) => ({
@@ -89,14 +92,12 @@ function KelolaJadwalShiftIsi() {
       () => setMemuat(false),
     );
     return unsub;
-  }, []);
+  }, [outletId]);
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          SRASA BOOK
-        </p>
+        <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Jadwal Shift</h1>
         <p className="mt-1 text-sm text-slate-500">
           Atur daftar Slot Shift (nama + jam mulai/selesai). Kasir akan
@@ -123,6 +124,7 @@ function KelolaJadwalShiftIsi() {
 
 function TambahSlotKartu() {
   const { showToast } = useToast();
+  const outletId = useOutletId();
   const [nama, setNama] = useState("");
   const [jamMulai, setJamMulai] = useState("");
   const [jamSelesai, setJamSelesai] = useState("");
@@ -135,7 +137,7 @@ function TambahSlotKartu() {
     }
     setSedangSimpan(true);
     try {
-      await addDoc(collection(db, "slot_shift"), {
+      await addDoc(collection(db, "outlets", outletId, "slot_shift"), {
         nama: nama.trim(),
         jamMulai,
         jamSelesai,
@@ -233,12 +235,13 @@ function TambahSlotKartu() {
 
 function DaftarSlotKartu({ daftarSlot }: { daftarSlot: SlotShift[] }) {
   const { showToast } = useToast();
+  const outletId = useOutletId();
   const [sedangProses, setSedangProses] = useState<string | null>(null);
 
   async function ubahAktif(slot: SlotShift) {
     setSedangProses(slot.id);
     try {
-      await updateDoc(doc(db, "slot_shift", slot.id), { aktif: !slot.aktif });
+      await updateDoc(doc(db, "outlets", outletId, "slot_shift", slot.id), { aktif: !slot.aktif });
       showToast(
         "success",
         !slot.aktif
@@ -258,7 +261,7 @@ function DaftarSlotKartu({ daftarSlot }: { daftarSlot: SlotShift[] }) {
   async function hapusSlot(slot: SlotShift) {
     setSedangProses(slot.id);
     try {
-      await deleteDoc(doc(db, "slot_shift", slot.id));
+      await deleteDoc(doc(db, "outlets", outletId, "slot_shift", slot.id));
       showToast("success", `Slot "${slot.nama}" dihapus.`);
     } catch (error) {
       showToast(
