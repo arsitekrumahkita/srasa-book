@@ -12,13 +12,29 @@
 // SENGAJA `lewatiGatingOutlet` di RequireAuth — halaman inilah yang
 // MENYELESAIKAN gating itu, kalau ikut digating akan redirect
 // berputar ke dirinya sendiri.
+//
+// AUTO-BUAT OUTLET PERTAMA ("SRASA BOOK"): kalau daftar Outlet masih
+// kosong sama sekali (instalasi baru/pertama kali), Owner TIDAK perlu
+// lagi dialihkan manual ke /kelola-outlet — halaman ini langsung
+// membuatkan dokumen outlets/srasa-book begitu terdeteksi kosong,
+// supaya Owner tinggal menekannya begini terisi. Hanya Owner MURNI
+// yang bisa memicu ini (firestore.rules: `outlets` cuma bisa ditulis
+// isOwner()) — Finance yang kebetulan login duluan tetap melihat
+// pesan "hubungi Owner" seperti biasa, sambil pembuatan otomatis
+// tetap berjalan di sesi Owner begitu Owner login.
 // ============================================================
 
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { Building2, Loader2 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutlet } from "@/shared/lib/outlet-context";
+import { db } from "@/shared/lib/firebase";
+
+const ID_OUTLET_PERTAMA = "srasa-book";
+const NAMA_OUTLET_PERTAMA = "SRASA BOOK";
 
 export default function PilihOutletPage() {
   return (
@@ -32,6 +48,39 @@ function PilihOutletIsi() {
   const router = useRouter();
   const { profil } = useAuth();
   const { daftarOutletAktif, memuat, pilihOutlet } = useOutlet();
+  const [sedangMembuatPertama, setSedangMembuatPertama] = useState(false);
+  const sudahDicobaRef = useRef(false);
+
+  // Deferred setState via microtask (pola baku proyek ini) — Owner
+  // memicu pembuatan Outlet pertama begitu daftar kosong terkonfirmasi.
+  useEffect(() => {
+    if (memuat || daftarOutletAktif.length > 0) return;
+    if (profil?.peran !== "superadmin") return;
+    if (sudahDicobaRef.current) return;
+    sudahDicobaRef.current = true;
+
+    let dibatalkan = false;
+    Promise.resolve().then(() => {
+      if (!dibatalkan) setSedangMembuatPertama(true);
+    });
+    setDoc(doc(db, "outlets", ID_OUTLET_PERTAMA), {
+      nama: NAMA_OUTLET_PERTAMA,
+      alamat: "",
+      aktif: true,
+      dibuatPada: serverTimestamp(),
+    })
+      .catch(() => {
+        // Gagal (mis. offline) — izinkan efek ini mencoba lagi kalau
+        // deps berubah lagi nanti (reload, dsb).
+        sudahDicobaRef.current = false;
+      })
+      .finally(() => {
+        if (!dibatalkan) setSedangMembuatPertama(false);
+      });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [memuat, daftarOutletAktif.length, profil]);
 
   function pilih(id: string) {
     pilihOutlet(id);
@@ -51,17 +100,17 @@ function PilihOutletIsi() {
         </p>
       </header>
 
-      {memuat ? (
+      {memuat || sedangMembuatPertama ? (
         <div className="flex items-center justify-center gap-2 py-8 text-sm text-slate-500">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          Memuat daftar Outlet...
+          {sedangMembuatPertama ? `Menyiapkan Outlet pertama (${NAMA_OUTLET_PERTAMA})...` : "Memuat daftar Outlet..."}
         </div>
       ) : daftarOutletAktif.length === 0 ? (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-6 text-center shadow-sm">
           <p className="text-sm text-amber-900">
             {profil?.peran === "superadmin"
-              ? "Belum ada Outlet aktif. Tambahkan Outlet pertama lewat halaman Kelola Outlet (buka /kelola-outlet langsung karena Dashboard sendiri butuh Outlet terpilih lebih dulu)."
-              : "Belum ada Outlet aktif. Hubungi Owner untuk menambahkan Outlet pertama lewat halaman Kelola Outlet."}
+              ? "Menyiapkan Outlet pertama, sebentar lagi muncul di sini — kalau tidak muncul setelah beberapa detik, periksa koneksi internet lalu muat ulang halaman."
+              : "Belum ada Outlet aktif. Hubungi Owner untuk membukanya sebentar supaya Outlet pertama dibuatkan otomatis."}
           </p>
         </div>
       ) : (

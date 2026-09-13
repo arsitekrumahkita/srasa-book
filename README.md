@@ -138,7 +138,12 @@ Yang TETAP global (top-level, tidak dipindah per Outlet):
 **Halaman baru:**
 
 - **`/pilih-outlet`** (Owner & Finance) — daftar Outlet aktif, tekan satu
-  untuk masuk ke Dashboard Outlet itu.
+  untuk masuk ke Dashboard Outlet itu. Kalau daftarnya masih KOSONG SAMA
+  SEKALI (instalasi baru), halaman ini otomatis membuatkan Outlet
+  pertama (`outlets/srasa-book`, nama "SRASA BOOK") saat dibuka oleh
+  Owner — tidak perlu langkah manual lewat Kelola Outlet lagi untuk
+  Outlet pertama ini (Finance tidak bisa memicu ini, `firestore.rules`
+  membatasi tulis `outlets` hanya untuk Owner murni).
 - **`/kelola-outlet`** (Owner MURNI saja, `hanyaOwnerMurni`) — tambah
   Outlet baru dan aktifkan/nonaktifkan Outlet yang sudah ada. Ini
   keputusan struktural lintas-Outlet, bukan wewenang Finance walau
@@ -275,11 +280,12 @@ langsung di Firebase Console:
    jalankan `scripts/hapus-data-lama.mjs` dulu untuk membersihkannya
    (lihat bagian Multi-Cabang di atas) — SEBELUM lanjut ke langkah 7.
 7. Login ke aplikasi sebagai Owner (akun dari langkah 1-2) → akan
-   diarahkan ke `/pilih-outlet`, yang masih kosong → buka `/kelola-outlet`
-   secara langsung (lewat tautan/alamat, karena Dashboard sendiri butuh
-   Outlet terpilih lebih dulu) → tambahkan Outlet pertama, **nama:
-   "SRASA BOOK"** → kembali ke `/pilih-outlet`, pilih Outlet itu → masuk
-   Dashboard.
+   diarahkan ke `/pilih-outlet`. Kalau daftar Outlet masih kosong sama
+   sekali, halaman ini OTOMATIS membuatkan Outlet pertama
+   (`outlets/srasa-book`, nama **"SRASA BOOK"**) — tidak perlu lagi buka
+   Kelola Outlet manual untuk langkah pertama ini (lihat
+   `src/app/pilih-outlet/page.tsx`). Tunggu beberapa detik sampai
+   muncul, lalu tekan untuk masuk Dashboard.
 
 Setelah ini, akun Owner bisa login lewat Email ATAU Username yang baru
 dibuat. Staff berikutnya semuanya dibuat lewat halaman `/kelola-akun` di
