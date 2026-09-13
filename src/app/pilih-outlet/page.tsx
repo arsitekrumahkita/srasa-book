@@ -49,6 +49,14 @@ function PilihOutletIsi() {
   const { profil } = useAuth();
   const { daftarOutletAktif, memuat, pilihOutlet } = useOutlet();
   const [sedangMembuatPertama, setSedangMembuatPertama] = useState(false);
+  // Ditampilkan APA ADANYA kalau pembuatan otomatis gagal — paling
+  // sering "Missing or insufficient permissions" kalau firestore.rules
+  // yang aktif di Firebase Console belum di-Publish ulang ke versi
+  // terbaru (helper isOwner()/isFinance() berubah beberapa kali di
+  // riwayat proyek ini). Menampilkan pesan asli jauh lebih membantu
+  // ditelusuri daripada teks generik "sebentar lagi muncul".
+  const [errorBuatPertama, setErrorBuatPertama] = useState<string | null>(null);
+  const [percobaanKe, setPercobaanKe] = useState(0);
   const sudahDicobaRef = useRef(false);
 
   // Deferred setState via microtask (pola baku proyek ini) — Owner
@@ -61,7 +69,10 @@ function PilihOutletIsi() {
 
     let dibatalkan = false;
     Promise.resolve().then(() => {
-      if (!dibatalkan) setSedangMembuatPertama(true);
+      if (!dibatalkan) {
+        setSedangMembuatPertama(true);
+        setErrorBuatPertama(null);
+      }
     });
     setDoc(doc(db, "outlets", ID_OUTLET_PERTAMA), {
       nama: NAMA_OUTLET_PERTAMA,
@@ -69,10 +80,12 @@ function PilihOutletIsi() {
       aktif: true,
       dibuatPada: serverTimestamp(),
     })
-      .catch(() => {
-        // Gagal (mis. offline) — izinkan efek ini mencoba lagi kalau
-        // deps berubah lagi nanti (reload, dsb).
-        sudahDicobaRef.current = false;
+      .catch((error) => {
+        if (!dibatalkan) {
+          setErrorBuatPertama(
+            error instanceof Error ? error.message : "Gagal membuat Outlet pertama.",
+          );
+        }
       })
       .finally(() => {
         if (!dibatalkan) setSedangMembuatPertama(false);
@@ -80,7 +93,16 @@ function PilihOutletIsi() {
     return () => {
       dibatalkan = true;
     };
-  }, [memuat, daftarOutletAktif.length, profil]);
+    // `percobaanKe` SENGAJA masuk deps — satu-satunya cara memicu efek
+    // ini lari lagi lewat tombol "Coba Lagi" di bawah tanpa reload
+    // seluruh halaman.
+  }, [memuat, daftarOutletAktif.length, profil, percobaanKe]);
+
+  function cobaLagi() {
+    sudahDicobaRef.current = false;
+    setErrorBuatPertama(null);
+    setPercobaanKe((n) => n + 1);
+  }
 
   function pilih(id: string) {
     pilihOutlet(id);
@@ -106,12 +128,46 @@ function PilihOutletIsi() {
           {sedangMembuatPertama ? `Menyiapkan Outlet pertama (${NAMA_OUTLET_PERTAMA})...` : "Memuat daftar Outlet..."}
         </div>
       ) : daftarOutletAktif.length === 0 ? (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 p-6 text-center shadow-sm">
-          <p className="text-sm text-amber-900">
-            {profil?.peran === "superadmin"
-              ? "Menyiapkan Outlet pertama, sebentar lagi muncul di sini — kalau tidak muncul setelah beberapa detik, periksa koneksi internet lalu muat ulang halaman."
-              : "Belum ada Outlet aktif. Hubungi Owner untuk membukanya sebentar supaya Outlet pertama dibuatkan otomatis."}
-          </p>
+        <div
+          className={[
+            "rounded-xl border p-6 text-center shadow-sm",
+            errorBuatPertama ? "border-rose-300 bg-rose-50" : "border-amber-300 bg-amber-50",
+          ].join(" ")}
+        >
+          {profil?.peran === "superadmin" ? (
+            errorBuatPertama ? (
+              <>
+                <p className="text-sm font-semibold text-rose-900">Gagal membuat Outlet pertama.</p>
+                <p className="mt-1.5 text-xs text-rose-800">
+                  Pesan asli: <code className="break-words">{errorBuatPertama}</code>
+                </p>
+                <p className="mt-2 text-xs text-rose-800">
+                  Penyebab paling umum: firestore.rules terbaru belum di-Publish ke
+                  Firebase Console (Firestore Database → Rules → tempel isi
+                  firestore.rules terbaru → Publish). Setelah dipastikan sudah
+                  Publish, tekan tombol di bawah.
+                </p>
+                <button
+                  type="button"
+                  onClick={cobaLagi}
+                  className="mt-3 inline-flex items-center justify-center rounded-lg bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-rose-700 active:scale-[0.98]"
+                >
+                  Coba Lagi
+                </button>
+              </>
+            ) : (
+              <p className="text-sm text-amber-900">
+                Menyiapkan Outlet pertama, sebentar lagi muncul di sini — kalau tidak
+                muncul setelah beberapa detik, periksa koneksi internet lalu muat
+                ulang halaman.
+              </p>
+            )
+          ) : (
+            <p className="text-sm text-amber-900">
+              Belum ada Outlet aktif. Hubungi Owner untuk membukanya sebentar supaya
+              Outlet pertama dibuatkan otomatis.
+            </p>
+          )}
         </div>
       ) : (
         <div className="flex flex-col gap-2">
