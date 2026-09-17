@@ -26,19 +26,33 @@ import {
   addDoc,
   collection,
   doc,
+  getDocs,
   increment,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
-import { AlertTriangle, Camera, CheckCircle2, Loader2, Plus, ShoppingBasket } from "lucide-react";
+import {
+  AlertTriangle,
+  Camera,
+  CheckCircle2,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Loader2,
+  Plus,
+  ShoppingBasket,
+} from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
+import { PeriodePicker } from "@/shared/components/periode-picker";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
@@ -47,6 +61,9 @@ import { formatRupiah, formatRupiahSatuan } from "@/shared/lib/format";
 import { uploadNotaImage } from "@/shared/lib/cloudinary";
 import { setMirrorStokKasir } from "@/shared/lib/resep";
 import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
+import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
+import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
+import { rentangPeriodeLaporan, formatTanggalPanjangId, type PeriodeLaporan } from "@/shared/lib/periode-laporan";
 import type { SatuanBahan } from "@/shared/types/inventaris";
 
 /** Isi draf otomatis untuk form Tambah Item (lihat TambahItemKartu). */
@@ -167,22 +184,34 @@ function BelanjaNotaIsi() {
 
   async function handleMulaiBelanja() {
     if (!user || !profil) return;
-    // Sumber dana "Saldo Finance" (deposito di luar Omset — permintaan
-    // pemilik cafe) WAJIB cukup SEBELUM belanja dimulai, supaya saldo
-    // tidak pernah minus. firestore.rules menegakkan ini juga di level
-    // database (saldo_finance.saldo >= 0), pengecekan di sini murni
-    // supaya Purchasing dapat pesan error yang jelas lebih dulu.
+    // Saldo Finance SENGAJA diizinkan minus (prinsip akuntansi: saldo
+    // wajib mencerminkan kondisi nyata walau negatif) — jadi di sini
+    // HANYA memberi peringatan, tidak lagi memblokir Purchasing memulai
+    // belanja. firestore.rules juga sudah tidak lagi mewajibkan saldo
+    // >= 0 untuk Finance/Purchasing (lihat komentar di firestore.rules
+    // bagian saldo_finance).
     if (sumberDana === "saldo_finance" && modalDiberikan > saldoFinance) {
       showToast(
-        "error",
-        `Saldo Finance tidak cukup — sisa saldo ${formatRupiah(saldoFinance)}, kurang dari ${formatRupiah(modalDiberikan)} yang diminta.`,
+        "warning",
+        `Saldo Finance akan menjadi minus (${formatRupiah(saldoFinance - modalDiberikan)}) setelah belanja ini dimulai.`,
       );
-      return;
     }
 
     setSedangMulai(true);
     try {
-      await addDoc(collection(db, "outlets", outletId, "kas_belanja"), {
+      // PERBAIKAN BUG: dulu ini 2 tulisan terpisah (addDoc lalu setDoc) —
+      // kalau tulisan kedua (potong Saldo Finance) gagal (mis.
+      // firestore.rules di Firebase Console belum di-deploy ke versi
+      // terbaru), sesi belanja SUDAH terlanjur terbuat tapi Saldo Finance
+      // tidak berkurang sama sekali ("Saldo Finance tidak berkurang saat
+      // Purchasing belanja" — bug dilaporkan user). Sekarang keduanya
+      // digabung jadi satu writeBatch ATOMIK: kalau salah satu gagal
+      // (mis. saldo tidak cukup / rules menolak), TIDAK ADA yang tertulis
+      // sama sekali, jadi sesi belanja tidak akan pernah "nyangkut" tanpa
+      // saldo ikut terpotong.
+      const batch = writeBatch(db);
+      const belanjaRef = doc(collection(db, "outlets", outletId, "kas_belanja"));
+      batch.set(belanjaRef, {
         tanggal: tanggalHariIni(),
         purchasingUid: user.uid,
         purchasingNama: profil.nama,
@@ -194,12 +223,14 @@ function BelanjaNotaIsi() {
       });
 
       if (sumberDana === "saldo_finance") {
-        await setDoc(
+        batch.set(
           doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
           { saldo: increment(-modalDiberikan) },
           { merge: true },
         );
       }
+
+      await batch.commit();
 
       showToast(
         "success",
@@ -295,6 +326,10 @@ function BelanjaNotaIsi() {
             )}
             {sedangMulai ? "Memulai..." : "Mulai Belanja"}
           </button>
+        </div>
+
+        <div className="mt-6">
+          <EksporLaporanPembelianKartu />
         </div>
       </main>
     );
@@ -418,6 +453,8 @@ function BelanjaBerjalan({
           sedangSelesai={sedangSelesai}
           setSedangSelesai={setSedangSelesai}
         />
+
+        <EksporLaporanPembelianKartu />
       </div>
     </main>
   );
@@ -1220,6 +1257,211 @@ function SelesaikanBelanjaKartu({
         )}
         {sedangSelesai ? "Menyimpan..." : "Tandai Selesai"}
       </button>
+    </section>
+  );
+}
+
+// ============================================================
+// Laporan Pembelian — Ekspor Excel/PDF A4 dengan filter periode
+// (Harian/Mingguan/Bulanan/Tahunan + tanggal manual), atas permintaan
+// pemilik cafe (poin 7 & 9: laporan pembelian di semua jabatan,
+// bisa difilter Harian/Mingguan/Bulanan/Tahunan). Query dijalankan
+// SENDIRI lewat getDocs (bukan bergantung ke state `belanjaAktif`
+// yang cuma menampung sesi belanja HARI INI) supaya bisa merangkum
+// riwayat kas_belanja pada rentang tanggal manapun.
+//
+// SENGAJA difilter purchasingUid == uid Purchasing yang sedang login
+// — firestore.rules kas_belanja hanya mengizinkan Purchasing membaca
+// dokumen miliknya sendiri (lihat isManagerOutlet() vs isPurchasingOutlet()
+// di firestore.rules); Owner/Finance melihat rekap belanja SEMUA
+// Purchasing lewat Dashboard/laporan lain yang punya akses isManagerOutlet().
+//
+// Top-level component, tidak bersarang (webrules-hikimori poin 11).
+// ============================================================
+
+interface BarisLaporanPembelian {
+  tanggal: string;
+  purchasingNama: string;
+  sumberDana: "kas_resto" | "saldo_finance";
+  modalDiberikan: number;
+  totalBelanja: number;
+  sisaKas: number;
+  status: "terbuka" | "selesai" | "terkunci";
+}
+
+function labelStatusBelanja(status: BarisLaporanPembelian["status"]): string {
+  if (status === "selesai") return "Selesai";
+  if (status === "terkunci") return "Terkunci";
+  return "Terbuka";
+}
+
+function EksporLaporanPembelianKartu() {
+  const { user } = useAuth();
+  const outletId = useOutletId();
+  const { showToast } = useToast();
+  const { detail: perusahaan } = useDetailPerusahaan();
+  const [dariTanggal, setDariTanggal] = useState(() => rentangPeriodeLaporan("bulanan").mulai);
+  const [sampaiTanggal, setSampaiTanggal] = useState(() => rentangPeriodeLaporan("bulanan").selesai);
+  const [sedangEkspor, setSedangEkspor] = useState<"excel" | "pdf" | null>(null);
+
+  const periodeAktif =
+    (["harian", "mingguan", "bulanan", "tahunan"] as PeriodeLaporan[]).find((p) => {
+      const r = rentangPeriodeLaporan(p);
+      return r.mulai === dariTanggal && r.selesai === sampaiTanggal;
+    }) ?? null;
+
+  async function ambilBaris(): Promise<BarisLaporanPembelian[]> {
+    if (!user) return [];
+    const snap = await getDocs(
+      query(
+        collection(db, "outlets", outletId, "kas_belanja"),
+        where("purchasingUid", "==", user.uid),
+        where("tanggal", ">=", dariTanggal),
+        where("tanggal", "<=", sampaiTanggal),
+        orderBy("tanggal"),
+      ),
+    );
+    return snap.docs.map((d) => ({
+      tanggal: d.data().tanggal ?? "",
+      purchasingNama: d.data().purchasingNama ?? "",
+      sumberDana: (d.data().sumberDana ?? "kas_resto") as "kas_resto" | "saldo_finance",
+      modalDiberikan: d.data().modalDiberikan ?? 0,
+      totalBelanja: d.data().totalBelanja ?? 0,
+      sisaKas: d.data().sisaKas ?? 0,
+      status: (d.data().status ?? "terbuka") as BarisLaporanPembelian["status"],
+    }));
+  }
+
+  async function handleEkspor(jenis: "excel" | "pdf") {
+    setSedangEkspor(jenis);
+    try {
+      const baris = await ambilBaris();
+      if (baris.length === 0) {
+        showToast("error", "Tidak ada belanja pada rentang tanggal itu.");
+        return;
+      }
+      const totalModal = baris.reduce((t, b) => t + b.modalDiberikan, 0);
+      const totalBelanja = baris.reduce((t, b) => t + b.totalBelanja, 0);
+      const totalSisaKas = baris.reduce((t, b) => t + b.sisaKas, 0);
+      const opsi: OpsiLaporan<BarisLaporanPembelian> = {
+        judul: "LAPORAN BELANJA & PEMBELIAN",
+        periode: `${formatTanggalPanjangId(dariTanggal)} s/d ${formatTanggalPanjangId(sampaiTanggal)}`,
+        perusahaan,
+        namaBerkas: `Laporan-Pembelian_${dariTanggal}_sd_${sampaiTanggal}`,
+        kolom: [
+          { judul: "Tanggal", ambil: (b) => b.tanggal, lebar: 14 },
+          { judul: "Purchasing", ambil: (b) => b.purchasingNama, lebar: 18 },
+          { judul: "Sumber Dana", ambil: (b) => (b.sumberDana === "saldo_finance" ? "Saldo Finance" : "Kas Resto/Outlet"), lebar: 18 },
+          { judul: "Modal Diberikan", ambil: (b) => b.modalDiberikan, angka: true, lebar: 16 },
+          { judul: "Total Belanja", ambil: (b) => b.totalBelanja, angka: true, lebar: 16 },
+          { judul: "Sisa Kas", ambil: (b) => b.sisaKas, angka: true, lebar: 14 },
+          { judul: "Status", ambil: (b) => labelStatusBelanja(b.status), lebar: 12 },
+        ],
+        baris,
+        ringkasan: [
+          { label: "Jumlah Sesi Belanja", nilai: String(baris.length) },
+          { label: "Total Modal Diberikan", nilai: formatRupiah(totalModal) },
+          { label: "Total Belanja", nilai: formatRupiah(totalBelanja) },
+          { label: "Total Sisa Kas", nilai: formatRupiah(totalSisaKas) },
+        ],
+      };
+      if (jenis === "excel") await eksporExcel(opsi);
+      else await eksporPdf(opsi);
+      showToast("success", `Laporan ${jenis === "excel" ? "Excel" : "PDF"} berhasil diunduh.`);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal mengekspor: ${error.message}` : "Gagal mengekspor.",
+      );
+    } finally {
+      setSedangEkspor(null);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-ekspor-pembelian"
+      className="kartu-interaktif rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2
+        id="bagian-ekspor-pembelian"
+        className="flex items-center gap-2 text-base font-semibold text-slate-900"
+      >
+        <Download className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        Laporan Belanja & Pembelian (Excel / PDF A4)
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Rekap sesi belanja milik Anda sendiri pada rentang tanggal terpilih.
+      </p>
+
+      {!perusahaan.nama ? (
+        <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+          Detail Perusahaan belum diisi — kop surat akan tercetak kosong.
+          Isi dulu lewat Profil Akun → Detail Perusahaan.
+        </p>
+      ) : null}
+
+      <div className="mt-4">
+        <PeriodePicker periodeAktif={periodeAktif} onPilih={(r) => { setDariTanggal(r.mulai); setSampaiTanggal(r.selesai); }} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="bp-ekspor-dari" className="block text-sm font-semibold text-slate-800">
+            Dari Tanggal
+          </label>
+          <input
+            id="bp-ekspor-dari"
+            type="date"
+            value={dariTanggal}
+            onChange={(event) => setDariTanggal(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+        <div>
+          <label htmlFor="bp-ekspor-sampai" className="block text-sm font-semibold text-slate-800">
+            Sampai Tanggal
+          </label>
+          <input
+            id="bp-ekspor-sampai"
+            type="date"
+            value={sampaiTanggal}
+            onChange={(event) => setSampaiTanggal(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <button
+          type="button"
+          onClick={() => handleEkspor("excel")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "excel"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-emerald-400"
+        >
+          {sedangEkspor === "excel" ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
+          )}
+          {sedangEkspor === "excel" ? "Menyiapkan..." : "Ekspor Excel"}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleEkspor("pdf")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "pdf"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-600 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {sedangEkspor === "pdf" ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <FileText className="h-4 w-4" aria-hidden="true" />
+          )}
+          {sedangEkspor === "pdf" ? "Menyiapkan..." : "Ekspor PDF (A4)"}
+        </button>
+      </div>
     </section>
   );
 }

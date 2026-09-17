@@ -39,6 +39,9 @@ import {
   Loader2,
   Lock,
 } from "lucide-react";
+import { SearchBar, cocokDenganPencarian } from "@/shared/components/search-bar";
+import { PeriodePicker } from "@/shared/components/periode-picker";
+import { rentangPeriodeLaporan } from "@/shared/lib/periode-laporan";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { useOutletId } from "@/shared/lib/outlet-context";
 import { useAuth } from "@/shared/lib/auth-context";
@@ -80,6 +83,10 @@ function RiwayatIsi() {
   const [daftarShift, setDaftarShift] = useState<RiwayatShift[]>([]);
   const [memuat, setMemuat] = useState(true);
   const [dibuka, setDibuka] = useState<string | null>(null);
+  const [pencarian, setPencarian] = useState("");
+  const daftarShiftTersaring = daftarShift.filter((shift) =>
+    cocokDenganPencarian(pencarian, shift.kasirNama, shift.tanggal, shift.status),
+  );
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -127,6 +134,18 @@ function RiwayatIsi() {
         </div>
       </div>
 
+      {daftarShift.length > 0 ? (
+        <div className="mb-4 max-w-sm">
+          <SearchBar
+            id="cari-shift"
+            value={pencarian}
+            onChange={setPencarian}
+            placeholder="Cari nama kasir, tanggal, atau status..."
+            ariaLabel="Cari riwayat shift"
+          />
+        </div>
+      ) : null}
+
       {memuat ? (
         <div className="flex justify-center py-12">
           <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
@@ -135,9 +154,13 @@ function RiwayatIsi() {
         <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
           Belum ada riwayat shift.
         </p>
+      ) : daftarShiftTersaring.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
+          Tidak ada shift yang cocok dengan pencarian &quot;{pencarian}&quot;.
+        </p>
       ) : (
         <ul className="flex flex-col divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white shadow-sm">
-          {daftarShift.map((shift) => {
+          {daftarShiftTersaring.map((shift) => {
             const terbuka = dibuka === shift.id;
             return (
               <li key={shift.id}>
@@ -619,6 +642,14 @@ function EksporLaporanKartu({ daftarShift }: { daftarShift: RiwayatShift[] }) {
   const [dariTanggal, setDariTanggal] = useState(tanggalAwalBulanISO());
   const [sampaiTanggal, setSampaiTanggal] = useState(tanggalIniISO());
   const [sedangEkspor, setSedangEkspor] = useState<"excel" | "pdf" | null>(null);
+  // Preset mana (kalau ada) yang PERSIS cocok dengan rentang tanggal
+  // aktif — dihitung ulang tiap render (bukan disimpan sebagai state
+  // terpisah) supaya tidak pernah "nyangkut" menyorot preset yang
+  // salah begitu tanggalnya digeser manual.
+  const periodeAktif = (["harian", "mingguan", "bulanan", "tahunan"] as const).find((p) => {
+    const r = rentangPeriodeLaporan(p);
+    return r.mulai === dariTanggal && r.selesai === sampaiTanggal;
+  }) ?? null;
 
   const terpilih = useMemo(
     () =>
@@ -707,7 +738,11 @@ function EksporLaporanKartu({ daftarShift }: { daftarShift: RiwayatShift[] }) {
         </p>
       ) : null}
 
-      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="mt-4">
+        <PeriodePicker periodeAktif={periodeAktif} onPilih={(r) => { setDariTanggal(r.mulai); setSampaiTanggal(r.selesai); }} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
           <label htmlFor="ekspor-dari" className="block text-sm font-semibold text-slate-800">
             Dari Tanggal

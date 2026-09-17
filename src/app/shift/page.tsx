@@ -63,10 +63,12 @@ import {
   Gift,
   Loader2,
   Minus,
+  Package,
   Plus,
   RotateCcw,
   Save,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
@@ -79,7 +81,7 @@ import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { ambilResepMenu, terapkanPerubahanStok } from "@/shared/lib/resep";
 import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
-import type { ResepItem } from "@/shared/types/inventaris";
+import type { ResepItem, StokKasir } from "@/shared/types/inventaris";
 
 /** Isi draf otomatis untuk form Tutup Shift (lihat TutupShiftKartu).
  *  Omset Non-Tunai TIDAK ADA lagi di sini — sekarang dihitung otomatis
@@ -137,6 +139,18 @@ interface PenjualanItem {
   qtyRefundNonTunai: number;
   hargaJualSnapshot: number;
   subtotal: number;
+  /** true khusus untuk "Item Lain" (lihat ItemLainKartu) — penjualan
+   *  ad-hoc yang TIDAK terdaftar di Kelola Produk (menu_harga),
+   *  langsung dipotong dari stok bahan baku yang dipilih manual saat
+   *  itu juga. undefined/false untuk penjualan reguler dari daftar
+   *  menu — field ini SENGAJA tidak memengaruhi kalkulasi Omset/HPP
+   *  apa pun (qty/subtotal/qtyTunai dst tetap dihitung sama seperti
+   *  penjualan biasa), hanya penanda asal-usul baris untuk tampilan. */
+  manual?: boolean;
+  /** Bahan baku yang dipotong untuk SATU unit "Item Lain" ini — dicatat
+   *  di dokumen penjualannya sendiri (bukan resep menu) supaya riwayat
+   *  tetap jelas bahan apa saja yang terpakai untuk item ad-hoc ini. */
+  bahanDipakai?: { bahanId: string; bahanNama: string; takaran: number; satuan: string }[];
 }
 
 interface KasKeluarItem {
@@ -472,6 +486,11 @@ function ShiftBerjalan({
   const [menuList, setMenuList] = useState<MenuHarga[]>([]);
   const [penjualan, setPenjualan] = useState<PenjualanItem[]>([]);
   const [kasKeluar, setKasKeluar] = useState<KasKeluarItem[]>([]);
+  // Cermin stok bahan baku (TANPA harga) — dipakai KHUSUS oleh
+  // ItemLainKartu di bawah, supaya Kasir bisa memilih bahan yang dipakai
+  // untuk "Item Lain" manual TANPA pernah membaca bahan_baku langsung
+  // (lihat komentar keamanan panjang di src/shared/lib/resep.ts).
+  const [stokKasir, setStokKasir] = useState<StokKasir[]>([]);
   // Resep (bahan + takaran) per menu, di-cache begitu daftar menu
   // dimuat — dipakai untuk mengurangi/mengembalikan stok gudang
   // otomatis setiap qty penjualan berubah (lihat ubahQty di bawah).
@@ -547,6 +566,8 @@ function ShiftBerjalan({
             qtyRefundNonTunai: d.data().qtyRefundNonTunai ?? 0,
             hargaJualSnapshot: d.data().hargaJualSnapshot ?? 0,
             subtotal: d.data().subtotal ?? 0,
+            manual: d.data().manual === true,
+            bahanDipakai: Array.isArray(d.data().bahanDipakai) ? d.data().bahanDipakai : undefined,
           })),
         );
       },
@@ -566,10 +587,25 @@ function ShiftBerjalan({
       },
     );
 
+    const unsubStokKasir = onSnapshot(collection(db, "outlets", outletId, "stok_kasir"), (snap) => {
+      setStokKasir(
+        snap.docs.map((d) => ({
+          id: d.id,
+          nama: d.data().nama ?? "",
+          kategori: d.data().kategori ?? "Umum",
+          satuan: d.data().satuan === "pcs" ? "pcs" : "gram",
+          stokSaatIni: d.data().stokSaatIni ?? 0,
+          batasMinimalStok: d.data().batasMinimalStok ?? 0,
+          aktif: d.data().aktif ?? true,
+        })),
+      );
+    });
+
     return () => {
       unsubMenu();
       unsubPenjualan();
       unsubKasKeluar();
+      unsubStokKasir();
     };
   }, [shiftId, outletId]);
 
@@ -1085,6 +1121,12 @@ function ShiftBerjalan({
           )}
         </section>
 
+        <ItemLainKartu
+          shiftId={shiftId}
+          stokKasir={stokKasir}
+          daftarManual={penjualan.filter((p) => p.manual)}
+        />
+
         <KasKeluarKartu shiftId={shiftId} daftar={kasKeluar} total={totalKasKeluar} />
 
         <TutupShiftKartu
@@ -1097,6 +1139,322 @@ function ShiftBerjalan({
         />
       </div>
     </main>
+  );
+}
+
+/**
+ * Item Lain (Manual) — permintaan user: aplikasi ini SENGAJA tidak
+ * memakai konsep "Stock Item" berupa produk baku yang wajib didaftarkan
+ * dulu di Kelola Produk sebelum bisa dijual (Kelola Produk tetap ada,
+ * tapi jadi preset opsional, bukan syarat). Prinsip akuntansinya:
+ * sepanjang stok BAHAN BAKU di inventaris tersedia, transaksi tetap
+ * bisa di-checkout — jadi di sini Kasir bisa ketik nama & harga jual
+ * manual untuk item yang belum/tidak terdaftar sebagai menu (mis. jual
+ * bahan mentah langsung, paket dadakan, titipan, dll), lalu PILIH
+ * SENDIRI bahan baku mana & berapa takaran yang terpakai per unit —
+ * stok gudang & cerminnya (stok_kasir) dipotong lewat mekanisme yang
+ * SAMA PERSIS dengan Resep menu biasa (terapkanPerubahanStok, lihat
+ * src/shared/lib/resep.ts), supaya akuntansi tetap berbasis bahan
+ * baku, bukan "produk" yang datanya terpisah dari inventaris.
+ *
+ * Dicatat ke subkoleksi shift/{id}/penjualan YANG SAMA dengan penjualan
+ * reguler (bukan koleksi terpisah) — bertanda `manual: true` — supaya
+ * Total Omset, Rekap Metode Bayar, Tutup Shift, dan seluruh Laporan
+ * yang SUDAH ADA otomatis ikut menghitungnya tanpa perlu diubah sama
+ * sekali (field qty/subtotal/qtyTunai dst bentuknya identik).
+ *
+ * Checkout DIBLOKIR (beda dari penjualan menu reguler yang boleh
+ * membuat stok minus, lihat komentar di belanja-nota/page.tsx) kalau
+ * salah satu bahan yang dipilih stoknya tidak cukup — sesuai
+ * permintaan eksplisit: "selama stok bahan baku ada baru bisa
+ * checkout" berlaku juga sebaliknya: stok tidak cukup -> tidak bisa
+ * checkout.
+ */
+function ItemLainKartu({
+  shiftId,
+  stokKasir,
+  daftarManual,
+}: {
+  shiftId: string;
+  stokKasir: StokKasir[];
+  daftarManual: PenjualanItem[];
+}) {
+  const outletId = useOutletId();
+  const { showToast } = useToast();
+  const [namaItem, setNamaItem] = useState("");
+  const [hargaJual, setHargaJual] = useState(0);
+  const [qty, setQty] = useState(1);
+  const [metodeBayar, setMetodeBayar] = useState<"tunai" | "nonTunai">("tunai");
+  const [barisBahan, setBarisBahan] = useState<{ bahanId: string; takaranPerUnit: number }[]>([
+    { bahanId: "", takaranPerUnit: 0 },
+  ]);
+  const [sedangSimpan, setSedangSimpan] = useState(false);
+
+  function ubahBaris(indeks: number, perubahan: Partial<{ bahanId: string; takaranPerUnit: number }>) {
+    setBarisBahan((prev) => prev.map((b, i) => (i === indeks ? { ...b, ...perubahan } : b)));
+  }
+  function tambahBaris() {
+    setBarisBahan((prev) => [...prev, { bahanId: "", takaranPerUnit: 0 }]);
+  }
+  function hapusBaris(indeks: number) {
+    setBarisBahan((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== indeks)));
+  }
+
+  async function handleSimpan() {
+    if (!namaItem.trim()) {
+      showToast("error", "Nama item wajib diisi.");
+      return;
+    }
+    if (hargaJual <= 0) {
+      showToast("error", "Harga jual harus lebih besar dari 0.");
+      return;
+    }
+    if (qty <= 0) {
+      showToast("error", "Jumlah harus lebih besar dari 0.");
+      return;
+    }
+    const barisValid = barisBahan.filter((b) => b.bahanId && b.takaranPerUnit > 0);
+    if (barisValid.length === 0) {
+      showToast(
+        "error",
+        "Pilih minimal satu bahan baku yang dipakai — stok gudang tetap harus terhubung ke setiap penjualan.",
+      );
+      return;
+    }
+
+    // Cek stok CUKUP untuk setiap bahan SEBELUM checkout — SENGAJA
+    // diblokir kalau tidak cukup, sesuai prinsip di komentar atas.
+    for (const baris of barisValid) {
+      const bahan = stokKasir.find((b) => b.id === baris.bahanId);
+      const dibutuhkan = baris.takaranPerUnit * qty;
+      if (!bahan || bahan.stokSaatIni < dibutuhkan) {
+        showToast(
+          "error",
+          `Stok "${bahan?.nama ?? "bahan"}" tidak cukup — tersisa ${bahan?.stokSaatIni ?? 0} ${bahan?.satuan ?? ""}, butuh ${dibutuhkan}.`,
+        );
+        return;
+      }
+    }
+
+    setSedangSimpan(true);
+    try {
+      const subtotal = hargaJual * qty;
+      const resepSintetis: ResepItem[] = barisValid.map((b) => {
+        const bahan = stokKasir.find((x) => x.id === b.bahanId);
+        return {
+          id: b.bahanId,
+          bahanId: b.bahanId,
+          bahanNama: bahan?.nama ?? "",
+          takaran: b.takaranPerUnit,
+          satuan: bahan?.satuan ?? "gram",
+        };
+      });
+
+      await addDoc(collection(db, "outlets", outletId, "shift", shiftId, "penjualan"), {
+        menuId: null,
+        menuNama: namaItem.trim(),
+        kategori: "Item Lain",
+        qtyTunai: metodeBayar === "tunai" ? qty : 0,
+        qtyNonTunai: metodeBayar === "nonTunai" ? qty : 0,
+        qty,
+        subtotalTunai: metodeBayar === "tunai" ? subtotal : 0,
+        subtotalNonTunai: metodeBayar === "nonTunai" ? subtotal : 0,
+        qtyBonus: 0,
+        qtyRefund: 0,
+        qtyRefundNonTunai: 0,
+        hargaJualSnapshot: hargaJual,
+        subtotal,
+        manual: true,
+        bahanDipakai: resepSintetis.map((r) => ({
+          bahanId: r.bahanId,
+          bahanNama: r.bahanNama,
+          takaran: r.takaran,
+          satuan: r.satuan,
+        })),
+      });
+
+      // Potong stok gudang & cerminnya — mekanisme SAMA PERSIS dengan
+      // Resep menu biasa (gagal-lunak: kalau ini gagal, penjualan tetap
+      // tercatat, Kasir diberi tahu lewat toast peringatan terpisah,
+      // sama seperti pola ubahQtyReguler() di atas).
+      terapkanPerubahanStok(outletId, resepSintetis, qty).catch(() => {
+        showToast(
+          "warning",
+          `"${namaItem.trim()}" tercatat, tapi stok bahan baku gagal diperbarui otomatis — cek manual di Belanja & Nota.`,
+        );
+      });
+
+      showToast("success", `"${namaItem.trim()}" dicatat: ${formatRupiah(subtotal)}.`);
+      setNamaItem("");
+      setHargaJual(0);
+      setQty(1);
+      setBarisBahan([{ bahanId: "", takaranPerUnit: 0 }]);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal mencatat item: ${error.message}` : "Gagal mencatat item.",
+      );
+    } finally {
+      setSedangSimpan(false);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-item-lain"
+      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2 id="bagian-item-lain" className="flex items-center gap-2 text-base font-semibold text-slate-900">
+        <Package className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        Item Lain (Manual)
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Untuk penjualan yang belum terdaftar di Kelola Produk. Ketik nama & harga sendiri, lalu pilih bahan
+        baku yang terpakai — stok gudang tetap otomatis terpotong seperti biasa.
+      </p>
+
+      {daftarManual.length > 0 ? (
+        <ul className="mt-3 divide-y divide-slate-100">
+          {daftarManual.map((item) => (
+            <li key={item.id} className="flex items-center justify-between py-1.5 text-sm">
+              <span className="text-slate-700">
+                {item.menuNama} · {item.qty}× {formatRupiah(item.hargaJualSnapshot)}
+              </span>
+              <span className="font-medium tabular-nums text-slate-900">{formatRupiah(item.subtotal)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {stokKasir.length === 0 ? (
+        <p className="mt-3 text-sm text-slate-500">
+          Belum ada Bahan Baku terdaftar — tambahkan lewat Belanja & Nota (Purchasing) dulu.
+        </p>
+      ) : (
+        <div className="mt-4 flex flex-col gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="sm:col-span-3">
+              <label htmlFor="il-nama" className="block text-sm font-semibold text-slate-800">
+                Nama Item
+              </label>
+              <input
+                id="il-nama"
+                type="text"
+                value={namaItem}
+                onChange={(e) => setNamaItem(e.target.value)}
+                placeholder="mis. Kopi Sachet Titipan"
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              />
+            </div>
+            <NumberField id="il-harga" label="Harga Jual / Unit" value={hargaJual} onChange={setHargaJual} prefix="Rp" />
+            <NumberField id="il-qty" label="Jumlah" value={qty} onChange={setQty} step={1} />
+            <div>
+              <span className="block text-sm font-semibold text-slate-800">Metode Bayar</span>
+              <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setMetodeBayar("tunai")}
+                  className={`inline-flex h-[42px] items-center justify-center gap-1.5 rounded-lg border text-sm font-medium motion-safe:transition active:scale-[0.99] ${
+                    metodeBayar === "tunai"
+                      ? "border-emerald-600 bg-emerald-50 text-emerald-900"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  <Banknote className="h-3.5 w-3.5" aria-hidden="true" />
+                  Tunai
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMetodeBayar("nonTunai")}
+                  className={`inline-flex h-[42px] items-center justify-center gap-1.5 rounded-lg border text-sm font-medium motion-safe:transition active:scale-[0.99] ${
+                    metodeBayar === "nonTunai"
+                      ? "border-emerald-600 bg-emerald-50 text-emerald-900"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  <CreditCard className="h-3.5 w-3.5" aria-hidden="true" />
+                  Non-Tunai
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <span className="block text-sm font-semibold text-slate-800">Bahan Baku Terpakai (per unit)</span>
+            <div className="mt-1.5 flex flex-col gap-2">
+              {barisBahan.map((baris, indeks) => {
+                const bahanTerpilih = stokKasir.find((b) => b.id === baris.bahanId);
+                return (
+                  <div key={indeks} className="flex items-center gap-2">
+                    <select
+                      aria-label={`Bahan baku baris ${indeks + 1}`}
+                      value={baris.bahanId}
+                      onChange={(e) => ubahBaris(indeks, { bahanId: e.target.value })}
+                      className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                    >
+                      <option value="">Pilih bahan...</option>
+                      {stokKasir.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.nama} (stok: {b.stokSaatIni} {b.satuan})
+                        </option>
+                      ))}
+                    </select>
+                    <div className="w-28 shrink-0">
+                      <NumberField
+                        id={`il-takaran-${indeks}`}
+                        label="Takaran"
+                        value={baris.takaranPerUnit}
+                        onChange={(v) => ubahBaris(indeks, { takaranPerUnit: v })}
+                        suffix={bahanTerpilih?.satuan}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => hapusBaris(indeks)}
+                      disabled={barisBahan.length <= 1}
+                      aria-label={`Hapus baris bahan ${indeks + 1}`}
+                      className="mt-5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-slate-400 motion-safe:transition active:scale-90 hover:bg-slate-100 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <X className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={tambahBaris}
+              className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 motion-safe:transition hover:text-emerald-800"
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              Tambah bahan lain
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSimpan}
+            disabled={sedangSimpan}
+            aria-busy={sedangSimpan}
+            className={[
+              "inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold text-white shadow-sm",
+              "motion-safe:transition motion-safe:duration-150",
+              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
+              sedangSimpan
+                ? "cursor-not-allowed bg-emerald-400"
+                : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+            ].join(" ")}
+          >
+            {sedangSimpan ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Package className="h-4 w-4" aria-hidden="true" />
+            )}
+            {sedangSimpan ? "Menyimpan..." : "Catat Penjualan Item Ini"}
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 

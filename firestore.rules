@@ -458,14 +458,21 @@ service cloud.firestore {
 
         // Purchasing outlet ini HANYA boleh MENGURANGI saldo (lewat
         // increment negatif), TIDAK PERNAH field lain. Finance outlet
-        // ini boleh menambah ATAU mengurangi. Kedua jalur non-Owner
-        // ini WAJIB menjaga saldo tidak pernah minus. Owner (global)
-        // tetap dapat admin override penuh tanpa batas minus itu,
-        // untuk koreksi data di Outlet manapun.
+        // ini boleh menambah ATAU mengurangi.
+        //
+        // CATATAN (revisi permintaan pemilik cafe): saldo Deposito
+        // Finance SENGAJA DIIZINKAN MINUS untuk Finance & Purchasing
+        // juga (dulu wajib >= 0 di sini) — prinsip akuntansi: saldo
+        // harus mencerminkan kondisi nyata biarpun negatif (mis. dana
+        // sudah dikeluarkan/dipakai duluan sebelum setoran Owner
+        // berikutnya masuk), bukan dipaksa berhenti di 0. Owner (admin
+        // override) TETAP bebas mengubah field apa pun tanpa batas
+        // (isOwner() berdiri sendiri, TIDAK ikut batasan hasOnly di
+        // bawah) — hanya baris saldo>=0 yang dihapus dari jalur
+        // Finance/Purchasing.
         allow update: if isOwner()
           || ((isFinanceOutlet(outletId) || isPurchasingOutlet(outletId))
-              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["saldo"])
-              && request.resource.data.saldo >= 0);
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["saldo"]));
       }
 
       match /transaksi_finance/{transaksiId} {

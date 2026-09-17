@@ -55,6 +55,7 @@ import {
 import { RequireAuth } from "@/shared/components/require-auth";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
+import { SearchBar, cocokDenganPencarian } from "@/shared/components/search-bar";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutletId } from "@/shared/lib/outlet-context";
 import { db } from "@/shared/lib/firebase";
@@ -889,20 +890,27 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
     return unsub;
   }, [outletId, peran]);
 
+  const [pencarian, setPencarian] = useState("");
+
   const menipis = useMemo(
     () => daftar.filter((b) => b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok),
     [daftar],
   );
 
+  const daftarTersaring = useMemo(
+    () => daftar.filter((b) => cocokDenganPencarian(pencarian, b.nama, b.kategori)),
+    [daftar, pencarian],
+  );
+
   const perKategori = useMemo(() => {
     const map = new Map<string, BarisStok[]>();
-    for (const b of daftar) {
+    for (const b of daftarTersaring) {
       const list = map.get(b.kategori) ?? [];
       list.push(b);
       map.set(b.kategori, list);
     }
     return map;
-  }, [daftar]);
+  }, [daftarTersaring]);
 
   if (memuat) {
     return (
@@ -946,6 +954,21 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
           Belum ada Bahan Baku tercatat.
         </p>
       ) : (
+        <>
+          <div className="mb-5 max-w-sm">
+            <SearchBar
+              id="cari-stok"
+              value={pencarian}
+              onChange={setPencarian}
+              placeholder="Cari nama atau kategori bahan..."
+              ariaLabel="Cari bahan baku"
+            />
+          </div>
+          {daftarTersaring.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-600">
+              Tidak ada bahan yang cocok dengan pencarian &quot;{pencarian}&quot;.
+            </p>
+          ) : (
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
           {[...perKategori.entries()].map(([kategori, items]) => (
             <section
@@ -975,6 +998,8 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
             </section>
           ))}
         </div>
+          )}
+        </>
       )}
     </main>
   );

@@ -16,6 +16,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Info, Loader2, Plus, Save, TriangleAlert, Trash2 } from "lucide-react";
+import { SearchBar, cocokDenganPencarian } from "@/shared/components/search-bar";
 import {
   collection,
   deleteDoc,
@@ -183,6 +184,8 @@ function KalkulatorHppForm() {
   const [daftarMenu, setDaftarMenu] = useState<MenuTersimpan[]>([]);
   const [menuDiedit, setMenuDiedit] = useState<string>(MENU_BARU);
   const [memuatMenu, setMemuatMenu] = useState(false);
+  const [pencarianMenu, setPencarianMenu] = useState("");
+  const daftarMenuTersaring = daftarMenu.filter((m) => cocokDenganPencarian(pencarianMenu, m.nama, m.kategori));
   // Bahan yang ADA di resep tersimpan saat form dimuat — dipakai untuk
   // tahu baris mana yang dihapus Owner, supaya dokumen resepnya ikut
   // dihapus di Firestore (kalau tidak, bahan yang sudah dibuang tetap
@@ -790,6 +793,17 @@ function KalkulatorHppForm() {
               >
                 Buat Baru atau Ubah Menu yang Ada
               </label>
+              {daftarMenu.length > 3 ? (
+                <div className="mt-1.5">
+                  <SearchBar
+                    id="cari-menu"
+                    value={pencarianMenu}
+                    onChange={setPencarianMenu}
+                    placeholder="Cari menu untuk dipilih..."
+                    ariaLabel="Cari menu"
+                  />
+                </div>
+              ) : null}
               <select
                 id="pilih-menu"
                 value={menuDiedit}
@@ -798,7 +812,7 @@ function KalkulatorHppForm() {
                 className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 disabled:opacity-60"
               >
                 <option value={MENU_BARU}>+ Menu Baru</option>
-                {daftarMenu.map((m) => (
+                {daftarMenuTersaring.map((m) => (
                   <option key={m.id} value={m.id}>
                     Ubah: {m.nama} ({m.kategori})
                   </option>

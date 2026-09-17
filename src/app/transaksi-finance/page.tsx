@@ -28,17 +28,21 @@
 // ============================================================
 
 import { useEffect, useState } from "react";
-import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, setDoc } from "firebase/firestore";
-import { ArrowDownCircle, ArrowUpCircle, Landmark, Loader2, Save } from "lucide-react";
+import { collection, doc, getDocs, increment, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
+import { ArrowDownCircle, ArrowUpCircle, Download, FileSpreadsheet, FileText, Landmark, Loader2, Save } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
+import { PeriodePicker } from "@/shared/components/periode-picker";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
+import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
+import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
+import { rentangPeriodeLaporan, formatTanggalPanjangId, type PeriodeLaporan } from "@/shared/lib/periode-laporan";
 
 /** Dokumen tunggal — satu-satunya sumber kebenaran saldo Deposito
  *  Finance saat ini, diperbarui lewat increment() tiap transaksi
@@ -165,6 +169,8 @@ function TransaksiFinanceIsi() {
           </div>
         ) : null}
 
+        <EksporLaporanFinanceKartu />
+
         <section
           aria-labelledby="bagian-riwayat-finance"
           className="kartu-interaktif rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
@@ -220,6 +226,186 @@ function TransaksiFinanceIsi() {
 // — supaya tidak memicu bug fokus/kursor hilang tiap ketik satu huruf,
 // lihat webrules-hikimori poin 11.
 
+interface BarisLaporanFinance {
+  tanggal: string;
+  arah: "masuk" | "keluar";
+  kategori: string;
+  subKategori: string;
+  nominal: number;
+  keterangan: string;
+  financeNama: string;
+}
+
+/**
+ * Laporan Setoran/Transaksi Finance — Ekspor Excel/PDF A4 dengan
+ * filter periode (Harian/Mingguan/Bulanan/Tahunan + tanggal manual),
+ * atas permintaan pemilik cafe. Riwayat yang tampil di layar (state
+ * `riwayat` di TransaksiFinanceIsi) SENGAJA dibatasi 50 transaksi
+ * terbaru demi kuota baca — jadi kartu ini menjalankan query-nya
+ * SENDIRI, terbatas ke rentang tanggal yang dipilih SAJA (bisa lebih
+ * dari 50 baris kalau memang ada, tapi tidak pernah membaca seluruh
+ * riwayat sejak awal berdiri seperti getDocs tanpa filter).
+ */
+function EksporLaporanFinanceKartu() {
+  const outletId = useOutletId();
+  const { showToast } = useToast();
+  const { detail: perusahaan } = useDetailPerusahaan();
+  const [dariTanggal, setDariTanggal] = useState(() => rentangPeriodeLaporan("bulanan").mulai);
+  const [sampaiTanggal, setSampaiTanggal] = useState(() => rentangPeriodeLaporan("bulanan").selesai);
+  const [sedangEkspor, setSedangEkspor] = useState<"excel" | "pdf" | null>(null);
+
+  const periodeAktif =
+    (["harian", "mingguan", "bulanan", "tahunan"] as PeriodeLaporan[]).find((p) => {
+      const r = rentangPeriodeLaporan(p);
+      return r.mulai === dariTanggal && r.selesai === sampaiTanggal;
+    }) ?? null;
+
+  async function ambilBaris(): Promise<BarisLaporanFinance[]> {
+    const snap = await getDocs(
+      query(
+        collection(db, "outlets", outletId, "transaksi_finance"),
+        where("tanggal", ">=", dariTanggal),
+        where("tanggal", "<=", sampaiTanggal),
+        orderBy("tanggal"),
+      ),
+    );
+    return snap.docs.map((d) => ({
+      tanggal: d.data().tanggal ?? "",
+      arah: (d.data().arah ?? "keluar") as "masuk" | "keluar",
+      kategori: d.data().kategori ?? "",
+      subKategori: d.data().subKategori ?? "",
+      nominal: d.data().nominal ?? 0,
+      keterangan: d.data().keterangan ?? "",
+      financeNama: d.data().financeNama ?? "",
+    }));
+  }
+
+  async function handleEkspor(jenis: "excel" | "pdf") {
+    setSedangEkspor(jenis);
+    try {
+      const baris = await ambilBaris();
+      if (baris.length === 0) {
+        showToast("error", "Tidak ada transaksi pada rentang tanggal itu.");
+        return;
+      }
+      const totalMasuk = baris.filter((b) => b.arah === "masuk").reduce((t, b) => t + b.nominal, 0);
+      const totalKeluar = baris.filter((b) => b.arah === "keluar").reduce((t, b) => t + b.nominal, 0);
+      const opsi: OpsiLaporan<BarisLaporanFinance> = {
+        judul: "LAPORAN SETORAN & TRANSAKSI FINANCE",
+        periode: `${formatTanggalPanjangId(dariTanggal)} s/d ${formatTanggalPanjangId(sampaiTanggal)}`,
+        perusahaan,
+        namaBerkas: `Laporan-Finance_${dariTanggal}_sd_${sampaiTanggal}`,
+        kolom: [
+          { judul: "Tanggal", ambil: (b) => b.tanggal, lebar: 14 },
+          { judul: "Arah", ambil: (b) => (b.arah === "masuk" ? "Masuk" : "Keluar"), lebar: 10 },
+          { judul: "Kategori", ambil: (b) => b.kategori, lebar: 18 },
+          { judul: "Sub Kategori", ambil: (b) => b.subKategori || "—", lebar: 18 },
+          { judul: "Nominal", ambil: (b) => b.nominal, angka: true, lebar: 16 },
+          { judul: "Dicatat Oleh", ambil: (b) => b.financeNama, lebar: 18 },
+          { judul: "Keterangan", ambil: (b) => b.keterangan || "—", lebar: 24 },
+        ],
+        baris,
+        ringkasan: [
+          { label: "Jumlah Transaksi", nilai: String(baris.length) },
+          { label: "Total Uang Masuk", nilai: formatRupiah(totalMasuk) },
+          { label: "Total Uang Keluar", nilai: formatRupiah(totalKeluar) },
+          { label: "Selisih Bersih", nilai: formatRupiah(totalMasuk - totalKeluar) },
+        ],
+      };
+      if (jenis === "excel") await eksporExcel(opsi);
+      else await eksporPdf(opsi);
+      showToast("success", `Laporan ${jenis === "excel" ? "Excel" : "PDF"} berhasil diunduh.`);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal mengekspor: ${error.message}` : "Gagal mengekspor.",
+      );
+    } finally {
+      setSedangEkspor(null);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-ekspor-finance"
+      className="kartu-interaktif rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2
+        id="bagian-ekspor-finance"
+        className="flex items-center gap-2 text-base font-semibold text-slate-900"
+      >
+        <Download className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        Ekspor Laporan (Excel / PDF A4)
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Rekap Uang Masuk/Keluar Saldo Deposito Finance pada rentang tanggal terpilih.
+      </p>
+
+      <div className="mt-4">
+        <PeriodePicker periodeAktif={periodeAktif} onPilih={(r) => { setDariTanggal(r.mulai); setSampaiTanggal(r.selesai); }} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="tf-ekspor-dari" className="block text-sm font-semibold text-slate-800">
+            Dari Tanggal
+          </label>
+          <input
+            id="tf-ekspor-dari"
+            type="date"
+            value={dariTanggal}
+            onChange={(event) => setDariTanggal(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+        <div>
+          <label htmlFor="tf-ekspor-sampai" className="block text-sm font-semibold text-slate-800">
+            Sampai Tanggal
+          </label>
+          <input
+            id="tf-ekspor-sampai"
+            type="date"
+            value={sampaiTanggal}
+            onChange={(event) => setSampaiTanggal(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <button
+          type="button"
+          onClick={() => handleEkspor("excel")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "excel"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-emerald-400"
+        >
+          {sedangEkspor === "excel" ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
+          )}
+          {sedangEkspor === "excel" ? "Menyiapkan..." : "Ekspor Excel"}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleEkspor("pdf")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "pdf"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-600 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-sm motion-safe:transition motion-safe:duration-150 hover:bg-emerald-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {sedangEkspor === "pdf" ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <FileText className="h-4 w-4" aria-hidden="true" />
+          )}
+          {sedangEkspor === "pdf" ? "Menyiapkan..." : "Ekspor PDF (A4)"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function TambahDanaKartu({ saldo }: { saldo: number }) {
   const { user, profil } = useAuth();
   const outletId = useOutletId();
@@ -236,7 +422,13 @@ function TambahDanaKartu({ saldo }: { saldo: number }) {
     }
     setSedangSimpan(true);
     try {
-      await addDoc(collection(db, "outlets", outletId, "transaksi_finance"), {
+      // Batch atomik — lihat catatan yang sama di handleMulaiBelanja()
+      // (src/app/belanja-nota/page.tsx): jangan pernah tulis riwayat
+      // transaksi & saldo secara terpisah, supaya tidak pernah ada
+      // riwayat "nyangkut" tanpa saldo ikut berubah.
+      const batch = writeBatch(db);
+      const transaksiRef = doc(collection(db, "outlets", outletId, "transaksi_finance"));
+      batch.set(transaksiRef, {
         arah: "masuk",
         kategori: "Tambah Dana",
         subKategori: "",
@@ -247,11 +439,12 @@ function TambahDanaKartu({ saldo }: { saldo: number }) {
         tanggal: tanggalHariIni(),
         waktu: serverTimestamp(),
       });
-      await setDoc(
+      batch.set(
         doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
         { saldo: increment(nominal) },
         { merge: true },
       );
+      await batch.commit();
       showToast("success", `Dana ${formatRupiah(nominal)} berhasil ditambahkan ke Saldo Deposito.`);
       setNominal(0);
       setKeterangan("");
@@ -327,9 +520,15 @@ function CatatTransaksiKeluarKartu({ saldo }: { saldo: number }) {
       showToast("error", "Nominal harus lebih dari 0.");
       return;
     }
+    // Saldo Deposito Finance SENGAJA diizinkan minus (prinsip akuntansi:
+    // saldo harus mencerminkan kondisi nyata walau negatif, mis. dana
+    // sudah dikeluarkan duluan sebelum setoran Owner berikutnya masuk).
+    // Bukan diblokir, hanya diberi peringatan supaya Finance tetap sadar.
     if (nominal > saldo) {
-      showToast("error", `Saldo Deposito Finance tidak cukup — sisa saldo ${formatRupiah(saldo)}.`);
-      return;
+      showToast(
+        "warning",
+        `Saldo Deposito Finance akan menjadi minus (${formatRupiah(saldo - nominal)}) setelah transaksi ini.`,
+      );
     }
     if (kategori === "Gaji Karyawan" && namaKaryawan.trim() === "") {
       showToast("error", "Isi nama karyawan terlebih dahulu.");
@@ -340,7 +539,9 @@ function CatatTransaksiKeluarKartu({ saldo }: { saldo: number }) {
 
     setSedangSimpan(true);
     try {
-      await addDoc(collection(db, "outlets", outletId, "transaksi_finance"), {
+      const batch = writeBatch(db);
+      const transaksiRef = doc(collection(db, "outlets", outletId, "transaksi_finance"));
+      batch.set(transaksiRef, {
         arah: "keluar",
         kategori,
         subKategori,
@@ -351,11 +552,12 @@ function CatatTransaksiKeluarKartu({ saldo }: { saldo: number }) {
         tanggal: tanggalHariIni(),
         waktu: serverTimestamp(),
       });
-      await setDoc(
+      batch.set(
         doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
         { saldo: increment(-nominal) },
         { merge: true },
       );
+      await batch.commit();
       showToast("success", "Transaksi berhasil dicatat.");
       setNominal(0);
       setKeterangan("");

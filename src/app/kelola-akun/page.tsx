@@ -35,6 +35,7 @@ import { deleteApp, initializeApp } from "firebase/app";
 import { createUserWithEmailAndPassword, getAuth } from "firebase/auth";
 import { collection, doc, getDoc, onSnapshot, orderBy, query, setDoc, updateDoc } from "firebase/firestore";
 import { Loader2, ShieldCheck, ShieldOff, UserPlus } from "lucide-react";
+import { SearchBar, cocokDenganPencarian } from "@/shared/components/search-bar";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
@@ -85,6 +86,7 @@ function KelolaAkunIsi() {
   const { daftarOutletAktif } = useOutlet();
   const [daftarAkun, setDaftarAkun] = useState<AkunStaff[]>([]);
   const [memuat, setMemuat] = useState(true);
+  const [pencarian, setPencarian] = useState("");
 
   useEffect(() => {
     // Owner DAN Finance keduanya "terpusat" (isOwner() || isFinance()
@@ -117,6 +119,10 @@ function KelolaAkunIsi() {
     return daftarOutletAktif.find((o) => o.id === id)?.nama ?? id;
   }
 
+  const akunTersaring = daftarAkun.filter((akun) =>
+    cocokDenganPencarian(pencarian, akun.nama, akun.username, akun.email, akun.peran, namaOutlet(akun.outletId)),
+  );
+
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
       <header className="mb-6">
@@ -144,15 +150,29 @@ function KelolaAkunIsi() {
             Kata Sandi&quot; di halaman Login.
           </p>
 
+          {daftarAkun.length > 0 ? (
+            <div className="mt-3">
+              <SearchBar
+                id="cari-akun"
+                value={pencarian}
+                onChange={setPencarian}
+                placeholder="Cari nama, username, email, peran, atau outlet..."
+                ariaLabel="Cari akun staff"
+              />
+            </div>
+          ) : null}
+
           {memuat ? (
             <div className="flex justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
             </div>
           ) : daftarAkun.length === 0 ? (
             <p className="mt-3 text-sm text-slate-500">Belum ada akun staff dibuat.</p>
+          ) : akunTersaring.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">Tidak ada akun yang cocok dengan pencarian &quot;{pencarian}&quot;.</p>
           ) : (
             <ul className="mt-3 divide-y divide-slate-100">
-              {daftarAkun.map((akun) => (
+              {akunTersaring.map((akun) => (
                 <BarisAkun key={akun.uid} akun={akun} namaOutlet={namaOutlet} tampilkanOutlet />
               ))}
             </ul>

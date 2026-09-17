@@ -29,6 +29,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { Building2, Loader2, Plus } from "lucide-react";
+import { SearchBar, cocokDenganPencarian } from "@/shared/components/search-bar";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
@@ -199,6 +200,8 @@ function TambahOutletKartu() {
 function DaftarOutletKartu({ daftar }: { daftar: OutletDaftar[] }) {
   const { showToast } = useToast();
   const [sedangProses, setSedangProses] = useState<string | null>(null);
+  const [pencarian, setPencarian] = useState("");
+  const daftarTersaring = daftar.filter((outlet) => cocokDenganPencarian(pencarian, outlet.nama, outlet.alamat));
 
   async function ubahAktif(outlet: OutletDaftar) {
     setSedangProses(outlet.id);
@@ -231,8 +234,20 @@ function DaftarOutletKartu({ daftar }: { daftar: OutletDaftar[] }) {
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="text-base font-semibold text-slate-900">Daftar Outlet</h2>
+      <div className="mt-3">
+        <SearchBar
+          id="cari-outlet"
+          value={pencarian}
+          onChange={setPencarian}
+          placeholder="Cari nama atau alamat outlet..."
+          ariaLabel="Cari outlet"
+        />
+      </div>
+      {daftarTersaring.length === 0 ? (
+        <p className="mt-4 text-sm text-slate-500">Tidak ada outlet yang cocok dengan pencarian &quot;{pencarian}&quot;.</p>
+      ) : (
       <ul className="mt-4 flex flex-col divide-y divide-slate-100">
-        {daftar.map((outlet) => (
+        {daftarTersaring.map((outlet) => (
           <li key={outlet.id} className="flex items-center justify-between gap-3 py-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-slate-900">{outlet.nama}</p>
@@ -262,6 +277,7 @@ function DaftarOutletKartu({ daftar }: { daftar: OutletDaftar[] }) {
           </li>
         ))}
       </ul>
+      )}
     </section>
   );
 }

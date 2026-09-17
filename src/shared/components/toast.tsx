@@ -23,13 +23,16 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
-import { CheckCircle2, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, X, XCircle } from "lucide-react";
 
 // ------------------------------------------------------------
 // SECTION: Tipe & Context
 // ------------------------------------------------------------
 
-export type ToastType = "success" | "error";
+/** "warning" = TIDAK menggagalkan aksi, cuma memberi tahu (mis. saldo
+ *  akan jadi minus setelah transaksi ini tetap dilanjutkan) — beda
+ *  dari "error" yang berarti aksinya sungguh gagal/dibatalkan. */
+export type ToastType = "success" | "error" | "warning";
 
 interface ToastItem {
   id: string;
@@ -142,7 +145,26 @@ function ToastCard({
   toast: ToastItem;
   onDismiss: (id: string) => void;
 }) {
-  const isSuccess = toast.type === "success";
+  const gaya = {
+    success: {
+      wadah: "border-emerald-300 bg-emerald-50 text-emerald-900",
+      tombol: "hover:bg-emerald-100 focus-visible:outline-emerald-600",
+      ikon: <CheckCircle2 className="h-5 w-5" />,
+      judul: "Berhasil",
+    },
+    warning: {
+      wadah: "border-amber-300 bg-amber-50 text-amber-900",
+      tombol: "hover:bg-amber-100 focus-visible:outline-amber-600",
+      ikon: <AlertTriangle className="h-5 w-5" />,
+      judul: "Perhatian",
+    },
+    error: {
+      wadah: "border-rose-300 bg-rose-50 text-rose-900",
+      tombol: "hover:bg-rose-100 focus-visible:outline-rose-600",
+      ikon: <XCircle className="h-5 w-5" />,
+      judul: "Gagal",
+    },
+  }[toast.type];
 
   return (
     <div
@@ -151,23 +173,17 @@ function ToastCard({
       className={[
         "pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-lg border p-4 shadow-lg",
         "motion-safe:transition motion-safe:duration-200",
-        isSuccess
-          ? "border-emerald-300 bg-emerald-50 text-emerald-900"
-          : "border-rose-300 bg-rose-50 text-rose-900",
+        gaya.wadah,
       ].join(" ")}
       style={{
         animation: `${toast.leaving ? "toast-slide-out" : "toast-slide-in"} 200ms ease forwards`,
       }}
     >
       <span className="mt-0.5 shrink-0" aria-hidden="true">
-        {isSuccess ? (
-          <CheckCircle2 className="h-5 w-5" />
-        ) : (
-          <XCircle className="h-5 w-5" />
-        )}
+        {gaya.ikon}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="font-semibold">{isSuccess ? "Berhasil" : "Gagal"}</p>
+        <p className="font-semibold">{gaya.judul}</p>
         <p className="mt-0.5 text-sm leading-snug break-words">{toast.message}</p>
       </div>
       <button
@@ -178,9 +194,7 @@ function ToastCard({
           "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md -my-2 -mr-2",
           "motion-safe:transition-colors motion-safe:duration-150 active:scale-90",
           "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2",
-          isSuccess
-            ? "hover:bg-emerald-100 focus-visible:outline-emerald-600"
-            : "hover:bg-rose-100 focus-visible:outline-rose-600",
+          gaya.tombol,
         ].join(" ")}
       >
         <X className="h-4 w-4" aria-hidden="true" />
