@@ -240,11 +240,27 @@ function BelanjaNotaIsi() {
           sisaKas: d.data().sisaKas ?? 0,
         });
       })
-      .catch(() => setSesiSelesaiTerakhir(null));
+      .catch((error) => {
+        if (dibatalkan) return;
+        setSesiSelesaiTerakhir(null);
+        // JANGAN gagal diam-diam: kalau query ini gagal (mis. index
+        // komposit "purchasingUid + tanggal + status, orderBy nomorShift"
+        // belum dibuat di Firebase Console), Purchasing akan tetap
+        // melihat layar "Mulai Belanja" manual seolah tidak ada sesi
+        // sebelumnya — padahal sebenarnya query-nya error, bukan memang
+        // kosong. Tanpa toast ini, kegagalan itu tidak akan pernah
+        // ketahuan dari UI.
+        showToast(
+          "error",
+          error instanceof Error
+            ? `Gagal memeriksa sesi shift sebelumnya: ${error.message}`
+            : "Gagal memeriksa sesi shift sebelumnya.",
+        );
+      });
     return () => {
       dibatalkan = true;
     };
-  }, [user, outletId, belanjaAktif]);
+  }, [user, outletId, belanjaAktif, showToast]);
 
   async function handleMulaiBelanja() {
     if (!user || !profil) return;
@@ -1546,6 +1562,13 @@ interface BarisLaporanPembelian {
   totalBelanja: number;
   sisaKas: number;
   status: "terbuka" | "selesai" | "terkunci";
+  /** Posisi sesi ini dalam rantai shift Purchasing hari itu (1 = shift
+   *  pertama/modal ASLI; >1 = lanjutan yang modalnya cuma sisa kas
+   *  dibawa terus, BUKAN suntikan dana baru — lihat handleLanjutkanShift
+   *  di BelanjaNotaIsi). Dipakai supaya ringkasan Total Modal Diberikan
+   *  & Total Sisa Kas di bawah tidak menjumlah uang yang sama dua kali
+   *  saat satu hari punya beberapa shift berantai. */
+  nomorShift: number;
 }
 
 function labelStatusBelanja(status: BarisLaporanPembelian["status"]): string {
@@ -1588,7 +1611,41 @@ function EksporLaporanPembelianKartu() {
       totalBelanja: d.data().totalBelanja ?? 0,
       sisaKas: d.data().sisaKas ?? 0,
       status: (d.data().status ?? "terbuka") as BarisLaporanPembelian["status"],
+      nomorShift: d.data().nomorShift ?? 1,
     }));
+  }
+
+  // PERBAIKAN BUG (audit): "Total Modal Diberikan" & "Total Sisa Kas"
+  // dulu dijumlah polos dari SEMUA baris di rentang tanggal — kalau
+  // dalam satu hari Purchasing sempat "Lanjutkan Shift" 2-3 kali, modal
+  // shift lanjutan (yang cuma sisa kas dibawa terus, BUKAN dana baru)
+  // ikut kehitung lagi sebagai modal baru, jadi kedua total itu jadi
+  // lebih besar dari uang yang sebenarnya pernah masuk/tersisa nyata.
+  // Perbaikannya: kelompokkan per tanggal, lalu ambil HANYA modal shift
+  // PERTAMA (nomorShift terkecil = dana asli) dan sisa kas shift
+  // TERAKHIR (nomorShift terbesar = kondisi akhir hari itu) tiap
+  // kelompok — jumlah kedua nilai itu tiap tanggal, baru dijumlah lagi
+  // jadi total periode. "Total Belanja" TIDAK terdampak (tetap dijumlah
+  // polos dari semua baris) karena belanja tiap shift memang uang nyata
+  // yang keluar, bukan modal yang dibawa-bawa.
+  function hitungTotalModalDanSisaKas(baris: BarisLaporanPembelian[]): {
+    totalModal: number;
+    totalSisaKas: number;
+  } {
+    const perTanggal = new Map<string, BarisLaporanPembelian[]>();
+    for (const b of baris) {
+      const grup = perTanggal.get(b.tanggal) ?? [];
+      grup.push(b);
+      perTanggal.set(b.tanggal, grup);
+    }
+    let totalModal = 0;
+    let totalSisaKas = 0;
+    for (const grup of perTanggal.values()) {
+      const terurut = [...grup].sort((a, b) => a.nomorShift - b.nomorShift);
+      totalModal += terurut[0].modalDiberikan;
+      totalSisaKas += terurut[terurut.length - 1].sisaKas;
+    }
+    return { totalModal, totalSisaKas };
   }
 
   async function handleEkspor(jenis: "excel" | "pdf") {
@@ -1599,9 +1656,8 @@ function EksporLaporanPembelianKartu() {
         showToast("error", "Tidak ada belanja pada rentang tanggal itu.");
         return;
       }
-      const totalModal = baris.reduce((t, b) => t + b.modalDiberikan, 0);
+      const { totalModal, totalSisaKas } = hitungTotalModalDanSisaKas(baris);
       const totalBelanja = baris.reduce((t, b) => t + b.totalBelanja, 0);
-      const totalSisaKas = baris.reduce((t, b) => t + b.sisaKas, 0);
       const opsi: OpsiLaporan<BarisLaporanPembelian> = {
         judul: "LAPORAN BELANJA & PEMBELIAN",
         periode: `${formatTanggalPanjangId(dariTanggal)} s/d ${formatTanggalPanjangId(sampaiTanggal)}`,
@@ -1610,6 +1666,7 @@ function EksporLaporanPembelianKartu() {
         kolom: [
           { judul: "Tanggal", ambil: (b) => b.tanggal, lebar: 14 },
           { judul: "Purchasing", ambil: (b) => b.purchasingNama, lebar: 18 },
+          { judul: "Shift", ambil: (b) => b.nomorShift, angka: true, lebar: 8 },
           { judul: "Sumber Dana", ambil: (b) => (b.sumberDana === "saldo_finance" ? "Saldo Finance" : "Kas Resto/Outlet"), lebar: 18 },
           { judul: "Modal Diberikan", ambil: (b) => b.modalDiberikan, angka: true, lebar: 16 },
           { judul: "Total Belanja", ambil: (b) => b.totalBelanja, angka: true, lebar: 16 },
@@ -1619,9 +1676,15 @@ function EksporLaporanPembelianKartu() {
         baris,
         ringkasan: [
           { label: "Jumlah Sesi Belanja", nilai: String(baris.length) },
-          { label: "Total Modal Diberikan", nilai: formatRupiah(totalModal) },
+          {
+            label: "Total Modal Diberikan",
+            nilai: `${formatRupiah(totalModal)} (hanya modal shift pertama tiap hari — shift lanjutan tidak dihitung dobel)`,
+          },
           { label: "Total Belanja", nilai: formatRupiah(totalBelanja) },
-          { label: "Total Sisa Kas", nilai: formatRupiah(totalSisaKas) },
+          {
+            label: "Total Sisa Kas",
+            nilai: `${formatRupiah(totalSisaKas)} (hanya sisa kas shift terakhir tiap hari)`,
+          },
         ],
       };
       if (jenis === "excel") await eksporExcel(opsi);
