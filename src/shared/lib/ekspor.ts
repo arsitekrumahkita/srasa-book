@@ -33,6 +33,18 @@ export interface KolomLaporan<T> {
   angka?: boolean;
 }
 
+/** Tabel TAMBAHAN opsional, dicetak SETELAH tabel utama tapi SEBELUM
+ *  ringkasan — dipakai untuk laporan yang perlu lebih dari satu tabel
+ *  sekaligus (mis. Cash Opname: tabel utama Kas Keluar per kategori +
+ *  tabel tambahan Rincian Pemakaian Bahan). Tipe barisnya SENGAJA
+ *  `unknown` (bukan generik terikat ke T laporan utama) — setiap
+ *  tabel tambahan bebas punya bentuk data sendiri. */
+export interface TabelTambahan {
+  judul: string;
+  kolom: KolomLaporan<unknown>[];
+  baris: unknown[];
+}
+
 export interface OpsiLaporan<T> {
   judul: string;
   /** mis. "12 Agustus 2026 s/d 12 September 2026" */
@@ -40,6 +52,8 @@ export interface OpsiLaporan<T> {
   perusahaan: DetailPerusahaan;
   kolom: KolomLaporan<T>[];
   baris: T[];
+  /** Tabel-tabel tambahan, dicetak berurutan setelah tabel utama. */
+  tabelTambahan?: TabelTambahan[];
   /** Baris ringkasan di bawah tabel, mis. Total Omset. */
   ringkasan?: { label: string; nilai: string }[];
   /** Nama berkas tanpa ekstensi. */
@@ -139,36 +153,60 @@ export async function eksporExcel<T>(opsi: OpsiLaporan<T>): Promise<void> {
   tambahBarisKop(`Periode: ${opsi.periode}`, 10, false);
   ws.addRow([]);
 
-  // --- HEADER TABEL ---
-  const barisHeader = ws.addRow(opsi.kolom.map((k) => k.judul));
-  barisHeader.eachCell((sel) => {
-    sel.font = { bold: true, color: { argb: "FFFFFFFF" } };
-    sel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF047857" } };
-    sel.alignment = { horizontal: "center", vertical: "middle" };
-    sel.border = {
-      top: { style: "thin" },
-      left: { style: "thin" },
-      bottom: { style: "thin" },
-      right: { style: "thin" },
-    };
-  });
-
-  // --- ISI TABEL ---
-  for (const baris of opsi.baris) {
-    const barisExcel = ws.addRow(opsi.kolom.map((k) => k.ambil(baris)));
-    barisExcel.eachCell((sel, kolomKe) => {
-      const kolom = opsi.kolom[kolomKe - 1];
+  // --- TABEL (dipakai untuk tabel utama MAUPUN setiap tabelTambahan,
+  // supaya keduanya identik gaya visualnya). ---
+  function tambahTabel<U>(kolom: KolomLaporan<U>[], baris: U[]) {
+    const barisHeader = ws.addRow(kolom.map((k) => k.judul));
+    barisHeader.eachCell((sel) => {
+      sel.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      sel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF047857" } };
+      sel.alignment = { horizontal: "center", vertical: "middle" };
       sel.border = {
-        top: { style: "hair" },
+        top: { style: "thin" },
         left: { style: "thin" },
-        bottom: { style: "hair" },
+        bottom: { style: "thin" },
         right: { style: "thin" },
       };
-      if (kolom?.angka) {
-        sel.numFmt = "#,##0";
-        sel.alignment = { horizontal: "right" };
-      }
     });
+
+    for (const baris1 of baris) {
+      const barisExcel = ws.addRow(kolom.map((k) => k.ambil(baris1)));
+      barisExcel.eachCell((sel, kolomKe) => {
+        const k = kolom[kolomKe - 1];
+        sel.border = {
+          top: { style: "hair" },
+          left: { style: "thin" },
+          bottom: { style: "hair" },
+          right: { style: "thin" },
+        };
+        if (k?.angka) {
+          sel.numFmt = "#,##0";
+          sel.alignment = { horizontal: "right" };
+        }
+      });
+    }
+
+    // Autofit lebar kolom tabel ini juga — sama seperti tabel utama di
+    // bawah, supaya tabel tambahan tidak pernah terpotong/kosong.
+    kolom.forEach((k, indeks) => {
+      const isiTerpanjang = Math.max(
+        k.judul.length,
+        ...baris.map((b) => panjangTampil(k.ambil(b), k.angka)),
+        0,
+      );
+      const lebarAutofit = Math.min(Math.max(isiTerpanjang + 3, 8), 60);
+      const kolomExcel = ws.getColumn(indeks + 1);
+      kolomExcel.width = Math.max(lebarAutofit, k.lebar ?? 0, kolomExcel.width ?? 0);
+    });
+  }
+
+  tambahTabel(opsi.kolom, opsi.baris);
+
+  // --- TABEL TAMBAHAN ---
+  for (const tabel of opsi.tabelTambahan ?? []) {
+    ws.addRow([]);
+    tambahBarisKop(tabel.judul, 11, true);
+    tambahTabel(tabel.kolom, tabel.baris);
   }
 
   // --- RINGKASAN ---
@@ -208,15 +246,10 @@ export async function eksporExcel<T>(opsi: OpsiLaporan<T>): Promise<void> {
     return Math.max(...String(nilai).split("\n").map((baris) => baris.length));
   }
 
-  opsi.kolom.forEach((kolom, indeks) => {
-    const isiTerpanjang = Math.max(
-      kolom.judul.length,
-      ...opsi.baris.map((b) => panjangTampil(kolom.ambil(b), kolom.angka)),
-      0,
-    );
-    const lebarAutofit = Math.min(Math.max(isiTerpanjang + 3, 8), 60);
-    ws.getColumn(indeks + 1).width = Math.max(lebarAutofit, kolom.lebar ?? 0);
-  });
+  // Lebar kolom tabel utama & setiap tabelTambahan sudah di-autofit
+  // masing-masing di dalam tambahTabel() di atas (dipanggil SEBELUM
+  // fungsi panjangTampil ini secara tertulis, tapi tetap valid berkat
+  // hoisting deklarasi function di JavaScript).
 
   const buffer = await wb.xlsx.writeBuffer();
   unduh(
@@ -286,29 +319,48 @@ export async function eksporPdf<T>(opsi: OpsiLaporan<T>): Promise<void> {
   dok.setTextColor(70, 70, 70);
   dok.text(`Periode: ${opsi.periode}`, tengah, y, { align: "center" });
 
-  // --- TABEL ---
-  autoTable(dok, {
-    startY: y + 6,
-    margin: { left: margin, right: margin, bottom: 22 },
-    head: [opsi.kolom.map((k) => k.judul)],
-    body: opsi.baris.map((baris) =>
-      opsi.kolom.map((k) => {
-        const nilai = k.ambil(baris);
-        return typeof nilai === "number" ? nilai.toLocaleString("id-ID") : String(nilai);
-      }),
-    ),
-    styles: { fontSize: 8.5, cellPadding: 2, lineColor: [226, 232, 240], lineWidth: 0.1 },
-    headStyles: { fillColor: [4, 120, 87], textColor: 255, fontStyle: "bold", halign: "center" },
-    alternateRowStyles: { fillColor: [248, 250, 252] },
-    columnStyles: Object.fromEntries(
-      opsi.kolom.map((k, i) => [i, { halign: k.angka ? "right" : "left" }]),
-    ),
-  });
+  // --- TABEL (fungsi dipakai ulang untuk tabel utama MAUPUN setiap
+  // tabelTambahan, supaya gaya visualnya identik). ---
+  function tinggiHalamanSaatIni(): number {
+    return (dok as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y + 6;
+  }
+
+  function tambahTabel<U>(kolom: KolomLaporan<U>[], baris: U[], startY: number) {
+    autoTable(dok, {
+      startY,
+      margin: { left: margin, right: margin, bottom: 22 },
+      head: [kolom.map((k) => k.judul)],
+      body: baris.map((b) =>
+        kolom.map((k) => {
+          const nilai = k.ambil(b);
+          return typeof nilai === "number" ? nilai.toLocaleString("id-ID") : String(nilai);
+        }),
+      ),
+      styles: { fontSize: 8.5, cellPadding: 2, lineColor: [226, 232, 240], lineWidth: 0.1 },
+      headStyles: { fillColor: [4, 120, 87], textColor: 255, fontStyle: "bold", halign: "center" },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: Object.fromEntries(kolom.map((k, i) => [i, { halign: k.angka ? "right" : "left" }])),
+    });
+  }
+
+  tambahTabel(opsi.kolom, opsi.baris, y + 6);
+
+  // --- TABEL TAMBAHAN ---
+  for (const tabel of opsi.tabelTambahan ?? []) {
+    let ySubJudul = tinggiHalamanSaatIni() + 8;
+    if (ySubJudul > tinggiHalaman - 30) {
+      dok.addPage();
+      ySubJudul = 20;
+    }
+    dok.setFont("helvetica", "bold");
+    dok.setFontSize(10.5);
+    dok.setTextColor(15, 23, 42);
+    dok.text(tabel.judul, margin, ySubJudul);
+    tambahTabel(tabel.kolom, tabel.baris, ySubJudul + 3);
+  }
 
   // --- RINGKASAN ---
-  const setelahTabel =
-    (dok as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y + 6;
-  let yRingkasan = setelahTabel + 8;
+  let yRingkasan = tinggiHalamanSaatIni() + 8;
   if (opsi.ringkasan?.length) {
     dok.setFontSize(9.5);
     dok.setTextColor(15, 23, 42);

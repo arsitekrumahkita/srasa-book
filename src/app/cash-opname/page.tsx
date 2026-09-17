@@ -48,8 +48,9 @@ import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
-import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
+import { eksporExcel, eksporPdf, type OpsiLaporan, type TabelTambahan } from "@/shared/lib/ekspor";
 import { formatTanggalPanjangId } from "@/shared/lib/periode-laporan";
+import { ambilResepMenu } from "@/shared/lib/resep";
 
 /** Sinkron dengan MODAL_KAS_AWAL_HARIAN di src/app/shift/page.tsx —
  *  petty cash flat per shift, atas persetujuan Owner TETAP tinggal di
@@ -116,6 +117,16 @@ interface BahanMenipis {
   batasMinimalStok: number;
 }
 
+/** Satu baris Rincian Pemakaian Bahan — dihitung OTOMATIS dari
+ *  penjualan hari itu (lihat komentar panjang di dekat pemuatan
+ *  data), BUKAN diinput manual. */
+interface PemakaianBahan {
+  bahanId: string;
+  bahanNama: string;
+  satuan: string;
+  totalTakaran: number;
+}
+
 const LABEL_JENIS_BANDING: Record<JenisBanding, string> = {
   revisi_nota: "Revisi Nota",
   transaksi_belum_tercatat: "Transaksi Belum Tercatat",
@@ -150,6 +161,7 @@ function CashOpnameIsi() {
   const [saldoFinanceSaatIni, setSaldoFinanceSaatIni] = useState(0);
   const [transaksiFinanceMasuk, setTransaksiFinanceMasuk] = useState(0);
   const [transaksiFinanceKeluar, setTransaksiFinanceKeluar] = useState(0);
+  const [pemakaianBahan, setPemakaianBahan] = useState<PemakaianBahan[]>([]);
 
   useEffect(() => {
     let dibatalkan = false;
@@ -199,6 +211,76 @@ function CashOpnameIsi() {
         }
       }
       setKasKeluarBaris(Array.from(kategoriMap.entries()).map(([kategori, v]) => ({ kategori, ...v })));
+
+      // Rincian Pemakaian Bahan — dihitung OTOMATIS dari penjualan hari
+      // itu (permintaan pemilik cafe), BUKAN input manual. Untuk setiap
+      // baris penjualan (semua shift TERKUNCI hari ini):
+      //   unit yang MEMAKAI bahan = qty + qtyBonus + qtyRefund. Ketiganya
+      //   ikut dihitung karena SEMUA sudah memotong stok bahan saat
+      //   pertama kali dijual (lihat ubahQtyReguler/ubahQtyBonus di
+      //   src/app/shift/page.tsx) — qtyRefund TIDAK mengembalikan bahan
+      //   ke stok (produknya sudah terlanjur dibuat), jadi harus tetap
+      //   dihitung terpakai di sini, bukan cuma omset (qty) saja.
+      //   - Item REGULER (menuId): dikalikan takaran dari resep menu
+      //     tersebut (Kalkulator HPP) — bahan MAUPUN kemasan (cup,
+      //     sedotan, dst ikut resep sebagai jenis "kemasan").
+      //   - Item MANUAL ("Item Lain" dari Kasir): pakai bahanDipakai yang
+      //     sudah tersimpan di dokumen penjualannya sendiri (bukan resep
+      //     menu, karena item ini tidak terdaftar di Kelola Produk).
+      const penjualanSnaps = await Promise.all(
+        shiftTerkunci.map((s) => getDocs(collection(db, "outlets", outletId, "shift", s.id, "penjualan"))),
+      );
+      if (dibatalkan) return;
+      const pemakaianMap = new Map<string, PemakaianBahan>();
+      const menuIdPerlu = new Set<string>();
+      type BarisPenjualanUntukBahan = { menuId: string; unit: number };
+      const barisMenu: BarisPenjualanUntukBahan[] = [];
+      for (const snap of penjualanSnaps) {
+        for (const d of snap.docs) {
+          const data = d.data();
+          const unit = (data.qty ?? 0) + (data.qtyBonus ?? 0) + (data.qtyRefund ?? 0);
+          if (unit <= 0) continue;
+          if (data.manual && Array.isArray(data.bahanDipakai)) {
+            for (const b of data.bahanDipakai as { bahanId: string; bahanNama: string; takaran: number; satuan: string }[]) {
+              if (!b.bahanId || !(b.takaran > 0)) continue;
+              const existing = pemakaianMap.get(b.bahanId) ?? {
+                bahanId: b.bahanId,
+                bahanNama: b.bahanNama,
+                satuan: b.satuan,
+                totalTakaran: 0,
+              };
+              existing.totalTakaran += b.takaran * unit;
+              pemakaianMap.set(b.bahanId, existing);
+            }
+          } else if (data.menuId) {
+            menuIdPerlu.add(data.menuId);
+            barisMenu.push({ menuId: data.menuId, unit });
+          }
+        }
+      }
+      const resepPerMenu = new Map<string, Awaited<ReturnType<typeof ambilResepMenu>>>();
+      await Promise.all(
+        Array.from(menuIdPerlu).map(async (menuId) => {
+          resepPerMenu.set(menuId, await ambilResepMenu(outletId, menuId));
+        }),
+      );
+      if (dibatalkan) return;
+      for (const { menuId, unit } of barisMenu) {
+        for (const r of resepPerMenu.get(menuId) ?? []) {
+          if (!r.bahanId || r.takaran <= 0) continue;
+          const existing = pemakaianMap.get(r.bahanId) ?? {
+            bahanId: r.bahanId,
+            bahanNama: r.bahanNama,
+            satuan: r.satuan,
+            totalTakaran: 0,
+          };
+          existing.totalTakaran += r.takaran * unit;
+          pemakaianMap.set(r.bahanId, existing);
+        }
+      }
+      setPemakaianBahan(
+        Array.from(pemakaianMap.values()).sort((a, b) => b.totalTakaran - a.totalTakaran),
+      );
 
       setBelanjaHari(
         belanjaSnap.docs.map((d) => ({
@@ -303,6 +385,17 @@ function CashOpnameIsi() {
         { judul: "Total", ambil: (b) => b.total, angka: true, lebar: 16 },
       ],
       baris: kasKeluarBaris,
+      tabelTambahan: [
+        {
+          judul: "Rincian Pemakaian Bahan (Otomatis dari Penjualan)",
+          kolom: [
+            { judul: "Bahan", ambil: (b) => (b as PemakaianBahan).bahanNama, lebar: 24 },
+            { judul: "Terpakai", ambil: (b) => (b as PemakaianBahan).totalTakaran, angka: true, lebar: 14 },
+            { judul: "Satuan", ambil: (b) => (b as PemakaianBahan).satuan, lebar: 10 },
+          ],
+          baris: pemakaianBahan,
+        } satisfies TabelTambahan,
+      ],
       ringkasan: [
         { label: "Jumlah Shift Ditutup", nilai: String(jumlahShift) },
         { label: "Petty Cash (tinggal di laci)", nilai: `${formatRupiah(pettyCashTotal)} (${jumlahShift} x ${formatRupiah(MODAL_KAS_AWAL_HARIAN)})` },
@@ -453,6 +546,27 @@ function CashOpnameIsi() {
                       {b.kategori} <span className="text-xs text-slate-400">({b.jumlahEntri}x)</span>
                     </span>
                     <span className="font-medium tabular-nums text-slate-900">{formatRupiah(b.total)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-base font-semibold text-slate-900">Rincian Pemakaian Bahan</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Dihitung otomatis dari resep menu × jumlah terjual hari ini (semua shift terkunci) — termasuk bahan baku maupun kemasan (cup, sedotan, dst).
+            </p>
+            {pemakaianBahan.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-500">Belum ada pemakaian bahan tercatat.</p>
+            ) : (
+              <ul className="mt-3 divide-y divide-slate-100">
+                {pemakaianBahan.map((b) => (
+                  <li key={b.bahanId} className="flex items-center justify-between py-1.5 text-sm">
+                    <span className="text-slate-700">{b.bahanNama}</span>
+                    <span className="font-medium tabular-nums text-slate-900">
+                      {b.totalTakaran.toLocaleString("id-ID")} {b.satuan}
+                    </span>
                   </li>
                 ))}
               </ul>
