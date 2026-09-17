@@ -167,8 +167,12 @@ function BackupDataIsi() {
           </div>
         ) : (
           <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
-            Mencakup SEMUA Outlet yang pernah dibuat (termasuk yang sedang
-            dinonaktifkan) dalam satu file JSON, dikelompokkan per Outlet.
+            Mencakup SEMUA Outlet asli yang pernah dibuat (termasuk yang
+            sedang dinonaktifkan) dalam satu file JSON, dikelompokkan per
+            Outlet. Outlet Demo/Beta (Data Dummy) TIDAK ikut tercakup di
+            sini — kalau ingin mencadangkannya juga, pilih cakupan
+            &quot;Satu Outlet saja&quot; lalu pilih Outlet Demo/Beta secara
+            khusus.
           </p>
         )}
 

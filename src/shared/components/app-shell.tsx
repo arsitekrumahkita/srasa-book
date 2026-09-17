@@ -30,6 +30,7 @@ import {
   Building2,
   CalendarClock,
   DatabaseBackup,
+  FlaskConical,
   Landmark,
   LayoutDashboard,
   LogOut,
@@ -146,6 +147,18 @@ const NAV_ITEMS: NavItem[] = [
     khususOwnerMurni: true,
   },
   {
+    href: "/data-dummy",
+    label: "Data Dummy (Beta)",
+    icon: FlaskConical,
+    // Buat/hapus Outlet Demo berisi data contoh untuk ujicoba fitur
+    // baru TANPA menyentuh data asli (permintaan pemilik cafe) — lihat
+    // src/shared/lib/data-dummy.ts & src/app/data-dummy/page.tsx.
+    // Khusus Owner murni: firestore.rules cuma mengizinkan isOwner()
+    // menulis dokumen outlets/{outletId} itu sendiri.
+    peran: ["superadmin"],
+    khususOwnerMurni: true,
+  },
+  {
     href: "/backup-data",
     label: "Backup Data",
     icon: DatabaseBackup,
@@ -177,6 +190,7 @@ const LABEL_PERAN: Record<PeranPengguna, string> = {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [drawerTerbuka, setDrawerTerbuka] = useState(false);
+  const { outletDemo } = useOutlet();
 
   return (
     <div className="min-h-full flex-1 bg-[var(--color-app-bg)]">
@@ -205,7 +219,23 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <Sidebar drawerTerbuka={drawerTerbuka} onTutupDrawer={() => setDrawerTerbuka(false)} />
 
-      <div className="flex min-h-full flex-1 flex-col md:pl-64">{children}</div>
+      <div className="flex min-h-full flex-1 flex-col md:pl-64">
+        {/* Pita MODE DATA DUMMY — muncul di SEMUA halaman selagi Outlet
+            aktif adalah Outlet Demo/Beta (permintaan pemilik cafe: harus
+            jelas kelihatan supaya tidak pernah keliru sama data asli).
+            sticky supaya tetap kelihatan walau halamannya panjang &
+            di-scroll. */}
+        {outletDemo ? (
+          <div
+            role="status"
+            className="sticky top-0 z-20 flex items-center justify-center gap-1.5 bg-amber-400 px-3 py-1.5 text-center text-xs font-bold uppercase tracking-wide text-amber-950 md:top-0"
+          >
+            <FlaskConical className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            Mode Data Dummy (Beta) — bukan data asli, aman untuk ujicoba
+          </div>
+        ) : null}
+        {children}
+      </div>
 
       {/* Timer idle 60 menit — dipasang di sini supaya berlaku di SEMUA
           halaman terautentikasi sekaligus (setiap halaman memakai
@@ -216,12 +246,19 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 function BrandTopbarMobile() {
-  const { outletNama } = useOutlet();
+  const { outletNama, outletDemo } = useOutlet();
   return (
     <span className="min-w-0 leading-tight">
       <span className="block truncate text-sm font-bold text-emerald-700">{NAMA_BRAND}</span>
       {outletNama ? (
-        <span className="block truncate text-[11px] text-slate-500">{outletNama}</span>
+        <span className="block truncate text-[11px] text-slate-500">
+          {outletNama}
+          {outletDemo ? (
+            <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-800">
+              Demo
+            </span>
+          ) : null}
+        </span>
       ) : null}
     </span>
   );
@@ -237,7 +274,7 @@ function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { profil } = useAuth();
-  const { outletNama, bisaGantiOutlet, gantiOutlet } = useOutlet();
+  const { outletNama, bisaGantiOutlet, gantiOutlet, outletDemo } = useOutlet();
   const { showToast } = useToast();
 
   const items = NAV_ITEMS.filter((item) => profil && item.peran.includes(profil.peran));
@@ -287,9 +324,19 @@ function Sidebar({
       </div>
 
       {outletNama ? (
-        <div className="mx-4 mb-4 flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2">
+        <div
+          className={[
+            "mx-4 mb-4 flex items-center justify-between gap-2 rounded-xl px-3 py-2",
+            outletDemo ? "border border-amber-300 bg-amber-50" : "bg-slate-50",
+          ].join(" ")}
+        >
           <span className="min-w-0">
-            <span className="block text-[10px] uppercase tracking-wide text-slate-400">Outlet</span>
+            <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-slate-400">
+              Outlet
+              {outletDemo ? (
+                <span className="rounded-full bg-amber-400 px-1.5 py-0.5 font-bold text-amber-950">Demo</span>
+              ) : null}
+            </span>
             <span className="block truncate text-sm font-semibold text-slate-800">{outletNama}</span>
           </span>
           {bisaGantiOutlet ? (

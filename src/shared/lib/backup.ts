@@ -104,12 +104,23 @@ export interface RingkasanOutlet {
   nama: string;
 }
 
-/** Daftar SEMUA Outlet (termasuk yang nonaktif) — dipakai backup
+/** Daftar SEMUA Outlet ASLI (termasuk yang nonaktif) — dipakai backup
  *  cakupan "Semua Outlet" supaya tidak ada Outlet yang lolos
- *  tercadangkan hanya karena sedang dinonaktifkan sementara. */
+ *  tercadangkan hanya karena sedang dinonaktifkan sementara.
+ *
+ *  Outlet Demo/Beta (`demo: true`, lihat src/shared/lib/data-dummy.ts)
+ *  SENGAJA DIKECUALIKAN dari sini — backup "Semua Outlet" dimaksudkan
+ *  sebagai cadangan data BISNIS ASLI, jadi data ujicoba/dummy tidak
+ *  boleh ikut tercampur ke dalamnya tanpa disadari Owner (permintaan
+ *  eksplisit pemilik cafe: aktivitas Data Dummy tidak boleh "bocor" ke
+ *  data aktual). Kalau Owner memang ingin mencadangkan Outlet Demo itu
+ *  sendiri, tetap bisa lewat cakupan "Satu Outlet" dan memilihnya
+ *  langsung dari daftar (namanya sudah ditandai jelas "🧪 Demo/Beta"). */
 export async function ambilDaftarSemuaOutlet(): Promise<RingkasanOutlet[]> {
   const snap = await getDocs(collection(db, "outlets"));
-  return snap.docs.map((d) => ({ id: d.id, nama: (d.data().nama as string) ?? d.id }));
+  return snap.docs
+    .filter((d) => d.data().demo !== true)
+    .map((d) => ({ id: d.id, nama: (d.data().nama as string) ?? d.id }));
 }
 
 /** Backup SEMUA Outlet sekaligus, dikelompokkan per outletId. */

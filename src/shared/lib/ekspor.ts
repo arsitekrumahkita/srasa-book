@@ -360,21 +360,70 @@ export async function eksporPdf<T>(opsi: OpsiLaporan<T>): Promise<void> {
   }
 
   // --- RINGKASAN ---
+  //
+  // PERBAIKAN LAYOUT (permintaan pemilik cafe: hasil ekspor harus rapi
+  // & mudah dibaca): nilai ringkasan yang PENDEK (mis. cuma nominal
+  // Rupiah) tetap dicetak sebaris dengan label, rata kanan, seperti
+  // semula. Tapi nilai yang PANJANG (mis. catatan penjelas, daftar
+  // bahan menipis yang digabung koma) dulu dicetak mentah dengan
+  // align:"right" TANPA dipotong ke baris baru — kalau lebih panjang
+  // dari lebar halaman, teksnya melebar ke KIRI sampai menabrak/
+  // menimpa labelnya sendiri, tidak terbaca. Sekarang nilai panjang
+  // dipindah ke baris sendiri di bawah labelnya, dibungkus otomatis
+  // (splitTextToSize) supaya selalu muat dalam margin halaman.
   let yRingkasan = tinggiHalamanSaatIni() + 8;
   if (opsi.ringkasan?.length) {
-    dok.setFontSize(9.5);
-    dok.setTextColor(15, 23, 42);
+    const lebarTersedia = lebarHalaman - margin * 2;
     for (const item of opsi.ringkasan) {
-      // Ringkasan yang kepepet di kaki halaman dipindah ke halaman baru,
-      // supaya tidak pernah tercetak menimpa footer.
-      if (yRingkasan > tinggiHalaman - 28) {
-        dok.addPage();
-        yRingkasan = 25;
+      // Baris pemisah seksi (label diisi, nilai sengaja kosong — lihat
+      // pola "— TUNAI —" dkk di cash-opname/page.tsx) dicetak sebagai
+      // sub-judul kecil, bukan pasangan label/nilai.
+      if (item.nilai === "") {
+        if (yRingkasan > tinggiHalaman - 28) {
+          dok.addPage();
+          yRingkasan = 25;
+        }
+        yRingkasan += 1.5;
+        dok.setFont("helvetica", "bold");
+        dok.setFontSize(8.5);
+        dok.setTextColor(4, 120, 87);
+        dok.text(item.label, margin, yRingkasan);
+        yRingkasan += 5.5;
+        continue;
       }
+
       dok.setFont("helvetica", "bold");
-      dok.text(item.label, margin, yRingkasan);
-      dok.text(item.nilai, lebarHalaman - margin, yRingkasan, { align: "right" });
-      yRingkasan += 6;
+      dok.setFontSize(9.5);
+      const cukupSebaris = dok.getTextWidth(item.nilai) <= lebarTersedia * 0.55;
+
+      if (cukupSebaris) {
+        if (yRingkasan > tinggiHalaman - 28) {
+          dok.addPage();
+          yRingkasan = 25;
+        }
+        dok.setTextColor(15, 23, 42);
+        dok.text(item.label, margin, yRingkasan);
+        dok.text(item.nilai, lebarHalaman - margin, yRingkasan, { align: "right" });
+        yRingkasan += 6;
+      } else {
+        const potongan = dok.splitTextToSize(item.nilai, lebarTersedia - 3) as string[];
+        const tinggiButuh = 5 + potongan.length * 4.3 + 2;
+        if (yRingkasan + tinggiButuh > tinggiHalaman - 28) {
+          dok.addPage();
+          yRingkasan = 25;
+        }
+        dok.setTextColor(15, 23, 42);
+        dok.text(item.label, margin, yRingkasan);
+        yRingkasan += 5;
+        dok.setFont("helvetica", "normal");
+        dok.setFontSize(9);
+        dok.setTextColor(51, 65, 85);
+        for (const baris of potongan) {
+          dok.text(baris, margin + 3, yRingkasan);
+          yRingkasan += 4.3;
+        }
+        yRingkasan += 2;
+      }
     }
   }
 

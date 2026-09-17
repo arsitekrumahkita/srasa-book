@@ -46,6 +46,13 @@ export interface Outlet {
   nama: string;
   alamat: string;
   aktif: boolean;
+  /** true HANYA untuk Outlet Demo/Beta (dibuat lewat halaman Data
+   *  Dummy, khusus Owner) — dipakai untuk menandai badge "DEMO" di
+   *  pengalih Outlet & pita peringatan di AppShell, supaya siapa pun
+   *  yang sedang bekerja di Outlet ini tidak keliru mengira sedang
+   *  melihat data asli. TIDAK memengaruhi firestore.rules (Outlet Demo
+   *  tunduk aturan sama seperti Outlet biasa) — murni penanda visual. */
+  demo?: boolean;
 }
 
 function kunciOutletTerpilih(uid: string): string {
@@ -68,6 +75,9 @@ interface OutletContextValue {
   /** true kalau akun ini bisa berpindah Outlet (Owner ATAU Finance —
    *  keduanya "terpusat", lihat komentar kepala berkas). */
   bisaGantiOutlet: boolean;
+  /** true kalau Outlet yang SEDANG aktif (outletId di atas) adalah
+   *  Outlet Demo/Beta — lihat catatan di interface Outlet.demo. */
+  outletDemo: boolean;
   pilihOutlet: (id: string) => void;
   /** Kembali ke layar pilih Outlet (dipakai pengalih Outlet Owner). */
   gantiOutlet: () => void;
@@ -79,6 +89,7 @@ const OutletContext = createContext<OutletContextValue>({
   memuat: true,
   daftarOutletAktif: [],
   bisaGantiOutlet: false,
+  outletDemo: false,
   pilihOutlet: () => {},
   gantiOutlet: () => {},
 });
@@ -132,6 +143,7 @@ export function OutletProvider({ children }: { children: ReactNode }) {
             nama: d.data().nama ?? "",
             alamat: d.data().alamat ?? "",
             aktif: d.data().aktif ?? true,
+            demo: d.data().demo ?? false,
           })),
         );
         setMemuatDaftar(false);
@@ -199,6 +211,10 @@ export function OutletProvider({ children }: { children: ReactNode }) {
     () => daftarOutletAktif.find((o) => o.id === outletId)?.nama ?? "",
     [daftarOutletAktif, outletId],
   );
+  const outletDemo = useMemo(
+    () => daftarOutletAktif.find((o) => o.id === outletId)?.demo ?? false,
+    [daftarOutletAktif, outletId],
+  );
 
   const memuat = !profil || memuatDaftar;
 
@@ -209,11 +225,12 @@ export function OutletProvider({ children }: { children: ReactNode }) {
       memuat,
       daftarOutletAktif,
       bisaGantiOutlet: !!bisaGantiOutlet,
+      outletDemo,
       pilihOutlet,
       gantiOutlet,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pilihOutlet/gantiOutlet dibuat ulang tiap render tapi hanya membaca `user` (lewat closure) yang sudah termasuk transitif lewat outletId/daftarOutletAktif; menaruhnya di deps hanya bikin value ini berubah tiap render tanpa manfaat.
-    [outletId, outletNama, memuat, daftarOutletAktif, bisaGantiOutlet],
+    [outletId, outletNama, memuat, daftarOutletAktif, bisaGantiOutlet, outletDemo],
   );
 
   return <OutletContext.Provider value={value}>{children}</OutletContext.Provider>;

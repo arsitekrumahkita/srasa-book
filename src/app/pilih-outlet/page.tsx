@@ -229,8 +229,13 @@ function PilihOutletIsi() {
                 <Building2 className="h-5 w-5" aria-hidden="true" />
               </span>
               <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold text-slate-900">
+                <span className="flex items-center gap-1.5 truncate text-sm font-semibold text-slate-900">
                   {outlet.nama}
+                  {outlet.demo ? (
+                    <span className="shrink-0 rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-950">
+                      Demo
+                    </span>
+                  ) : null}
                 </span>
                 {outlet.alamat ? (
                   <span className="block truncate text-xs text-slate-500">{outlet.alamat}</span>

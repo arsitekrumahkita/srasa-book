@@ -68,17 +68,16 @@ import {
   Gift,
   Loader2,
   Minus,
-  Package,
   Plus,
   RotateCcw,
   Save,
   TriangleAlert,
-  X,
 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
+import { SearchBar, cocokDenganPencarian } from "@/shared/components/search-bar";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
@@ -89,7 +88,8 @@ import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
 import { formatTanggalPanjangId } from "@/shared/lib/periode-laporan";
-import type { ResepItem, StokKasir } from "@/shared/types/inventaris";
+import type { ResepItem } from "@/shared/types/inventaris";
+import type { DetailPerusahaan } from "@/shared/types/perusahaan";
 
 /** Isi draf otomatis untuk form Tutup Shift (lihat TutupShiftKartu).
  *  Omset Non-Tunai TIDAK ADA lagi di sini — sekarang dihitung otomatis
@@ -147,17 +147,18 @@ interface PenjualanItem {
   qtyRefundNonTunai: number;
   hargaJualSnapshot: number;
   subtotal: number;
-  /** true khusus untuk "Item Lain" (lihat ItemLainKartu) — penjualan
-   *  ad-hoc yang TIDAK terdaftar di Kelola Produk (menu_harga),
-   *  langsung dipotong dari stok bahan baku yang dipilih manual saat
-   *  itu juga. undefined/false untuk penjualan reguler dari daftar
-   *  menu — field ini SENGAJA tidak memengaruhi kalkulasi Omset/HPP
-   *  apa pun (qty/subtotal/qtyTunai dst tetap dihitung sama seperti
-   *  penjualan biasa), hanya penanda asal-usul baris untuk tampilan. */
+  /** true khusus untuk bekas fitur "Item Lain (Manual)" — sudah DIHAPUS
+   *  dari layar Shift ini atas permintaan pemilik cafe (Kasir sekarang
+   *  hanya boleh menjual dari daftar Kelola Produk), tapi field ini
+   *  TETAP dipertahankan di tipe data supaya dokumen `penjualan` lama
+   *  yang sudah tercatat `manual: true` tetap terbaca normal di Laporan
+   *  & rekonsiliasi bahan baku (lihat cash-opname/page.tsx). Tidak ada
+   *  jalur baru yang menulis true lagi setelah penghapusan ini. */
   manual?: boolean;
-  /** Bahan baku yang dipotong untuk SATU unit "Item Lain" ini — dicatat
-   *  di dokumen penjualannya sendiri (bukan resep menu) supaya riwayat
-   *  tetap jelas bahan apa saja yang terpakai untuk item ad-hoc ini. */
+  /** Bahan baku yang dipotong untuk SATU unit penjualan manual (bekas
+   *  fitur "Item Lain") — dicatat di dokumen penjualannya sendiri
+   *  (bukan resep menu) supaya riwayat lama tetap jelas bahan apa saja
+   *  yang terpakai. */
   bahanDipakai?: { bahanId: string; bahanNama: string; takaran: number; satuan: string }[];
 }
 
@@ -230,6 +231,59 @@ function tanggalHariIni(): string {
  *  oleh Kasir dan TIDAK mewarisi sisa kas hari sebelumnya (reset
  *  harian). Lihat komentar kepala file untuk alasannya. */
 const MODAL_KAS_AWAL_HARIAN = 500_000;
+
+interface DataSlipShift {
+  tanggal: string;
+  kasirNama: string;
+  modalKasAwal: number;
+  omsetTunai: number;
+  omsetNonTunai: number;
+  totalKasKeluar: number;
+  kasSeharusnya: number;
+  kasFisik: number;
+  selisihKas: number;
+  keteranganSelisih: string;
+}
+
+/** Menyusun opsi Ekspor (Excel/PDF) Slip Cash Opname Shift dari data yang
+ *  sudah tersedia di memori — DIPAKAI BERSAMA oleh SlipCashOpnameKasir
+ *  (layar baca-ulang setelah shift ditutup) DAN TutupShiftKartu (unduh
+ *  otomatis saat Pindah Shift/Tutup Kasir + tombol Ekspor manual selagi
+ *  shift masih berjalan) — supaya format slip PERSIS SAMA di ketiga
+ *  jalur itu, tidak ada duplikasi logika. */
+function bangunOpsiSlipCashOpname(
+  data: DataSlipShift,
+  kasKeluarBaris: { kategori: string; nominal: number; keterangan: string }[],
+  perusahaan: DetailPerusahaan,
+): OpsiLaporan<{ kategori: string; nominal: number; keterangan: string }> {
+  return {
+    judul: "SLIP CASH OPNAME SHIFT",
+    periode: formatTanggalPanjangId(data.tanggal),
+    perusahaan,
+    namaBerkas: `Cash-Opname-Shift_${data.tanggal}_${data.kasirNama}`,
+    kolom: [
+      { judul: "Kategori Kas Keluar", ambil: (b) => b.kategori, lebar: 20 },
+      { judul: "Nominal", ambil: (b) => b.nominal, angka: true, lebar: 14 },
+      { judul: "Keterangan", ambil: (b) => b.keterangan || "—", lebar: 24 },
+    ],
+    baris: kasKeluarBaris,
+    ringkasan: [
+      { label: "Kasir", nilai: data.kasirNama },
+      { label: "Modal Kas Awal (Petty Cash)", nilai: formatRupiah(data.modalKasAwal) },
+      { label: "Omset Tunai", nilai: formatRupiah(data.omsetTunai) },
+      { label: "Omset Non-Tunai", nilai: formatRupiah(data.omsetNonTunai) },
+      { label: "Total Kas Keluar", nilai: formatRupiah(data.totalKasKeluar) },
+      { label: "Kas Seharusnya", nilai: formatRupiah(data.kasSeharusnya) },
+      { label: "Kas Fisik", nilai: formatRupiah(data.kasFisik) },
+      { label: "Selisih Kas", nilai: formatRupiah(data.selisihKas) },
+      { label: "Keterangan Selisih", nilai: data.keteranganSelisih || "—" },
+      {
+        label: "Shift Berikutnya",
+        nilai: "Mulai dari Saldo Petty Cash Rp500.000 lagi (tidak diwariskan dari shift ini)",
+      },
+    ],
+  };
+}
 
 export default function ShiftPage() {
   return (
@@ -475,6 +529,7 @@ function ShiftIsi() {
       slotNama={shiftAktif.slotNama}
       slotJamMulai={shiftAktif.slotJamMulai}
       slotJamSelesai={shiftAktif.slotJamSelesai}
+      daftarSlotAktif={daftarSlotAktif}
     />
   );
 }
@@ -485,23 +540,21 @@ function ShiftBerjalan({
   slotNama,
   slotJamMulai,
   slotJamSelesai,
+  daftarSlotAktif,
 }: {
   shiftId: string;
   modalKasAwal: number;
   slotNama?: string;
   slotJamMulai?: string;
   slotJamSelesai?: string;
+  daftarSlotAktif: SlotShift[];
 }) {
   const outletId = useOutletId();
   const { showToast } = useToast();
   const [menuList, setMenuList] = useState<MenuHarga[]>([]);
   const [penjualan, setPenjualan] = useState<PenjualanItem[]>([]);
   const [kasKeluar, setKasKeluar] = useState<KasKeluarItem[]>([]);
-  // Cermin stok bahan baku (TANPA harga) — dipakai KHUSUS oleh
-  // ItemLainKartu di bawah, supaya Kasir bisa memilih bahan yang dipakai
-  // untuk "Item Lain" manual TANPA pernah membaca bahan_baku langsung
-  // (lihat komentar keamanan panjang di src/shared/lib/resep.ts).
-  const [stokKasir, setStokKasir] = useState<StokKasir[]>([]);
+  const [pencarianProduk, setPencarianProduk] = useState("");
   // Resep (bahan + takaran) per menu, di-cache begitu daftar menu
   // dimuat — dipakai untuk mengurangi/mengembalikan stok gudang
   // otomatis setiap qty penjualan berubah (lihat ubahQty di bawah).
@@ -598,25 +651,10 @@ function ShiftBerjalan({
       },
     );
 
-    const unsubStokKasir = onSnapshot(collection(db, "outlets", outletId, "stok_kasir"), (snap) => {
-      setStokKasir(
-        snap.docs.map((d) => ({
-          id: d.id,
-          nama: d.data().nama ?? "",
-          kategori: d.data().kategori ?? "Umum",
-          satuan: d.data().satuan === "pcs" ? "pcs" : "gram",
-          stokSaatIni: d.data().stokSaatIni ?? 0,
-          batasMinimalStok: d.data().batasMinimalStok ?? 0,
-          aktif: d.data().aktif ?? true,
-        })),
-      );
-    });
-
     return () => {
       unsubMenu();
       unsubPenjualan();
       unsubKasKeluar();
-      unsubStokKasir();
     };
   }, [shiftId, outletId]);
 
@@ -876,15 +914,53 @@ function ShiftBerjalan({
     }
   }
 
+  // Urutan grup Kategori diprioritaskan Minuman -> Makanan -> Snack
+  // (permintaan pemilik cafe) — `kategori` bebas teks (Owner mengetik
+  // sendiri lewat Kalkulator HPP, lihat komentar interface MenuHarga di
+  // kalkulator-hpp/page.tsx), jadi dicocokkan berdasar KATA yang
+  // terkandung (case-insensitive), bukan kecocokan persis. Kategori
+  // lain di luar tiga itu tetap tampil, hanya diurutkan setelahnya
+  // (alfabetis) supaya tidak ada produk yang tersembunyi.
+  const PRIORITAS_KATEGORI = ["minuman", "makanan", "snack"];
+  function prioritasKategori(kategori: string): number {
+    const k = kategori.toLowerCase();
+    const indeks = PRIORITAS_KATEGORI.findIndex((p) => k.includes(p));
+    return indeks === -1 ? PRIORITAS_KATEGORI.length : indeks;
+  }
+
+  const menuTersaring = useMemo(() => {
+    const kataKunci = pencarianProduk.trim();
+    if (!kataKunci) return menuList;
+    return menuList.filter((item) => cocokDenganPencarian(kataKunci, item.nama, item.kategori));
+  }, [menuList, pencarianProduk]);
+
   const menuPerKategori = useMemo(() => {
     const map = new Map<string, MenuHarga[]>();
-    for (const item of menuList) {
+    for (const item of menuTersaring) {
       const list = map.get(item.kategori) ?? [];
       list.push(item);
       map.set(item.kategori, list);
     }
-    return map;
-  }, [menuList]);
+    return new Map(
+      [...map.entries()].sort(([a], [b]) => {
+        const prioritasA = prioritasKategori(a);
+        const prioritasB = prioritasKategori(b);
+        if (prioritasA !== prioritasB) return prioritasA - prioritasB;
+        return a.localeCompare(b);
+      }),
+    );
+  }, [menuTersaring]);
+
+  // Preview Rekap Produk Terjual (sisi kanan) — HANYA produk yang benar-
+  // benar sudah laku (qty > 0) hari ini, produk yang belum tersentuh
+  // sama sekali TIDAK ditampilkan sesuai permintaan pemilik cafe.
+  const produkTerjual = useMemo(
+    () =>
+      [...penjualan]
+        .filter((p) => p.qty > 0)
+        .sort((a, b) => b.qty - a.qty || a.menuNama.localeCompare(b.menuNama)),
+    [penjualan],
+  );
 
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
@@ -916,6 +992,7 @@ function ShiftBerjalan({
       </div>
 
       <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-start">
         <section
           aria-labelledby="bagian-penjualan"
           className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
@@ -923,6 +1000,17 @@ function ShiftBerjalan({
           <h2 id="bagian-penjualan" className="text-base font-semibold text-slate-900">
             Input Penjualan
           </h2>
+          {menuList.length > 0 ? (
+            <div className="mt-3">
+              <SearchBar
+                id="cari-produk"
+                value={pencarianProduk}
+                onChange={setPencarianProduk}
+                placeholder="Cari nama produk atau kategori..."
+                ariaLabel="Cari produk"
+              />
+            </div>
+          ) : null}
           {menuList.length === 0 ? (
             <p className="mt-3 text-sm text-slate-500">
               Belum ada menu aktif. Tambahkan menu lewat Kalkulator HPP terlebih
@@ -932,6 +1020,10 @@ function ShiftBerjalan({
             <p className="mt-3 flex items-center gap-2 text-sm text-slate-500">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
               Menyiapkan data resep...
+            </p>
+          ) : menuPerKategori.size === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">
+              Tidak ada produk yang cocok dengan pencarian &quot;{pencarianProduk}&quot;.
             </p>
           ) : (
             <div className="mt-4 grid grid-cols-1 gap-5 xl:grid-cols-2 xl:items-start">
@@ -1132,11 +1224,43 @@ function ShiftBerjalan({
           )}
         </section>
 
-        <ItemLainKartu
-          shiftId={shiftId}
-          stokKasir={stokKasir}
-          daftarManual={penjualan.filter((p) => p.manual)}
-        />
+        <aside
+          aria-labelledby="bagian-rekap-terjual"
+          className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:sticky lg:top-4"
+        >
+          <h2 id="bagian-rekap-terjual" className="text-base font-semibold text-slate-900">
+            Preview Rekap Produk Terjual
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Hanya produk yang sudah laku hari ini — produk yang belum terjual tidak ditampilkan di sini.
+          </p>
+          {produkTerjual.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-500">Belum ada produk terjual di shift ini.</p>
+          ) : (
+            <ul className="mt-3 divide-y divide-slate-100">
+              {produkTerjual.map((item) => (
+                <li key={item.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-slate-900">{item.menuNama}</p>
+                    <p className="text-xs text-slate-500">
+                      {item.qty}× · Tunai {item.qtyTunai} · Non-Tunai {item.qtyNonTunai}
+                    </p>
+                  </div>
+                  <span className="shrink-0 font-semibold tabular-nums text-emerald-700">
+                    {formatRupiah(item.subtotal)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {produkTerjual.length > 0 ? (
+            <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-sm font-semibold text-slate-900">
+              <span>Total Omset</span>
+              <span className="tabular-nums">{formatRupiah(totalOmset)}</span>
+            </div>
+          ) : null}
+        </aside>
+        </div>
 
         <KasKeluarKartu shiftId={shiftId} daftar={kasKeluar} total={totalKasKeluar} />
 
@@ -1147,325 +1271,12 @@ function ShiftBerjalan({
           totalOmsetTunai={totalOmsetTunai}
           totalOmsetNonTunai={totalOmsetNonTunai}
           totalKasKeluar={totalKasKeluar}
+          kasKeluarBaris={kasKeluar}
+          slotJamMulai={slotJamMulai}
+          daftarSlotAktif={daftarSlotAktif}
         />
       </div>
     </main>
-  );
-}
-
-/**
- * Item Lain (Manual) — permintaan user: aplikasi ini SENGAJA tidak
- * memakai konsep "Stock Item" berupa produk baku yang wajib didaftarkan
- * dulu di Kelola Produk sebelum bisa dijual (Kelola Produk tetap ada,
- * tapi jadi preset opsional, bukan syarat). Prinsip akuntansinya:
- * sepanjang stok BAHAN BAKU di inventaris tersedia, transaksi tetap
- * bisa di-checkout — jadi di sini Kasir bisa ketik nama & harga jual
- * manual untuk item yang belum/tidak terdaftar sebagai menu (mis. jual
- * bahan mentah langsung, paket dadakan, titipan, dll), lalu PILIH
- * SENDIRI bahan baku mana & berapa takaran yang terpakai per unit —
- * stok gudang & cerminnya (stok_kasir) dipotong lewat mekanisme yang
- * SAMA PERSIS dengan Resep menu biasa (terapkanPerubahanStok, lihat
- * src/shared/lib/resep.ts), supaya akuntansi tetap berbasis bahan
- * baku, bukan "produk" yang datanya terpisah dari inventaris.
- *
- * Dicatat ke subkoleksi shift/{id}/penjualan YANG SAMA dengan penjualan
- * reguler (bukan koleksi terpisah) — bertanda `manual: true` — supaya
- * Total Omset, Rekap Metode Bayar, Tutup Shift, dan seluruh Laporan
- * yang SUDAH ADA otomatis ikut menghitungnya tanpa perlu diubah sama
- * sekali (field qty/subtotal/qtyTunai dst bentuknya identik).
- *
- * Checkout DIBLOKIR (beda dari penjualan menu reguler yang boleh
- * membuat stok minus, lihat komentar di belanja-nota/page.tsx) kalau
- * salah satu bahan yang dipilih stoknya tidak cukup — sesuai
- * permintaan eksplisit: "selama stok bahan baku ada baru bisa
- * checkout" berlaku juga sebaliknya: stok tidak cukup -> tidak bisa
- * checkout.
- */
-function ItemLainKartu({
-  shiftId,
-  stokKasir,
-  daftarManual,
-}: {
-  shiftId: string;
-  stokKasir: StokKasir[];
-  daftarManual: PenjualanItem[];
-}) {
-  const outletId = useOutletId();
-  const { showToast } = useToast();
-  const [namaItem, setNamaItem] = useState("");
-  const [hargaJual, setHargaJual] = useState(0);
-  const [qty, setQty] = useState(1);
-  const [metodeBayar, setMetodeBayar] = useState<"tunai" | "nonTunai">("tunai");
-  const [barisBahan, setBarisBahan] = useState<{ bahanId: string; takaranPerUnit: number }[]>([
-    { bahanId: "", takaranPerUnit: 0 },
-  ]);
-  const [sedangSimpan, setSedangSimpan] = useState(false);
-
-  function ubahBaris(indeks: number, perubahan: Partial<{ bahanId: string; takaranPerUnit: number }>) {
-    setBarisBahan((prev) => prev.map((b, i) => (i === indeks ? { ...b, ...perubahan } : b)));
-  }
-  function tambahBaris() {
-    setBarisBahan((prev) => [...prev, { bahanId: "", takaranPerUnit: 0 }]);
-  }
-  function hapusBaris(indeks: number) {
-    setBarisBahan((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== indeks)));
-  }
-
-  async function handleSimpan() {
-    if (!namaItem.trim()) {
-      showToast("error", "Nama item wajib diisi.");
-      return;
-    }
-    if (hargaJual <= 0) {
-      showToast("error", "Harga jual harus lebih besar dari 0.");
-      return;
-    }
-    if (qty <= 0) {
-      showToast("error", "Jumlah harus lebih besar dari 0.");
-      return;
-    }
-    const barisValid = barisBahan.filter((b) => b.bahanId && b.takaranPerUnit > 0);
-    if (barisValid.length === 0) {
-      showToast(
-        "error",
-        "Pilih minimal satu bahan baku yang dipakai — stok gudang tetap harus terhubung ke setiap penjualan.",
-      );
-      return;
-    }
-
-    // Cek stok CUKUP untuk setiap bahan SEBELUM checkout — SENGAJA
-    // diblokir kalau tidak cukup, sesuai prinsip di komentar atas.
-    for (const baris of barisValid) {
-      const bahan = stokKasir.find((b) => b.id === baris.bahanId);
-      const dibutuhkan = baris.takaranPerUnit * qty;
-      if (!bahan || bahan.stokSaatIni < dibutuhkan) {
-        showToast(
-          "error",
-          `Stok "${bahan?.nama ?? "bahan"}" tidak cukup — tersisa ${bahan?.stokSaatIni ?? 0} ${bahan?.satuan ?? ""}, butuh ${dibutuhkan}.`,
-        );
-        return;
-      }
-    }
-
-    setSedangSimpan(true);
-    try {
-      const subtotal = hargaJual * qty;
-      const resepSintetis: ResepItem[] = barisValid.map((b) => {
-        const bahan = stokKasir.find((x) => x.id === b.bahanId);
-        return {
-          id: b.bahanId,
-          bahanId: b.bahanId,
-          bahanNama: bahan?.nama ?? "",
-          takaran: b.takaranPerUnit,
-          satuan: bahan?.satuan ?? "gram",
-        };
-      });
-
-      await addDoc(collection(db, "outlets", outletId, "shift", shiftId, "penjualan"), {
-        menuId: null,
-        menuNama: namaItem.trim(),
-        kategori: "Item Lain",
-        qtyTunai: metodeBayar === "tunai" ? qty : 0,
-        qtyNonTunai: metodeBayar === "nonTunai" ? qty : 0,
-        qty,
-        subtotalTunai: metodeBayar === "tunai" ? subtotal : 0,
-        subtotalNonTunai: metodeBayar === "nonTunai" ? subtotal : 0,
-        qtyBonus: 0,
-        qtyRefund: 0,
-        qtyRefundNonTunai: 0,
-        hargaJualSnapshot: hargaJual,
-        subtotal,
-        manual: true,
-        bahanDipakai: resepSintetis.map((r) => ({
-          bahanId: r.bahanId,
-          bahanNama: r.bahanNama,
-          takaran: r.takaran,
-          satuan: r.satuan,
-        })),
-      });
-
-      // Potong stok gudang & cerminnya — mekanisme SAMA PERSIS dengan
-      // Resep menu biasa (gagal-lunak: kalau ini gagal, penjualan tetap
-      // tercatat, Kasir diberi tahu lewat toast peringatan terpisah,
-      // sama seperti pola ubahQtyReguler() di atas).
-      terapkanPerubahanStok(outletId, resepSintetis, qty).catch(() => {
-        showToast(
-          "warning",
-          `"${namaItem.trim()}" tercatat, tapi stok bahan baku gagal diperbarui otomatis — cek manual di Belanja & Nota.`,
-        );
-      });
-
-      showToast("success", `"${namaItem.trim()}" dicatat: ${formatRupiah(subtotal)}.`);
-      setNamaItem("");
-      setHargaJual(0);
-      setQty(1);
-      setBarisBahan([{ bahanId: "", takaranPerUnit: 0 }]);
-    } catch (error) {
-      showToast(
-        "error",
-        error instanceof Error ? `Gagal mencatat item: ${error.message}` : "Gagal mencatat item.",
-      );
-    } finally {
-      setSedangSimpan(false);
-    }
-  }
-
-  return (
-    <section
-      aria-labelledby="bagian-item-lain"
-      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
-    >
-      <h2 id="bagian-item-lain" className="flex items-center gap-2 text-base font-semibold text-slate-900">
-        <Package className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-        Item Lain (Manual)
-      </h2>
-      <p className="mt-1 text-xs text-slate-500">
-        Untuk penjualan yang belum terdaftar di Kelola Produk. Ketik nama & harga sendiri, lalu pilih bahan
-        baku yang terpakai — stok gudang tetap otomatis terpotong seperti biasa.
-      </p>
-
-      {daftarManual.length > 0 ? (
-        <ul className="mt-3 divide-y divide-slate-100">
-          {daftarManual.map((item) => (
-            <li key={item.id} className="flex items-center justify-between py-1.5 text-sm">
-              <span className="text-slate-700">
-                {item.menuNama} · {item.qty}× {formatRupiah(item.hargaJualSnapshot)}
-              </span>
-              <span className="font-medium tabular-nums text-slate-900">{formatRupiah(item.subtotal)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      {stokKasir.length === 0 ? (
-        <p className="mt-3 text-sm text-slate-500">
-          Belum ada Bahan Baku terdaftar — tambahkan lewat Belanja & Nota (Purchasing) dulu.
-        </p>
-      ) : (
-        <div className="mt-4 flex flex-col gap-3">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="sm:col-span-3">
-              <label htmlFor="il-nama" className="block text-sm font-semibold text-slate-800">
-                Nama Item
-              </label>
-              <input
-                id="il-nama"
-                type="text"
-                value={namaItem}
-                onChange={(e) => setNamaItem(e.target.value)}
-                placeholder="mis. Kopi Sachet Titipan"
-                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
-              />
-            </div>
-            <NumberField id="il-harga" label="Harga Jual / Unit" value={hargaJual} onChange={setHargaJual} prefix="Rp" />
-            <NumberField id="il-qty" label="Jumlah" value={qty} onChange={setQty} step={1} />
-            <div>
-              <span className="block text-sm font-semibold text-slate-800">Metode Bayar</span>
-              <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setMetodeBayar("tunai")}
-                  className={`inline-flex h-[42px] items-center justify-center gap-1.5 rounded-lg border text-sm font-medium motion-safe:transition active:scale-[0.99] ${
-                    metodeBayar === "tunai"
-                      ? "border-emerald-600 bg-emerald-50 text-emerald-900"
-                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  <Banknote className="h-3.5 w-3.5" aria-hidden="true" />
-                  Tunai
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMetodeBayar("nonTunai")}
-                  className={`inline-flex h-[42px] items-center justify-center gap-1.5 rounded-lg border text-sm font-medium motion-safe:transition active:scale-[0.99] ${
-                    metodeBayar === "nonTunai"
-                      ? "border-emerald-600 bg-emerald-50 text-emerald-900"
-                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  <CreditCard className="h-3.5 w-3.5" aria-hidden="true" />
-                  Non-Tunai
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <span className="block text-sm font-semibold text-slate-800">Bahan Baku Terpakai (per unit)</span>
-            <div className="mt-1.5 flex flex-col gap-2">
-              {barisBahan.map((baris, indeks) => {
-                const bahanTerpilih = stokKasir.find((b) => b.id === baris.bahanId);
-                return (
-                  <div key={indeks} className="flex items-center gap-2">
-                    <select
-                      aria-label={`Bahan baku baris ${indeks + 1}`}
-                      value={baris.bahanId}
-                      onChange={(e) => ubahBaris(indeks, { bahanId: e.target.value })}
-                      className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
-                    >
-                      <option value="">Pilih bahan...</option>
-                      {stokKasir.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.nama} (stok: {b.stokSaatIni} {b.satuan})
-                        </option>
-                      ))}
-                    </select>
-                    <div className="w-28 shrink-0">
-                      <NumberField
-                        id={`il-takaran-${indeks}`}
-                        label="Takaran"
-                        value={baris.takaranPerUnit}
-                        onChange={(v) => ubahBaris(indeks, { takaranPerUnit: v })}
-                        suffix={bahanTerpilih?.satuan}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => hapusBaris(indeks)}
-                      disabled={barisBahan.length <= 1}
-                      aria-label={`Hapus baris bahan ${indeks + 1}`}
-                      className="mt-5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-slate-400 motion-safe:transition active:scale-90 hover:bg-slate-100 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      <X className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <button
-              type="button"
-              onClick={tambahBaris}
-              className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 motion-safe:transition hover:text-emerald-800"
-            >
-              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-              Tambah bahan lain
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleSimpan}
-            disabled={sedangSimpan}
-            aria-busy={sedangSimpan}
-            className={[
-              "inline-flex h-[42px] w-full items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold text-white shadow-sm",
-              "motion-safe:transition motion-safe:duration-150",
-              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
-              sedangSimpan
-                ? "cursor-not-allowed bg-emerald-400"
-                : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
-            ].join(" ")}
-          >
-            {sedangSimpan ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Package className="h-4 w-4" aria-hidden="true" />
-            )}
-            {sedangSimpan ? "Menyimpan..." : "Catat Penjualan Item Ini"}
-          </button>
-        </div>
-      )}
-    </section>
   );
 }
 
@@ -1783,6 +1594,9 @@ function TutupShiftKartu({
   totalOmsetTunai,
   totalOmsetNonTunai,
   totalKasKeluar,
+  kasKeluarBaris,
+  slotJamMulai,
+  daftarSlotAktif,
 }: {
   shiftId: string;
   modalKasAwal: number;
@@ -1790,13 +1604,35 @@ function TutupShiftKartu({
   totalOmsetTunai: number;
   totalOmsetNonTunai: number;
   totalKasKeluar: number;
+  kasKeluarBaris: KasKeluarItem[];
+  slotJamMulai?: string;
+  daftarSlotAktif: SlotShift[];
 }) {
   const { showToast } = useToast();
   const { user, profil } = useAuth();
   const outletId = useOutletId();
+  const { detail: perusahaan } = useDetailPerusahaan();
   const [kasFisik, setKasFisik] = useState(0);
   const [keteranganSelisih, setKeteranganSelisih] = useState("");
   const [sedangTutup, setSedangTutup] = useState(false);
+  const [sedangEksporManual, setSedangEksporManual] = useState<"excel" | "pdf" | null>(null);
+
+  // --- Label tombol dinamis: "Pindah Shift Selanjutnya" kalau slot lain
+  // hari ini masih menyusul (Kasir/rekan lain akan melanjutkan register
+  // ini), "Tutup Kasir" kalau ini slot TERAKHIR hari ini (permintaan
+  // pemilik cafe). Kasir hanya punya SATU dokumen shift per hari (lihat
+  // komentar ShiftIsi), jadi ini murni soal LABEL & pesan — mekanisme
+  // penutupan (status "terkunci") tetap SAMA untuk keduanya. Kalau slot
+  // aktif < 2 (fitur Slot Shift belum dipakai outlet ini) atau slot
+  // shift ini tidak ketemu di daftar aktif (data lama / sudah diubah
+  // Finance), dianggap slot terakhir supaya perilakunya tetap seperti
+  // sebelum fitur multi-slot ini ada.
+  const slotTerurut = [...daftarSlotAktif].sort((a, b) => a.jamMulai.localeCompare(b.jamMulai));
+  const indeksSlotSaatIni = slotJamMulai
+    ? slotTerurut.findIndex((s) => s.jamMulai === slotJamMulai)
+    : -1;
+  const adaShiftBerikutnya =
+    daftarSlotAktif.length >= 2 && indeksSlotSaatIni !== -1 && indeksSlotSaatIni < slotTerurut.length - 1;
 
   // --- Auto Draft ---
   // Kas Fisik hasil MENGHITUNG UANG TUNAI di laci. Kalau hilang karena
@@ -1832,6 +1668,38 @@ function TutupShiftKartu({
   const omsetNonTunai = totalOmsetNonTunai;
   const kasSeharusnya = modalKasAwal + omsetTunai - totalKasKeluar;
   const selisihKas = kasFisik - kasSeharusnya;
+
+  // Data slip dari state yang SEDANG diisi di layar ini — dipakai untuk
+  // Ekspor Manual (kapan saja, tanpa menutup shift) MAUPUN unduhan
+  // otomatis begitu shift berhasil ditutup (lihat handleTutupShift).
+  function bangunDataSlipSaatIni(): DataSlipShift {
+    return {
+      tanggal: tanggalHariIni(),
+      kasirNama: profil?.nama ?? "",
+      modalKasAwal,
+      omsetTunai,
+      omsetNonTunai,
+      totalKasKeluar,
+      kasSeharusnya,
+      kasFisik,
+      selisihKas,
+      keteranganSelisih: keteranganSelisih.trim(),
+    };
+  }
+
+  async function handleEksporManual(jenis: "excel" | "pdf") {
+    setSedangEksporManual(jenis);
+    try {
+      const opsi = bangunOpsiSlipCashOpname(bangunDataSlipSaatIni(), kasKeluarBaris, perusahaan);
+      if (jenis === "excel") await eksporExcel(opsi);
+      else await eksporPdf(opsi);
+      showToast("success", `Slip ${jenis === "excel" ? "Excel" : "PDF"} berhasil diunduh.`);
+    } catch (error) {
+      showToast("error", error instanceof Error ? `Gagal mengekspor: ${error.message}` : "Gagal mengekspor.");
+    } finally {
+      setSedangEksporManual(null);
+    }
+  }
 
   async function handleTutupShift() {
     if (!user || !profil) return;
@@ -1901,7 +1769,30 @@ function TutupShiftKartu({
 
       // Shift sudah tersimpan — draf hitungan kasnya tidak diperlukan lagi.
       if (user) hapusDraf(user.uid, kunciDraf);
-      showToast("success", "Shift ditutup dan terkunci. Terima kasih!");
+      showToast(
+        "success",
+        adaShiftBerikutnya
+          ? "Shift ditutup — siap dioper ke Shift berikutnya. Terima kasih!"
+          : "Shift ditutup dan terkunci. Terima kasih!",
+      );
+
+      // Unduh otomatis Slip Cash Opname (permintaan pemilik cafe: "Setiap
+      // Pindah Shift dan Tutup Kasir Otomatis Download PDF") — gagal-
+      // lunak, kalau unduhan otomatis gagal shift TETAP sudah tersimpan,
+      // Kasir tinggal pakai tombol Ekspor Manual di bawah.
+      try {
+        const opsi = bangunOpsiSlipCashOpname(
+          { ...bangunDataSlipSaatIni(), tanggal },
+          kasKeluarBaris,
+          perusahaan,
+        );
+        await eksporPdf(opsi);
+      } catch {
+        showToast(
+          "warning",
+          "Shift tersimpan, tapi slip PDF gagal diunduh otomatis — pakai tombol Ekspor Manual di bawah.",
+        );
+      }
     } catch (error) {
       showToast(
         "error",
@@ -2006,8 +1897,52 @@ function TutupShiftKartu({
         ) : (
           <Save className="h-4 w-4" aria-hidden="true" />
         )}
-        {sedangTutup ? "Menutup Shift..." : "Tutup & Kunci Shift"}
+        {sedangTutup
+          ? "Menyimpan..."
+          : adaShiftBerikutnya
+            ? "Pindah Shift Selanjutnya"
+            : "Tutup Kasir"}
       </button>
+      <p className="mt-1.5 text-center text-[11px] text-slate-400">
+        Slip Cash Opname PDF akan otomatis terunduh setelah shift ditutup.
+      </p>
+
+      <div className="mt-4 border-t border-slate-100 pt-4">
+        <p className="text-xs font-semibold text-slate-700">Ekspor Slip Cash Opname (Manual)</p>
+        <p className="mt-0.5 text-[11px] text-slate-500">
+          Unduh slip kapan saja tanpa menutup shift — mis. untuk dicetak/dikirim sebelum yakin menutup.
+        </p>
+        <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+          <button
+            type="button"
+            onClick={() => handleEksporManual("excel")}
+            disabled={sedangEksporManual !== null}
+            aria-busy={sedangEksporManual === "excel"}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm motion-safe:transition hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {sedangEksporManual === "excel" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            Ekspor Excel
+          </button>
+          <button
+            type="button"
+            onClick={() => handleEksporManual("pdf")}
+            disabled={sedangEksporManual !== null}
+            aria-busy={sedangEksporManual === "pdf"}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm motion-safe:transition hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {sedangEksporManual === "pdf" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            Ekspor PDF
+          </button>
+        </div>
+      </div>
     </section>
   );
 }
@@ -2035,19 +1970,6 @@ function TutupShiftKartu({
 //
 // Top-level component, tidak bersarang (webrules-hikimori poin 11).
 // ============================================================
-
-interface DataSlipShift {
-  tanggal: string;
-  kasirNama: string;
-  modalKasAwal: number;
-  omsetTunai: number;
-  omsetNonTunai: number;
-  totalKasKeluar: number;
-  kasSeharusnya: number;
-  kasFisik: number;
-  selisihKas: number;
-  keteranganSelisih: string;
-}
 
 function SlipCashOpnameKasir({ shiftId }: { shiftId: string }) {
   const outletId = useOutletId();
@@ -2101,33 +2023,7 @@ function SlipCashOpnameKasir({ shiftId }: { shiftId: string }) {
     if (!data) return;
     setSedangEkspor(jenis);
     try {
-      const opsi: OpsiLaporan<{ kategori: string; nominal: number; keterangan: string }> = {
-        judul: "SLIP CASH OPNAME SHIFT",
-        periode: formatTanggalPanjangId(data.tanggal),
-        perusahaan,
-        namaBerkas: `Cash-Opname-Shift_${data.tanggal}_${data.kasirNama}`,
-        kolom: [
-          { judul: "Kategori Kas Keluar", ambil: (b) => b.kategori, lebar: 20 },
-          { judul: "Nominal", ambil: (b) => b.nominal, angka: true, lebar: 14 },
-          { judul: "Keterangan", ambil: (b) => b.keterangan || "—", lebar: 24 },
-        ],
-        baris: kasKeluarBaris,
-        ringkasan: [
-          { label: "Kasir", nilai: data.kasirNama },
-          { label: "Modal Kas Awal (Petty Cash)", nilai: formatRupiah(data.modalKasAwal) },
-          { label: "Omset Tunai", nilai: formatRupiah(data.omsetTunai) },
-          { label: "Omset Non-Tunai", nilai: formatRupiah(data.omsetNonTunai) },
-          { label: "Total Kas Keluar", nilai: formatRupiah(data.totalKasKeluar) },
-          { label: "Kas Seharusnya", nilai: formatRupiah(data.kasSeharusnya) },
-          { label: "Kas Fisik", nilai: formatRupiah(data.kasFisik) },
-          { label: "Selisih Kas", nilai: formatRupiah(data.selisihKas) },
-          { label: "Keterangan Selisih", nilai: data.keteranganSelisih || "—" },
-          {
-            label: "Shift Berikutnya",
-            nilai: "Mulai dari Saldo Petty Cash Rp500.000 lagi (tidak diwariskan dari shift ini)",
-          },
-        ],
-      };
+      const opsi = bangunOpsiSlipCashOpname(data, kasKeluarBaris, perusahaan);
       if (jenis === "excel") await eksporExcel(opsi);
       else await eksporPdf(opsi);
       showToast("success", `Slip ${jenis === "excel" ? "Excel" : "PDF"} berhasil diunduh.`);

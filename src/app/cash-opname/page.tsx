@@ -49,7 +49,8 @@ import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import { eksporExcel, eksporPdf, type OpsiLaporan, type TabelTambahan } from "@/shared/lib/ekspor";
-import { formatTanggalPanjangId } from "@/shared/lib/periode-laporan";
+import { rentangPeriodeLaporan, formatTanggalPanjangId, type PeriodeLaporan } from "@/shared/lib/periode-laporan";
+import { PeriodePicker } from "@/shared/components/periode-picker";
 import { ambilResepMenu } from "@/shared/lib/resep";
 
 /** Sinkron dengan MODAL_KAS_AWAL_HARIAN di src/app/shift/page.tsx —
@@ -733,8 +734,254 @@ function CashOpnameIsi() {
               </button>
             </div>
           </section>
+
+          <EksporRekapCashOpnameKartu />
         </div>
       )}
     </main>
+  );
+}
+
+// ============================================================
+// Ekspor Rekap Cash Opname PERIODE (Harian/Mingguan/Bulanan/Tahunan) —
+// permintaan pemilik cafe: laporan Cash Opname di atas cuma bisa lihat
+// SATU tanggal sekaligus, sedangkan laporan lain di app ini (Laporan
+// Pembelian, Laporan Shift) sudah bisa difilter per periode. Kartu ini
+// TIDAK menggantikan ekspor detail satu-hari di atas (yang masih perlu
+// untuk drill-down lengkap: rincian kas keluar, pemakaian bahan, dst)
+// — ini menambah satu tabel REKAP ringkas, satu baris per tanggal,
+// supaya Owner/Finance bisa lihat tren balance/tidaknya sepekan atau
+// sebulan sekaligus tanpa buka satu-satu.
+//
+// Query pakai rentang tanggal (>=, <=) pada koleksi shift & kas_belanja
+// langsung (BUKAN loop getDoc per-hari) — sama pola dengan
+// EksporLaporanPembelianKartu di belanja-nota/page.tsx.
+//
+// Top-level component, tidak bersarang (webrules-hikimori poin 11).
+// ============================================================
+
+interface BarisRekapHarian {
+  tanggal: string;
+  jumlahShift: number;
+  omsetTunai: number;
+  pengeluaran: number;
+  seharusnyaDisetor: number;
+  untukDisetor: number;
+  selisih: number;
+}
+
+function EksporRekapCashOpnameKartu() {
+  const outletId = useOutletId();
+  const { showToast } = useToast();
+  const { detail: perusahaan } = useDetailPerusahaan();
+  const [dariTanggal, setDariTanggal] = useState(() => rentangPeriodeLaporan("mingguan").mulai);
+  const [sampaiTanggal, setSampaiTanggal] = useState(() => rentangPeriodeLaporan("mingguan").selesai);
+  const [sedangEkspor, setSedangEkspor] = useState<"excel" | "pdf" | null>(null);
+
+  const periodeAktif =
+    (["harian", "mingguan", "bulanan", "tahunan"] as PeriodeLaporan[]).find((p) => {
+      const r = rentangPeriodeLaporan(p);
+      return r.mulai === dariTanggal && r.selesai === sampaiTanggal;
+    }) ?? null;
+
+  async function ambilRekap(): Promise<BarisRekapHarian[]> {
+    const [shiftSnap, belanjaSnap] = await Promise.all([
+      getDocs(
+        query(
+          collection(db, "outlets", outletId, "shift"),
+          where("tanggal", ">=", dariTanggal),
+          where("tanggal", "<=", sampaiTanggal),
+        ),
+      ),
+      getDocs(
+        query(
+          collection(db, "outlets", outletId, "kas_belanja"),
+          where("tanggal", ">=", dariTanggal),
+          where("tanggal", "<=", sampaiTanggal),
+        ),
+      ),
+    ]);
+
+    const perTanggal = new Map<
+      string,
+      { jumlahShift: number; omsetTunai: number; totalKasKeluar: number; totalKasFisik: number; belanjaKasResto: number }
+    >();
+    function ambilBaris(tanggal: string) {
+      const existing = perTanggal.get(tanggal) ?? {
+        jumlahShift: 0,
+        omsetTunai: 0,
+        totalKasKeluar: 0,
+        totalKasFisik: 0,
+        belanjaKasResto: 0,
+      };
+      perTanggal.set(tanggal, existing);
+      return existing;
+    }
+
+    for (const d of shiftSnap.docs) {
+      const data = d.data();
+      // Sama seperti rekonsiliasi satu-hari di atas: shift yang belum
+      // "terkunci" (belum ditutup Kasir) TIDAK ikut dihitung — datanya
+      // belum final.
+      if ((data.status ?? "buka") !== "terkunci") continue;
+      const baris = ambilBaris(data.tanggal ?? "");
+      baris.jumlahShift += 1;
+      baris.omsetTunai += data.omsetTunai ?? 0;
+      baris.totalKasKeluar += data.totalKasKeluar ?? 0;
+      baris.totalKasFisik += data.kasFisik ?? 0;
+    }
+    for (const d of belanjaSnap.docs) {
+      const data = d.data();
+      if ((data.sumberDana ?? "kas_resto") !== "kas_resto") continue;
+      const baris = ambilBaris(data.tanggal ?? "");
+      baris.belanjaKasResto += data.totalBelanja ?? 0;
+    }
+
+    return Array.from(perTanggal.entries())
+      .filter(([tanggal]) => tanggal)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([tanggal, v]) => {
+        const pettyCash = MODAL_KAS_AWAL_HARIAN * v.jumlahShift;
+        const pengeluaran = v.totalKasKeluar + v.belanjaKasResto;
+        const seharusnyaDisetor = v.omsetTunai - pengeluaran;
+        const untukDisetor = v.totalKasFisik - pettyCash;
+        return {
+          tanggal,
+          jumlahShift: v.jumlahShift,
+          omsetTunai: v.omsetTunai,
+          pengeluaran,
+          seharusnyaDisetor,
+          untukDisetor,
+          selisih: untukDisetor - seharusnyaDisetor,
+        };
+      });
+  }
+
+  async function handleEkspor(jenis: "excel" | "pdf") {
+    setSedangEkspor(jenis);
+    try {
+      const baris = await ambilRekap();
+      if (baris.length === 0) {
+        showToast("error", "Tidak ada shift terkunci pada rentang tanggal itu.");
+        return;
+      }
+      const totalOmsetTunai = baris.reduce((t, b) => t + b.omsetTunai, 0);
+      const totalPengeluaran = baris.reduce((t, b) => t + b.pengeluaran, 0);
+      const totalSeharusnya = baris.reduce((t, b) => t + b.seharusnyaDisetor, 0);
+      const totalUntukDisetor = baris.reduce((t, b) => t + b.untukDisetor, 0);
+      const totalSelisih = baris.reduce((t, b) => t + b.selisih, 0);
+      const opsi: OpsiLaporan<BarisRekapHarian> = {
+        judul: "REKAP CASH OPNAME PERIODE",
+        periode: `${formatTanggalPanjangId(dariTanggal)} s/d ${formatTanggalPanjangId(sampaiTanggal)}`,
+        perusahaan,
+        namaBerkas: `Rekap-Cash-Opname_${dariTanggal}_sd_${sampaiTanggal}`,
+        kolom: [
+          { judul: "Tanggal", ambil: (b) => b.tanggal, lebar: 14 },
+          { judul: "Shift", ambil: (b) => b.jumlahShift, angka: true, lebar: 8 },
+          { judul: "Omset Tunai", ambil: (b) => b.omsetTunai, angka: true, lebar: 16 },
+          { judul: "Pengeluaran", ambil: (b) => b.pengeluaran, angka: true, lebar: 16 },
+          { judul: "Seharusnya Disetor", ambil: (b) => b.seharusnyaDisetor, angka: true, lebar: 18 },
+          { judul: "Untuk Disetor", ambil: (b) => b.untukDisetor, angka: true, lebar: 16 },
+          { judul: "Selisih", ambil: (b) => b.selisih, angka: true, lebar: 14 },
+        ],
+        baris,
+        ringkasan: [
+          { label: "Jumlah Hari (ada shift terkunci)", nilai: String(baris.length) },
+          { label: "Total Omset Tunai", nilai: formatRupiah(totalOmsetTunai) },
+          { label: "Total Pengeluaran (Kas Keluar + Belanja Kas Resto)", nilai: formatRupiah(totalPengeluaran) },
+          { label: "Total Kas Seharusnya Disetor", nilai: formatRupiah(totalSeharusnya) },
+          { label: "Total Kas Untuk Disetor (fisik − petty cash)", nilai: formatRupiah(totalUntukDisetor) },
+          {
+            label: "TOTAL SELISIH SETORAN PERIODE",
+            nilai:
+              totalSelisih === 0
+                ? `${formatRupiah(totalSelisih)} — Balance, semua hari sesuai perhitungan`
+                : `${formatRupiah(totalSelisih)} — Ada selisih, cek baris tanggal mana yang tidak nol lalu buka Cash Opname hari itu untuk detailnya`,
+          },
+        ],
+      };
+      if (jenis === "excel") await eksporExcel(opsi);
+      else await eksporPdf(opsi);
+      showToast("success", `Rekap ${jenis === "excel" ? "Excel" : "PDF"} berhasil diunduh.`);
+    } catch (error) {
+      showToast("error", error instanceof Error ? `Gagal mengekspor: ${error.message}` : "Gagal mengekspor.");
+    } finally {
+      setSedangEkspor(null);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+        <Download className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        Rekap Cash Opname Periode (Harian / Mingguan / Bulanan)
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Satu baris per tanggal (hanya hari yang shift-nya sudah terkunci) — untuk melihat tren balance/tidaknya
+        sepekan atau sebulan sekaligus. Untuk rincian satu hari penuh (kas keluar, pemakaian bahan, dst), pakai
+        Ekspor Cash Opname di atas.
+      </p>
+
+      <div className="mt-4">
+        <PeriodePicker periodeAktif={periodeAktif} onPilih={(r) => { setDariTanggal(r.mulai); setSampaiTanggal(r.selesai); }} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="rekap-co-dari" className="block text-sm font-semibold text-slate-800">
+            Dari Tanggal
+          </label>
+          <input
+            id="rekap-co-dari"
+            type="date"
+            value={dariTanggal}
+            onChange={(event) => setDariTanggal(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+        <div>
+          <label htmlFor="rekap-co-sampai" className="block text-sm font-semibold text-slate-800">
+            Sampai Tanggal
+          </label>
+          <input
+            id="rekap-co-sampai"
+            type="date"
+            value={sampaiTanggal}
+            onChange={(event) => setSampaiTanggal(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+      </div>
+
+      {!perusahaan.nama ? (
+        <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+          Detail Perusahaan belum diisi — kop surat akan tercetak kosong. Isi dulu lewat Profil Akun → Detail
+          Perusahaan.
+        </p>
+      ) : null}
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <button
+          type="button"
+          onClick={() => handleEkspor("excel")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "excel"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-emerald-400"
+        >
+          {sedangEkspor === "excel" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />}
+          {sedangEkspor === "excel" ? "Menyiapkan..." : "Ekspor Excel"}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleEkspor("pdf")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "pdf"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-600 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-sm hover:bg-emerald-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {sedangEkspor === "pdf" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileText className="h-4 w-4" aria-hidden="true" />}
+          {sedangEkspor === "pdf" ? "Menyiapkan..." : "Ekspor PDF (A4)"}
+        </button>
+      </div>
+    </section>
   );
 }
