@@ -47,6 +47,8 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
+  getDocs,
   increment,
   onSnapshot,
   orderBy,
@@ -60,6 +62,9 @@ import {
   Banknote,
   ChevronDown,
   CreditCard,
+  Download,
+  FileSpreadsheet,
+  FileText,
   Gift,
   Loader2,
   Minus,
@@ -81,6 +86,9 @@ import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { ambilResepMenu, terapkanPerubahanStok } from "@/shared/lib/resep";
 import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
+import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
+import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
+import { formatTanggalPanjangId } from "@/shared/lib/periode-laporan";
 import type { ResepItem, StokKasir } from "@/shared/types/inventaris";
 
 /** Isi draf otomatis untuk form Tutup Shift (lihat TutupShiftKartu).
@@ -439,20 +447,23 @@ function ShiftIsi() {
 
   // Shift hari ini sudah ditutup — JANGAN buat shift baru (itu akan jadi
   // modal Rp500.000 kedua di hari yang sama). Kasir cukup diberi tahu,
-  // dan bisa mulai lagi besok karena tanggalnya sudah berganti.
+  // dan bisa mulai lagi besok karena tanggalnya sudah berganti. Slip
+  // Cash Opname shift ini ditampilkan di sini juga (lihat
+  // SlipCashOpnameKasir) — "Kasir Lapor Sendiri", mandiri per shift.
   if (shiftAktif.status !== "buka") {
     return (
-      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16 text-center">
-        <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-6 shadow-sm">
+      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center gap-4 px-4 py-16">
+        <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-6 text-center shadow-sm">
           <p className="text-base font-semibold text-emerald-900">
             Shift hari ini sudah ditutup
           </p>
           <p className="mt-2 text-sm text-emerald-800">
-            Terima kasih. Shift baru akan tersedia otomatis besok dengan
-            modal kas Rp500.000 lagi. Kalau ada yang perlu dikoreksi hari
-            ini, hubungi Owner.
+            Terima kasih. Shift baru akan tersedia otomatis besok — SELALU
+            mulai lagi dari Saldo Petty Cash Rp500.000, supaya kalau ada
+            selisih minus mudah dilacak terjadi di shift yang mana.
           </p>
         </div>
+        <SlipCashOpnameKasir shiftId={shiftAktif.id} />
       </main>
     );
   }
@@ -1997,6 +2008,205 @@ function TutupShiftKartu({
         )}
         {sedangTutup ? "Menutup Shift..." : "Tutup & Kunci Shift"}
       </button>
+    </section>
+  );
+}
+
+// ============================================================
+// Slip Cash Opname Kasir — "Kasir Lapor Sendiri", MANDIRI per shift
+// (permintaan pemilik cafe: "Slip Cash Opname Konsepnya Mandiri").
+// Ditampilkan begitu shift ditutup (baik ditutup Kasir sendiri, atau
+// Tutup Paksa oleh Owner/Finance dari Riwayat — datanya sama-sama
+// sudah tersimpan lengkap di dokumen shift). Kasir bisa mengunduh
+// Excel/PDF-nya sebagai bukti serah terima (oper shift) ke rekan
+// shift berikutnya, ATAU sebagai laporan final kalau ini shift
+// terakhir hari itu sebelum outlet tutup.
+//
+// SENGAJA membaca ULANG dari Firestore (bukan menerima props dari
+// TutupShiftKartu) — supaya slip ini tetap muncul & akurat walau
+// halaman dimuat ulang setelah shift ditutup, tidak hilang begitu
+// state lokal TutupShiftKartu ter-unmount saat status berubah jadi
+// "terkunci".
+//
+// Petty Cash Rp500.000 SELALU flat per shift (tidak diwariskan) —
+// itulah sebabnya kalau ada selisih minus, gampang dilacak persis di
+// shift/kasir mana kejadiannya (nama & tanggal tertera jelas di slip
+// ini), tanpa tercampur dengan shift lain.
+//
+// Top-level component, tidak bersarang (webrules-hikimori poin 11).
+// ============================================================
+
+interface DataSlipShift {
+  tanggal: string;
+  kasirNama: string;
+  modalKasAwal: number;
+  omsetTunai: number;
+  omsetNonTunai: number;
+  totalKasKeluar: number;
+  kasSeharusnya: number;
+  kasFisik: number;
+  selisihKas: number;
+  keteranganSelisih: string;
+}
+
+function SlipCashOpnameKasir({ shiftId }: { shiftId: string }) {
+  const outletId = useOutletId();
+  const { showToast } = useToast();
+  const { detail: perusahaan } = useDetailPerusahaan();
+  const [data, setData] = useState<DataSlipShift | null>(null);
+  const [kasKeluarBaris, setKasKeluarBaris] = useState<{ kategori: string; nominal: number; keterangan: string }[]>([]);
+  const [memuat, setMemuat] = useState(true);
+  const [sedangEkspor, setSedangEkspor] = useState<"excel" | "pdf" | null>(null);
+
+  useEffect(() => {
+    let dibatalkan = false;
+    async function muat() {
+      setMemuat(true);
+      const [shiftDoc, kasKeluarSnap] = await Promise.all([
+        getDoc(doc(db, "outlets", outletId, "shift", shiftId)),
+        getDocs(collection(db, "outlets", outletId, "shift", shiftId, "kas_keluar")),
+      ]);
+      if (dibatalkan) return;
+      if (shiftDoc.exists()) {
+        const d = shiftDoc.data();
+        setData({
+          tanggal: d.tanggal ?? "",
+          kasirNama: d.kasirNama ?? "",
+          modalKasAwal: d.modalKasAwal ?? 0,
+          omsetTunai: d.omsetTunai ?? 0,
+          omsetNonTunai: d.omsetNonTunai ?? 0,
+          totalKasKeluar: d.totalKasKeluar ?? 0,
+          kasSeharusnya: d.kasSeharusnya ?? 0,
+          kasFisik: d.kasFisik ?? 0,
+          selisihKas: d.selisihKas ?? 0,
+          keteranganSelisih: d.keteranganSelisih ?? "",
+        });
+      }
+      setKasKeluarBaris(
+        kasKeluarSnap.docs.map((d) => ({
+          kategori: d.data().kategori ?? "Lainnya",
+          nominal: d.data().nominal ?? 0,
+          keterangan: d.data().keterangan ?? "",
+        })),
+      );
+      setMemuat(false);
+    }
+    muat().catch(() => setMemuat(false));
+    return () => {
+      dibatalkan = true;
+    };
+  }, [outletId, shiftId]);
+
+  async function handleEkspor(jenis: "excel" | "pdf") {
+    if (!data) return;
+    setSedangEkspor(jenis);
+    try {
+      const opsi: OpsiLaporan<{ kategori: string; nominal: number; keterangan: string }> = {
+        judul: "SLIP CASH OPNAME SHIFT",
+        periode: formatTanggalPanjangId(data.tanggal),
+        perusahaan,
+        namaBerkas: `Cash-Opname-Shift_${data.tanggal}_${data.kasirNama}`,
+        kolom: [
+          { judul: "Kategori Kas Keluar", ambil: (b) => b.kategori, lebar: 20 },
+          { judul: "Nominal", ambil: (b) => b.nominal, angka: true, lebar: 14 },
+          { judul: "Keterangan", ambil: (b) => b.keterangan || "—", lebar: 24 },
+        ],
+        baris: kasKeluarBaris,
+        ringkasan: [
+          { label: "Kasir", nilai: data.kasirNama },
+          { label: "Modal Kas Awal (Petty Cash)", nilai: formatRupiah(data.modalKasAwal) },
+          { label: "Omset Tunai", nilai: formatRupiah(data.omsetTunai) },
+          { label: "Omset Non-Tunai", nilai: formatRupiah(data.omsetNonTunai) },
+          { label: "Total Kas Keluar", nilai: formatRupiah(data.totalKasKeluar) },
+          { label: "Kas Seharusnya", nilai: formatRupiah(data.kasSeharusnya) },
+          { label: "Kas Fisik", nilai: formatRupiah(data.kasFisik) },
+          { label: "Selisih Kas", nilai: formatRupiah(data.selisihKas) },
+          { label: "Keterangan Selisih", nilai: data.keteranganSelisih || "—" },
+          {
+            label: "Shift Berikutnya",
+            nilai: "Mulai dari Saldo Petty Cash Rp500.000 lagi (tidak diwariskan dari shift ini)",
+          },
+        ],
+      };
+      if (jenis === "excel") await eksporExcel(opsi);
+      else await eksporPdf(opsi);
+      showToast("success", `Slip ${jenis === "excel" ? "Excel" : "PDF"} berhasil diunduh.`);
+    } catch (error) {
+      showToast("error", error instanceof Error ? `Gagal mengekspor: ${error.message}` : "Gagal mengekspor.");
+    } finally {
+      setSedangEkspor(null);
+    }
+  }
+
+  if (memuat) {
+    return (
+      <div className="flex items-center justify-center p-6">
+        <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 text-left shadow-sm">
+      <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+        <Download className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        Slip Cash Opname Shift Ini
+      </h2>
+      <dl className="mt-3 divide-y divide-slate-100 rounded-lg bg-slate-50 p-3 text-sm">
+        <div className="flex justify-between py-1">
+          <dt className="text-slate-600">Modal Kas Awal (Petty Cash)</dt>
+          <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(data.modalKasAwal)}</dd>
+        </div>
+        <div className="flex justify-between py-1">
+          <dt className="text-slate-600">Omset Tunai</dt>
+          <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(data.omsetTunai)}</dd>
+        </div>
+        <div className="flex justify-between py-1">
+          <dt className="text-slate-600">Total Kas Keluar</dt>
+          <dd className="font-medium tabular-nums text-slate-900">− {formatRupiah(data.totalKasKeluar)}</dd>
+        </div>
+        <div className="flex justify-between py-1.5">
+          <dt className="font-semibold text-slate-800">Kas Seharusnya</dt>
+          <dd className="font-semibold tabular-nums text-slate-900">{formatRupiah(data.kasSeharusnya)}</dd>
+        </div>
+        <div className="flex justify-between py-1 pt-2">
+          <dt className="text-slate-600">Kas Fisik</dt>
+          <dd className="font-medium tabular-nums text-slate-900">{formatRupiah(data.kasFisik)}</dd>
+        </div>
+      </dl>
+      <div
+        className={`mt-3 rounded-lg p-3 text-center ${
+          data.selisihKas === 0 ? "bg-emerald-50 text-emerald-800" : "bg-rose-50 text-rose-800"
+        }`}
+      >
+        <p className="text-xs font-medium uppercase tracking-wide">Selisih Kas</p>
+        <p className="text-lg font-bold tabular-nums">{formatRupiah(data.selisihKas)}</p>
+        {data.keteranganSelisih ? <p className="mt-1 text-xs">{data.keteranganSelisih}</p> : null}
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+        <button
+          type="button"
+          onClick={() => handleEkspor("excel")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "excel"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-emerald-400"
+        >
+          {sedangEkspor === "excel" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />}
+          {sedangEkspor === "excel" ? "Menyiapkan..." : "Ekspor Excel"}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleEkspor("pdf")}
+          disabled={sedangEkspor !== null}
+          aria-busy={sedangEkspor === "pdf"}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-600 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-sm hover:bg-emerald-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {sedangEkspor === "pdf" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileText className="h-4 w-4" aria-hidden="true" />}
+          {sedangEkspor === "pdf" ? "Menyiapkan..." : "Ekspor PDF (A4)"}
+        </button>
+      </div>
     </section>
   );
 }

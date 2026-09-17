@@ -107,6 +107,23 @@ interface BelanjaAktif {
   modalDiberikan: number;
   sumberDana: "kas_resto" | "saldo_finance";
   status: "terbuka" | "selesai" | "terkunci";
+  nomorShift: number;
+}
+
+/** Sesi belanja TERAKHIR yang sudah "selesai" hari ini milik Purchasing
+ *  yang login — dipakai untuk (a) menampilkan Slip Cash Opname sesi itu
+ *  (mandiri, "Purchasing Lapor Sendiri") dan (b) menyambung modal shift
+ *  berikutnya dari sisaKas sesi ini, BUKAN input manual baru — atas
+ *  permintaan pemilik cafe: "tujuannya adalah memisah tracking
+ *  pembelian yang terjadi di setiap shift" sambil saldo-nya tetap
+ *  nyambung (beda dari Kasir yang modalnya flat reset tiap shift). */
+interface SesiSelesai {
+  id: string;
+  nomorShift: number;
+  sumberDana: "kas_resto" | "saldo_finance";
+  modalDiberikan: number;
+  totalBelanja: number;
+  sisaKas: number;
 }
 
 /** ID dokumen tunggal Saldo Deposito Finance — sama dengan
@@ -142,6 +159,9 @@ function BelanjaNotaIsi() {
   const [modalDiberikan, setModalDiberikan] = useState(0);
   const [sumberDana, setSumberDana] = useState<"kas_resto" | "saldo_finance">("kas_resto");
   const [sedangMulai, setSedangMulai] = useState(false);
+  const [sesiSelesaiTerakhir, setSesiSelesaiTerakhir] = useState<SesiSelesai | null>(null);
+  const [sedangEksporSlip, setSedangEksporSlip] = useState(false);
+  const { detail: perusahaan } = useDetailPerusahaan();
 
   // Saldo Deposito Finance TERKINI — dibaca di sini supaya Purchasing
   // tahu sisa saldo SEBELUM memilih "Saldo Finance" sebagai sumber dana
@@ -175,6 +195,7 @@ function BelanjaNotaIsi() {
             modalDiberikan: d.data().modalDiberikan ?? 0,
             sumberDana: (d.data().sumberDana ?? "kas_resto") as "kas_resto" | "saldo_finance",
             status: "terbuka",
+            nomorShift: d.data().nomorShift ?? 1,
           });
         }
         setMemuat(false);
@@ -183,6 +204,47 @@ function BelanjaNotaIsi() {
     );
     return unsub;
   }, [user, outletId]);
+
+  // Sesi SELESAI terakhir hari ini (kalau ada) — dipakai untuk
+  // menyambung modal shift berikutnya dari sisaKas-nya (BUKAN input
+  // manual baru) dan untuk menampilkan Slip Cash Opname sesi itu.
+  // Diurutkan by nomorShift, bukan onSnapshot (cukup dimuat ulang
+  // begitu belanjaAktif berubah jadi null lagi) — konsisten dengan
+  // pola getDocs sekali-muat lain di halaman ini.
+  useEffect(() => {
+    if (!user || belanjaAktif) return;
+    let dibatalkan = false;
+    getDocs(
+      query(
+        collection(db, "outlets", outletId, "kas_belanja"),
+        where("purchasingUid", "==", user.uid),
+        where("tanggal", "==", tanggalHariIni()),
+        where("status", "==", "selesai"),
+        orderBy("nomorShift", "desc"),
+        limit(1),
+      ),
+    )
+      .then((snap) => {
+        if (dibatalkan) return;
+        if (snap.empty) {
+          setSesiSelesaiTerakhir(null);
+          return;
+        }
+        const d = snap.docs[0];
+        setSesiSelesaiTerakhir({
+          id: d.id,
+          nomorShift: d.data().nomorShift ?? 1,
+          sumberDana: (d.data().sumberDana ?? "kas_resto") as "kas_resto" | "saldo_finance",
+          modalDiberikan: d.data().modalDiberikan ?? 0,
+          totalBelanja: d.data().totalBelanja ?? 0,
+          sisaKas: d.data().sisaKas ?? 0,
+        });
+      })
+      .catch(() => setSesiSelesaiTerakhir(null));
+    return () => {
+      dibatalkan = true;
+    };
+  }, [user, outletId, belanjaAktif]);
 
   async function handleMulaiBelanja() {
     if (!user || !profil) return;
@@ -222,6 +284,10 @@ function BelanjaNotaIsi() {
         totalBelanja: 0,
         sisaKas: modalDiberikan,
         status: "terbuka",
+        // Shift PERTAMA hari ini untuk Purchasing ini — shift berikutnya
+        // (kalau ada) menyambung dari sisaKas shift ini lewat
+        // handleLanjutkanShift(), bukan mengulang dari sini lagi.
+        nomorShift: 1,
       });
 
       if (sumberDana === "saldo_finance") {
@@ -250,6 +316,80 @@ function BelanjaNotaIsi() {
     }
   }
 
+  // "Lanjut Shift" — permintaan pemilik cafe: setiap transisi shift,
+  // Purchasing memulai shift berikutnya PERSIS dari sisa saldo yang
+  // masih dia pegang di akhir shift sebelumnya (BUKAN input kas baru),
+  // supaya pembelian tiap shift tetap terpisah pelacakannya tapi
+  // saldonya tetap menyambung (beda dari Kasir yang modalnya flat
+  // Rp500.000 reset tiap shift). TIDAK memotong saldo_finance lagi —
+  // uangnya sama, cuma dibawa lanjut, bukan suntikan baru.
+  async function handleLanjutkanShift() {
+    if (!user || !profil || !sesiSelesaiTerakhir) return;
+    setSedangMulai(true);
+    try {
+      await addDoc(collection(db, "outlets", outletId, "kas_belanja"), {
+        tanggal: tanggalHariIni(),
+        purchasingUid: user.uid,
+        purchasingNama: profil.nama,
+        modalDiberikan: sesiSelesaiTerakhir.sisaKas,
+        sumberDana: sesiSelesaiTerakhir.sumberDana,
+        totalBelanja: 0,
+        sisaKas: sesiSelesaiTerakhir.sisaKas,
+        status: "terbuka",
+        nomorShift: sesiSelesaiTerakhir.nomorShift + 1,
+        lanjutanDariShift: sesiSelesaiTerakhir.nomorShift,
+      });
+      showToast(
+        "success",
+        `Shift ${sesiSelesaiTerakhir.nomorShift + 1} dimulai, menyambung sisa kas ${formatRupiah(sesiSelesaiTerakhir.sisaKas)}.`,
+      );
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal melanjutkan shift: ${error.message}` : "Gagal melanjutkan shift.",
+      );
+    } finally {
+      setSedangMulai(false);
+    }
+  }
+
+  async function handleEksporSlipCashOpname(jenis: "excel" | "pdf") {
+    if (!sesiSelesaiTerakhir) return;
+    setSedangEksporSlip(true);
+    try {
+      const opsi: OpsiLaporan<{ label: string; nilai: string }> = {
+        judul: `Slip Cash Opname Purchasing — Shift ${sesiSelesaiTerakhir.nomorShift}`,
+        periode: formatTanggalPanjangId(tanggalHariIni()),
+        perusahaan,
+        namaBerkas: `slip-cash-opname-purchasing-shift-${sesiSelesaiTerakhir.nomorShift}-${tanggalHariIni()}`,
+        kolom: [
+          { judul: "Keterangan", ambil: (b) => b.label },
+          { judul: "Nilai", ambil: (b) => b.nilai },
+        ],
+        baris: [
+          { label: "Purchasing", nilai: profil?.nama ?? "-" },
+          { label: "Shift", nilai: `${sesiSelesaiTerakhir.nomorShift}` },
+          { label: "Sumber Dana", nilai: sesiSelesaiTerakhir.sumberDana === "kas_resto" ? "Kas Resto/Outlet" : "Saldo Finance" },
+          { label: "Modal Diterima", nilai: formatRupiah(sesiSelesaiTerakhir.modalDiberikan) },
+          { label: "Total Belanja", nilai: formatRupiah(sesiSelesaiTerakhir.totalBelanja) },
+          { label: "Sisa Kas", nilai: formatRupiah(sesiSelesaiTerakhir.sisaKas) },
+        ],
+        ringkasan: [
+          {
+            label: "Shift Berikutnya",
+            nilai: `Mulai dari sisa kas ${formatRupiah(sesiSelesaiTerakhir.sisaKas)} (bukan modal baru) — pembelian tiap shift tetap terpisah agar mudah dilacak`,
+          },
+        ],
+      };
+      if (jenis === "excel") await eksporExcel(opsi);
+      else await eksporPdf(opsi);
+    } catch (error) {
+      showToast("error", error instanceof Error ? `Gagal ekspor: ${error.message}` : "Gagal ekspor.");
+    } finally {
+      setSedangEksporSlip(false);
+    }
+  }
+
   if (memuat) {
     return (
       <main className="flex min-h-[50vh] items-center justify-center">
@@ -260,6 +400,111 @@ function BelanjaNotaIsi() {
   }
 
   if (!belanjaAktif) {
+    if (sesiSelesaiTerakhir) {
+      const shiftBerikutnya = sesiSelesaiTerakhir.nomorShift + 1;
+      return (
+        <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
+          <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-6 shadow-sm">
+            <div className="mb-3 flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+              <h1 className="text-base font-bold text-emerald-900">
+                Slip Cash Opname — Shift {sesiSelesaiTerakhir.nomorShift} Selesai
+              </h1>
+            </div>
+            <dl className="space-y-1.5 text-sm">
+              <div className="flex items-center justify-between">
+                <dt className="text-emerald-800">Modal Diterima</dt>
+                <dd className="font-semibold text-emerald-900">
+                  {formatRupiah(sesiSelesaiTerakhir.modalDiberikan)}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between">
+                <dt className="text-emerald-800">Total Belanja</dt>
+                <dd className="font-semibold text-emerald-900">
+                  {formatRupiah(sesiSelesaiTerakhir.totalBelanja)}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between border-t border-emerald-200 pt-1.5">
+                <dt className="text-emerald-800">Sisa Kas</dt>
+                <dd className="font-bold text-emerald-900">{formatRupiah(sesiSelesaiTerakhir.sisaKas)}</dd>
+              </div>
+              <div className="flex items-center justify-between">
+                <dt className="text-emerald-800">Sumber Dana</dt>
+                <dd className="font-medium text-emerald-900">
+                  {sesiSelesaiTerakhir.sumberDana === "kas_resto" ? "Kas Resto / Outlet" : "Saldo Finance"}
+                </dd>
+              </div>
+            </dl>
+            <p className="mt-3 rounded-lg bg-white/70 p-2.5 text-xs text-emerald-800">
+              Sisa kas di atas akan dibawa lanjut sebagai modal awal Shift {shiftBerikutnya}, supaya
+              pembelian tiap shift tetap terpisah tapi saldo tetap tersambung (tidak seperti Petty Cash
+              Kasir yang selalu direset).
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleEksporSlipCashOpname("excel")}
+                disabled={sedangEksporSlip}
+                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 motion-safe:transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
+                Excel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleEksporSlipCashOpname("pdf")}
+                disabled={sedangEksporSlip}
+                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 motion-safe:transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                PDF
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="mb-3 flex items-center gap-2">
+              <ShoppingBasket className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+              <h2 className="text-base font-bold text-slate-900">Lanjutkan ke Shift {shiftBerikutnya}</h2>
+            </div>
+            <p className="text-sm text-slate-600">
+              Modal awal Shift {shiftBerikutnya} otomatis meneruskan sisa kas Shift{" "}
+              {sesiSelesaiTerakhir.nomorShift}:
+            </p>
+            <p className="mt-1 text-lg font-bold text-emerald-700">
+              {formatRupiah(sesiSelesaiTerakhir.sisaKas)}
+            </p>
+            <button
+              type="button"
+              onClick={handleLanjutkanShift}
+              disabled={sedangMulai}
+              aria-busy={sedangMulai}
+              className={[
+                "mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm",
+                "motion-safe:transition motion-safe:duration-150",
+                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700",
+                sedangMulai
+                  ? "cursor-not-allowed bg-emerald-400"
+                  : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+              ].join(" ")}
+            >
+              {sedangMulai ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <ShoppingBasket className="h-4 w-4" aria-hidden="true" />
+              )}
+              {sedangMulai ? "Memulai..." : `Mulai Shift ${shiftBerikutnya}`}
+            </button>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-6">
+            <EksporLaporanPembelianKartu />
+            <BandingPurchasingKartu />
+          </div>
+        </main>
+      );
+    }
+
     return (
       <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -343,6 +588,7 @@ function BelanjaNotaIsi() {
       belanjaId={belanjaAktif.id}
       modalDiberikan={belanjaAktif.modalDiberikan}
       sumberDana={belanjaAktif.sumberDana}
+      nomorShift={belanjaAktif.nomorShift}
     />
   );
 }
@@ -351,10 +597,12 @@ function BelanjaBerjalan({
   belanjaId,
   modalDiberikan,
   sumberDana,
+  nomorShift,
 }: {
   belanjaId: string;
   modalDiberikan: number;
   sumberDana: "kas_resto" | "saldo_finance";
+  nomorShift: number;
 }) {
   const outletId = useOutletId();
   const [daftarBahan, setDaftarBahan] = useState<BahanBaku[]>([]);
@@ -416,7 +664,14 @@ function BelanjaBerjalan({
       <header className="mb-6 flex items-center justify-between gap-3">
         <div>
           <KickerOutlet />
-          <h1 className="text-2xl font-bold text-slate-900">Belanja & Nota</h1>
+          <h1 className="text-2xl font-bold text-slate-900">
+            Belanja & Nota
+            {nomorShift > 1 && (
+              <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 align-middle">
+                Shift {nomorShift} (lanjutan Shift {nomorShift - 1})
+              </span>
+            )}
+          </h1>
           <p className="mt-0.5 text-xs text-slate-500">
             Sumber dana: {sumberDana === "saldo_finance" ? "Saldo Finance" : "Kas Resto/Outlet"}
           </p>
