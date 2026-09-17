@@ -25,6 +25,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { signOut } from "firebase/auth";
 import {
   Bell,
+  Calculator,
   History,
   Building2,
   CalendarClock,
@@ -101,6 +102,16 @@ const NAV_ITEMS: NavItem[] = [
     peran: ["superadmin", "finance"],
   },
   { href: "/riwayat", label: "Riwayat", icon: History, peran: ["superadmin", "finance"] },
+  {
+    href: "/cash-opname",
+    label: "Cash Opname",
+    icon: Calculator,
+    // Checkpoint rekap dana sebelum setor/oper ke Finance (permintaan
+    // pemilik cafe) — gabungan semua shift + Purchasing + Saldo
+    // Finance per tanggal. Owner & Finance saja, sama seperti Riwayat &
+    // Transaksi Finance.
+    peran: ["superadmin", "finance"],
+  },
   {
     href: "/kelola-jadwal-shift",
     label: "Jadwal Shift",

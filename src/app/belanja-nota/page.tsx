@@ -28,6 +28,7 @@ import {
   doc,
   getDocs,
   increment,
+  limit,
   onSnapshot,
   orderBy,
   query,
@@ -46,6 +47,7 @@ import {
   FileText,
   Loader2,
   Plus,
+  Save,
   ShoppingBasket,
 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
@@ -328,8 +330,9 @@ function BelanjaNotaIsi() {
           </button>
         </div>
 
-        <div className="mt-6">
+        <div className="mt-6 flex flex-col gap-6">
           <EksporLaporanPembelianKartu />
+          <BandingPurchasingKartu />
         </div>
       </main>
     );
@@ -455,6 +458,7 @@ function BelanjaBerjalan({
         />
 
         <EksporLaporanPembelianKartu />
+        <BandingPurchasingKartu />
       </div>
     </main>
   );
@@ -1462,6 +1466,233 @@ function EksporLaporanPembelianKartu() {
           {sedangEkspor === "pdf" ? "Menyiapkan..." : "Ekspor PDF (A4)"}
         </button>
       </div>
+    </section>
+  );
+}
+
+// ============================================================
+// Form Banding/Revisi Purchasing — permintaan pemilik cafe: "Form
+// Banding Revisi Purchasing atau Banding transaksi belum tercatat,
+// atau insiden". Analog Tanggungan Kasir (ganti rugi Kasir di
+// src/app/shift/page.tsx), tapi arahnya kebalik: di sini Purchasing
+// yang MENGAJUKAN koreksi/pembelaan (nota salah catat, ada belanja
+// yang belum sempat diinput, atau insiden lain yang bikin Cash Opname
+// Akhir Hari tidak balance), Owner/Finance yang MENINJAU (Setuju/
+// Tolak) dari halaman Cash Opname (/cash-opname).
+//
+// SENGAJA tidak bisa diedit/dihapus sendiri oleh Purchasing setelah
+// dikirim (firestore.rules: update/delete cuma Owner/Finance) — kalau
+// salah ketik, ajukan baru saja, supaya jejak pengajuan tetap utuh
+// untuk audit.
+//
+// Top-level component, tidak bersarang (webrules-hikimori poin 11).
+// ============================================================
+
+type JenisBandingPurchasing = "revisi_nota" | "transaksi_belum_tercatat" | "insiden_lainnya";
+
+const JENIS_BANDING_OPSI: { value: JenisBandingPurchasing; label: string }[] = [
+  { value: "revisi_nota", label: "Revisi Nota (salah catat)" },
+  { value: "transaksi_belum_tercatat", label: "Transaksi Belum Tercatat" },
+  { value: "insiden_lainnya", label: "Insiden Lainnya" },
+];
+
+const LABEL_STATUS_BANDING: Record<"menunggu" | "disetujui" | "ditolak", string> = {
+  menunggu: "Menunggu Ditinjau",
+  disetujui: "Disetujui",
+  ditolak: "Ditolak",
+};
+
+interface RiwayatBandingPurchasing {
+  id: string;
+  tanggal: string;
+  jenis: JenisBandingPurchasing;
+  nominal: number;
+  keterangan: string;
+  status: "menunggu" | "disetujui" | "ditolak";
+}
+
+function BandingPurchasingKartu() {
+  const { user, profil } = useAuth();
+  const outletId = useOutletId();
+  const { showToast } = useToast();
+  const [tanggalBanding, setTanggalBanding] = useState(tanggalHariIni());
+  const [jenis, setJenis] = useState<JenisBandingPurchasing>("revisi_nota");
+  const [nominal, setNominal] = useState(0);
+  const [keterangan, setKeterangan] = useState("");
+  const [sedangSimpan, setSedangSimpan] = useState(false);
+  const [riwayat, setRiwayat] = useState<RiwayatBandingPurchasing[]>([]);
+  const [terbuka, setTerbuka] = useState(false);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsub = onSnapshot(
+      query(
+        collection(db, "outlets", outletId, "banding_purchasing"),
+        where("purchasingUid", "==", user.uid),
+        orderBy("waktu", "desc"),
+        limit(20),
+      ),
+      (snap) => {
+        setRiwayat(
+          snap.docs.map((d) => ({
+            id: d.id,
+            tanggal: d.data().tanggal ?? "",
+            jenis: (d.data().jenis ?? "insiden_lainnya") as JenisBandingPurchasing,
+            nominal: d.data().nominal ?? 0,
+            keterangan: d.data().keterangan ?? "",
+            status: (d.data().status ?? "menunggu") as RiwayatBandingPurchasing["status"],
+          })),
+        );
+      },
+    );
+    return unsub;
+  }, [user, outletId]);
+
+  async function ajukanBanding() {
+    if (!user || !profil) return;
+    if (!keterangan.trim()) {
+      showToast("error", "Keterangan wajib diisi — jelaskan nota/transaksi/insiden yang dimaksud.");
+      return;
+    }
+    setSedangSimpan(true);
+    try {
+      await addDoc(collection(db, "outlets", outletId, "banding_purchasing"), {
+        tanggal: tanggalBanding,
+        purchasingUid: user.uid,
+        purchasingNama: profil.nama,
+        jenis,
+        nominal,
+        keterangan: keterangan.trim(),
+        status: "menunggu",
+        waktu: serverTimestamp(),
+      });
+      showToast("success", "Banding diajukan — menunggu ditinjau Owner/Finance.");
+      setNominal(0);
+      setKeterangan("");
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal mengajukan banding: ${error.message}` : "Gagal mengajukan banding.",
+      );
+    } finally {
+      setSedangSimpan(false);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <button
+        type="button"
+        onClick={() => setTerbuka((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 text-left"
+      >
+        <span className="flex items-center gap-2 text-base font-semibold text-slate-900">
+          <AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" />
+          Form Banding / Revisi Purchasing
+        </span>
+        <span className="text-xs text-slate-400">{terbuka ? "Tutup" : "Buka"}</span>
+      </button>
+
+      {terbuka ? (
+        <div className="mt-4 flex flex-col gap-4">
+          <p className="text-xs text-slate-500">
+            Ajukan kalau ada nota yang salah catat, belanja yang belum sempat diinput, atau insiden lain yang
+            membuat rekap Cash Opname tidak balance. Owner/Finance akan meninjau dari halaman Cash Opname.
+          </p>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label htmlFor="tanggal-banding" className="block text-sm font-semibold text-slate-800">
+                Tanggal Terkait
+              </label>
+              <input
+                id="tanggal-banding"
+                type="date"
+                value={tanggalBanding}
+                onChange={(event) => setTanggalBanding(event.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              />
+            </div>
+            <div>
+              <label htmlFor="jenis-banding" className="block text-sm font-semibold text-slate-800">
+                Jenis
+              </label>
+              <select
+                id="jenis-banding"
+                value={jenis}
+                onChange={(event) => setJenis(event.target.value as JenisBandingPurchasing)}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+              >
+                {JENIS_BANDING_OPSI.map((opsi) => (
+                  <option key={opsi.value} value={opsi.value}>
+                    {opsi.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <NumberField id="nominal-banding" label="Nominal Terkait (kalau ada)" value={nominal} onChange={setNominal} prefix="Rp" />
+
+          <div>
+            <label htmlFor="keterangan-banding" className="block text-sm font-semibold text-slate-800">
+              Keterangan
+            </label>
+            <textarea
+              id="keterangan-banding"
+              value={keterangan}
+              onChange={(event) => setKeterangan(event.target.value)}
+              rows={3}
+              placeholder="Jelaskan nota/transaksi/insiden yang dimaksud..."
+              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={ajukanBanding}
+            disabled={sedangSimpan}
+            aria-busy={sedangSimpan}
+            className={[
+              "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm",
+              "motion-safe:transition motion-safe:duration-150",
+              sedangSimpan ? "cursor-not-allowed bg-emerald-400" : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+            ].join(" ")}
+          >
+            {sedangSimpan ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
+            {sedangSimpan ? "Mengajukan..." : "Ajukan Banding"}
+          </button>
+
+          {riwayat.length > 0 ? (
+            <div>
+              <p className="text-xs font-semibold text-slate-600">Riwayat Pengajuan Saya</p>
+              <ul className="mt-2 flex flex-col divide-y divide-slate-100 rounded-lg bg-slate-50 p-2">
+                {riwayat.map((r) => (
+                  <li key={r.id} className="flex items-center justify-between gap-2 px-2 py-2 text-xs">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-slate-800">
+                        {r.tanggal} · {JENIS_BANDING_OPSI.find((o) => o.value === r.jenis)?.label ?? r.jenis}
+                      </p>
+                      <p className="truncate text-slate-500">{r.keterangan}</p>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-2 py-0.5 font-semibold ${
+                        r.status === "disetujui"
+                          ? "bg-emerald-100 text-emerald-800"
+                          : r.status === "ditolak"
+                            ? "bg-rose-100 text-rose-800"
+                            : "bg-amber-100 text-amber-800"
+                      }`}
+                    >
+                      {LABEL_STATUS_BANDING[r.status]}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

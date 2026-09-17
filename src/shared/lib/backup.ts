@@ -42,6 +42,7 @@ const STRUKTUR_KOLEKSI: Record<string, string[]> = {
   profil_cafe: [],
   notifikasi: [],
   tanggungan_kasir: [],
+  banding_purchasing: [],
   nota_refund: [],
   saldo_finance: [],
   transaksi_finance: [],

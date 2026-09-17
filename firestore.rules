@@ -416,6 +416,29 @@ service cloud.firestore {
       }
 
       // --------------------------------------------------------
+      // SECTION: banding_purchasing — form banding/revisi Purchasing
+      // (per Outlet). Analog tanggungan_kasir (ganti rugi Kasir), tapi
+      // untuk sisi Purchasing: nota salah catat, transaksi belanja yang
+      // belum tercatat, atau insiden lain yang menyebabkan Cash Opname
+      // Akhir Hari tidak balance. Purchasing MENGAJUKAN, Owner/Finance
+      // MENINJAU (setuju/tolak) — atas permintaan pemilik cafe: "Form
+      // Banding Revisi Purchasing atau Banding transaksi belum
+      // tercatat, atau insiden".
+      // --------------------------------------------------------
+
+      match /banding_purchasing/{bandingId} {
+        allow read: if isManagerOutlet(outletId)
+          || (isPurchasingOutlet(outletId) && resource.data.purchasingUid == request.auth.uid);
+        allow create: if (isPurchasingOutlet(outletId) && request.resource.data.purchasingUid == request.auth.uid)
+          || isManagerOutlet(outletId);
+        // Update HANYA untuk Owner/Finance meninjau (status/catatanReview)
+        // — Purchasing tidak boleh mengubah pengajuannya sendiri setelah
+        // dikirim (harus ajukan baru kalau salah ketik), supaya jejak
+        // pengajuan tetap utuh untuk audit.
+        allow update, delete: if isManagerOutlet(outletId);
+      }
+
+      // --------------------------------------------------------
       // SECTION: nota_refund — refund lintas hari/shift (per Outlet)
       // --------------------------------------------------------
 
