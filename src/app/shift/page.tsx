@@ -83,7 +83,13 @@ import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
-import { ambilResepMenu, terapkanPerubahanStok } from "@/shared/lib/resep";
+import {
+  adalahStokTidakCukup,
+  ambilResepMenu,
+  pesanStokTidakCukup,
+  porsiMaksimalDariStok,
+  terapkanPerubahanStok,
+} from "@/shared/lib/resep";
 import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
@@ -569,6 +575,10 @@ function ShiftBerjalan({
   // ada di memori) — selisihnya diam-diam dan tidak akan pernah
   // ketahuan. Lebih baik tombolnya nonaktif sepersekian detik.
   const [resepSiap, setResepSiap] = useState(false);
+  // Stok bahan baku terkini per bahanId, dari cermin stok_kasir.
+  // Dipakai untuk menghitung sisa porsi tiap produk dan mengunci produk
+  // yang bahannya sudah tidak cukup.
+  const [stokBahan, setStokBahan] = useState<Map<string, number>>(new Map());
   // Menu mana saja yang panel Bonus/Refund-nya sedang dibuka — SENGAJA
   // per-item (bukan satu toggle global), supaya Kasir bisa mengintip
   // beberapa menu sekaligus tanpa opsi lain tertutup tiba-tiba.
@@ -653,10 +663,21 @@ function ShiftBerjalan({
       },
     );
 
+    // Stok gudang versi Kasir (TANPA harga — lihat catatan keamanan di
+    // src/shared/lib/resep.ts). Dipantau real-time supaya sisa porsi
+    // tiap produk di bawah ikut turun begitu ada penjualan, termasuk
+    // penjualan dari Kasir lain di shift yang sama.
+    const unsubStok = onSnapshot(collection(db, "outlets", outletId, "stok_kasir"), (snap) => {
+      const peta = new Map<string, number>();
+      for (const d of snap.docs) peta.set(d.id, (d.data().stokSaatIni as number) ?? 0);
+      setStokBahan(peta);
+    });
+
     return () => {
       unsubMenu();
       unsubPenjualan();
       unsubKasKeluar();
+      unsubStok();
     };
   }, [shiftId, outletId]);
 
@@ -689,9 +710,44 @@ function ShiftBerjalan({
    */
   async function ubahQtyReguler(item: MenuHarga, delta: number, metode: "tunai" | "nonTunai") {
     const existing = penjualan.find((p) => p.menuId === item.id);
+    if (!existing && delta <= 0) return;
+
+    const resepMenu = resepPerMenu.get(item.id);
+    const resepDipakai = resepMenu && resepMenu.length > 0 ? resepMenu : null;
+
+    // Qty yang SUNGGUH berubah — dipakai untuk stok, bukan `delta`
+    // mentah. Saat Kasir menurunkan qty sampai menembus 0, yang
+    // benar-benar dibatalkan hanyalah sisa bucket-nya (lihat klausa
+    // bucketBaru <= 0 di bawah); tanpa koreksi ini stok bisa
+    // dikembalikan lebih banyak daripada yang pernah dipotong.
+    let deltaStok = delta;
+    if (existing && delta < 0) {
+      const bucketLama = metode === "tunai" ? existing.qtyTunai : existing.qtyNonTunai;
+      if (bucketLama + delta <= 0) deltaStok = -bucketLama;
+    }
+
+    // BAHAN BAKU DIPERIKSA & DIPOTONG LEBIH DULU, BARU PENJUALAN
+    // DICATAT (permintaan pemilik cafe: produk tidak boleh bisa
+    // di-checkout kalau bahannya tidak cukup, karena acuan penjualan
+    // adalah ketersediaan bahan baku). Dulu urutannya terbalik dan
+    // pemotongan stok bahkan tidak ditunggu hasilnya, sehingga produk
+    // tanpa bahan tetap bisa terjual dan stok jadi minus.
+    if (resepDipakai && deltaStok > 0) {
+      try {
+        await terapkanPerubahanStok(outletId, resepDipakai, deltaStok);
+      } catch (error) {
+        showToast(
+          "error",
+          adalahStokTidakCukup(error)
+            ? pesanStokTidakCukup(error.kekurangan)
+            : `Gagal memeriksa stok bahan untuk "${item.nama}". Coba lagi.`,
+        );
+        return;
+      }
+    }
+
     try {
       if (!existing) {
-        if (delta <= 0) return;
         await setDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
           menuId: item.id,
           menuNama: item.nama,
@@ -747,27 +803,38 @@ function ShiftBerjalan({
         }
       }
 
-      // Kurangi (atau kembalikan, bila delta negatif) stok gudang
-      // otomatis lewat Resep menu ini — gagal-lunak: kalau menu belum
-      // punya resep (Owner belum menyusunnya), stok gudang cukup
-      // diabaikan, penjualan tetap tercatat normal. Stok TIDAK peduli
-      // metode bayar, jadi logikanya sama persis seperti sebelumnya.
-      const resep = resepPerMenu.get(item.id);
-      if (resep && resep.length > 0) {
-        terapkanPerubahanStok(outletId, resep, delta).catch(() => {
+    } catch (error) {
+      // Stok sudah terlanjur dipotong di atas tapi penjualannya gagal
+      // tercatat — kembalikan supaya gudang tidak berkurang tanpa ada
+      // penjualan yang menyertainya.
+      if (resepDipakai && deltaStok > 0) {
+        terapkanPerubahanStok(outletId, resepDipakai, -deltaStok).catch(() => {
           showToast(
             "error",
-            `Penjualan tercatat, tapi stok gudang untuk "${item.nama}" gagal diperbarui otomatis.`,
+            `Penjualan gagal DAN stok "${item.nama}" belum sempat dikembalikan — mohon cek stok bahannya.`,
           );
         });
       }
-    } catch (error) {
       showToast(
         "error",
         error instanceof Error
           ? `Gagal mencatat penjualan: ${error.message}`
           : "Gagal mencatat penjualan.",
       );
+      return;
+    }
+
+    // Pengembalian stok saat qty DIKURANGI dijalankan setelah penjualan
+    // tercatat — menambah stok kembali tidak pernah bisa ditolak, jadi
+    // aman menyusul. Menu tanpa resep memang tidak menyentuh stok sama
+    // sekali (perilaku lama dipertahankan).
+    if (resepDipakai && deltaStok < 0) {
+      terapkanPerubahanStok(outletId, resepDipakai, deltaStok).catch(() => {
+        showToast(
+          "error",
+          `Qty dikurangi, tapi stok "${item.nama}" gagal dikembalikan otomatis.`,
+        );
+      });
     }
   }
 
@@ -782,9 +849,37 @@ function ShiftBerjalan({
    */
   async function ubahQtyBonus(item: MenuHarga, delta: number) {
     const existing = penjualan.find((p) => p.menuId === item.id);
+    if (!existing && delta <= 0) return;
+
+    const resepMenu = resepPerMenu.get(item.id);
+    const resepDipakai = resepMenu && resepMenu.length > 0 ? resepMenu : null;
+
+    // Sama seperti penjualan reguler: qty yang sungguh berubah, bukan
+    // `delta` mentah, karena bonus juga di-clamp ke 0 di bawah.
+    let deltaStok = delta;
+    if (existing && delta < 0 && existing.qtyBonus + delta <= 0) {
+      deltaStok = -existing.qtyBonus;
+    }
+
+    // Bonus/Gratis TETAP memakai bahan baku sungguhan, jadi aturannya
+    // sama persis dengan penjualan reguler: bahan tidak cukup =
+    // transaksi ditolak, bukan dicatat lalu bikin stok minus.
+    if (resepDipakai && deltaStok > 0) {
+      try {
+        await terapkanPerubahanStok(outletId, resepDipakai, deltaStok);
+      } catch (error) {
+        showToast(
+          "error",
+          adalahStokTidakCukup(error)
+            ? pesanStokTidakCukup(error.kekurangan)
+            : `Gagal memeriksa stok bahan untuk "${item.nama}". Coba lagi.`,
+        );
+        return;
+      }
+    }
+
     try {
       if (!existing) {
-        if (delta <= 0) return;
         await setDoc(doc(db, "outlets", outletId, "shift", shiftId, "penjualan", item.id), {
           menuId: item.id,
           menuNama: item.nama,
@@ -811,22 +906,26 @@ function ShiftBerjalan({
         }
       }
 
-      // Bahan baku tetap berkurang persis seperti penjualan reguler —
-      // produk Bonus/Gratis SUNGGUH dibuat & diberikan ke pembeli.
-      const resep = resepPerMenu.get(item.id);
-      if (resep && resep.length > 0) {
-        terapkanPerubahanStok(outletId, resep, delta).catch(() => {
+    } catch (error) {
+      if (resepDipakai && deltaStok > 0) {
+        terapkanPerubahanStok(outletId, resepDipakai, -deltaStok).catch(() => {
           showToast(
             "error",
-            `Bonus tercatat, tapi stok gudang untuk "${item.nama}" gagal diperbarui otomatis.`,
+            `Bonus gagal DAN stok "${item.nama}" belum sempat dikembalikan — mohon cek stok bahannya.`,
           );
         });
       }
-    } catch (error) {
       showToast(
         "error",
         error instanceof Error ? `Gagal mencatat bonus: ${error.message}` : "Gagal mencatat bonus.",
       );
+      return;
+    }
+
+    if (resepDipakai && deltaStok < 0) {
+      terapkanPerubahanStok(outletId, resepDipakai, deltaStok).catch(() => {
+        showToast("error", `Bonus dikurangi, tapi stok "${item.nama}" gagal dikembalikan otomatis.`);
+      });
     }
   }
 
@@ -1043,12 +1142,38 @@ function ShiftBerjalan({
                       const qtyBonus = catatan?.qtyBonus ?? 0;
                       const qtyRefund = catatan?.qtyRefund ?? 0;
                       const diperluas = itemDiperluas.has(item.id);
+                      // Berapa porsi yang masih bisa dibuat dari stok
+                      // bahan sekarang. Infinity = menu tanpa resep,
+                      // jadi tidak dibatasi (perilaku lama). Produk yang
+                      // porsinya 0 dikunci di sini supaya Kasir tahu
+                      // SEBELUM mencoba — penolakan sungguhannya tetap
+                      // ada di terapkanPerubahanStok, layar ini cuma
+                      // lapis pertama yang ramah.
+                      const porsiTersedia = porsiMaksimalDariStok(
+                        resepPerMenu.get(item.id) ?? [],
+                        stokBahan,
+                      );
+                      const adaBatasStok = Number.isFinite(porsiTersedia);
+                      const habis = resepSiap && adaBatasStok && porsiTersedia <= 0;
                       return (
                         <div key={item.id} className="flex flex-col gap-2 py-2.5">
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
                               <p className="text-sm font-medium text-slate-900">{item.nama}</p>
                               <p className="text-xs text-slate-500">{formatRupiah(item.hargaJual)}</p>
+                              {resepSiap && adaBatasStok ? (
+                                <p
+                                  className={`mt-0.5 inline-flex rounded-full px-1.5 py-0.5 text-[11px] font-medium ${
+                                    habis
+                                      ? "bg-rose-50 text-rose-700"
+                                      : porsiTersedia <= 5
+                                        ? "bg-amber-50 text-amber-700"
+                                        : "bg-slate-100 text-slate-600"
+                                  }`}
+                                >
+                                  {habis ? "Bahan baku habis" : `Sisa ${porsiTersedia} porsi`}
+                                </p>
+                              ) : null}
                               {qty > 0 || qtyBonus > 0 || qtyRefund > 0 ? (
                                 <p className="mt-0.5 text-[11px] text-slate-400">
                                   {qty > 0 ? `Total terjual: ${qty}` : null}
@@ -1103,7 +1228,7 @@ function ShiftBerjalan({
                                 <button
                                   type="button"
                                   onClick={() => ubahQtyReguler(item, 1, "tunai")}
-                                  disabled={!resepSiap}
+                                  disabled={!resepSiap || habis}
                                   aria-label={`Tambah ${item.nama} (Tunai)`}
                                   className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-emerald-600 text-white motion-safe:transition hover:bg-emerald-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                                 >
@@ -1133,7 +1258,7 @@ function ShiftBerjalan({
                                 <button
                                   type="button"
                                   onClick={() => ubahQtyReguler(item, 1, "nonTunai")}
-                                  disabled={!resepSiap}
+                                  disabled={!resepSiap || habis}
                                   aria-label={`Tambah ${item.nama} (Non-Tunai)`}
                                   className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-sky-600 text-white motion-safe:transition hover:bg-sky-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                                 >
@@ -1171,7 +1296,7 @@ function ShiftBerjalan({
                                   <button
                                     type="button"
                                     onClick={() => ubahQtyBonus(item, 1)}
-                                    disabled={!resepSiap}
+                                    disabled={!resepSiap || habis}
                                     aria-label={`Tambah Bonus ${item.nama}`}
                                     className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-700 text-white motion-safe:transition hover:bg-slate-800 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                                   >
