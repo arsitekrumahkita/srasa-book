@@ -64,6 +64,7 @@ import { useNotifikasiGabungan } from "@/shared/lib/notifikasi";
 import { hitungLabaHarian } from "@/shared/lib/laba-harian";
 import { ambilTren, LABEL_PERIODE_TREN, type PeriodeTren, type TitikTren } from "@/shared/lib/tren";
 import { ambilRingkasanPeriode, type RingkasanPeriode } from "@/shared/lib/produk-terlaris";
+import { TrenHargaBahanKartu } from "@/shared/components/tren-harga-bahan-kartu";
 
 interface SummaryHarian {
   totalOmset?: number;
@@ -700,6 +701,8 @@ function DashboardIsi() {
             </section>
           </div>
 
+          <TrenHargaBahanKartu />
+
           {/* --- Bulan Ini + Aktivitas Terbaru --- */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
@@ -897,6 +900,14 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
     [daftar],
   );
 
+  // Stok MINUS (di bawah 0) selalu berarti ada yang tidak beres — takaran
+  // resep kebesaran, pembelian belum dicatat, atau bahan terpakai tanpa
+  // penjualan (lihat catatan yang sama di belanja-nota/page.tsx). Ditandai
+  // TERPISAH dari "menipis" (amber) dengan warna merah supaya jelas ini
+  // BUKAN sekadar "hampir habis", tapi sudah tidak masuk akal secara
+  // akuntansi dan perlu segera ditelusuri.
+  const stokMinus = useMemo(() => daftar.filter((b) => b.stokSaatIni < 0), [daftar]);
+
   const daftarTersaring = useMemo(
     () => daftar.filter((b) => cocokDenganPencarian(pencarian, b.nama, b.kategori)),
     [daftar, pencarian],
@@ -922,12 +933,41 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
   }
 
   return (
-    <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
+    <main className="animasi-masuk mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-8 lg:px-10">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
         <p className="mt-1 text-sm text-slate-600">Rincian stok bahan baku gudang.</p>
       </header>
+
+      {stokMinus.length > 0 ? (
+        <div
+          role="alert"
+          className="mb-4 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div>
+            <p className="font-semibold">
+              Stok MINUS (di bawah 0) — ada yang tidak beres, perlu segera ditelusuri:
+            </p>
+            <ul className="mt-1 flex flex-col gap-0.5">
+              {stokMinus.map((b) => (
+                <li key={b.id}>
+                  {b.nama}: {b.stokSaatIni} {b.satuan}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1.5 text-xs text-rose-800">
+              Angka minus berarti bahan ini tercatat terpakai LEBIH BANYAK dari yang pernah masuk —
+              kemungkinan takaran resep kebesaran, pembelian yang belum dicatat, atau bahan terpakai
+              tanpa penjualan yang cocok.{" "}
+              {peran === "purchasing"
+                ? "Cek riwayat Belanja & Nota, lalu sesuaikan lewat Penyesuaian Stok kalau perlu."
+                : "Sampaikan ke Purchasing/Owner supaya bisa segera ditelusuri."}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {menipis.length > 0 ? (
         <div
@@ -955,7 +995,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
         </p>
       ) : (
         <>
-          <div className="mb-5 max-w-sm">
+          <div className="mb-5 w-full sm:max-w-sm">
             <SearchBar
               id="cari-stok"
               value={pencarian}
@@ -969,7 +1009,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
               Tidak ada bahan yang cocok dengan pencarian &quot;{pencarian}&quot;.
             </p>
           ) : (
-        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {[...perKategori.entries()].map(([kategori, items]) => (
             <section
               key={kategori}
@@ -980,14 +1020,29 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
               </h2>
               <ul className="flex flex-col divide-y divide-slate-100">
                 {items.map((b) => {
-                  const rendah = b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok;
+                  const minus = b.stokSaatIni < 0;
+                  const rendah = !minus && b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok;
                   return (
                     <li key={b.id} className="flex items-center justify-between gap-3 py-2 text-sm">
-                      <span className={rendah ? "font-medium text-amber-800" : "text-slate-700"}>
+                      <span
+                        className={
+                          minus
+                            ? "font-medium text-rose-800"
+                            : rendah
+                              ? "font-medium text-amber-800"
+                              : "text-slate-700"
+                        }
+                      >
                         {b.nama}
                       </span>
                       <span
-                        className={`tabular-nums ${rendah ? "font-semibold text-amber-800" : "text-slate-900"}`}
+                        className={`tabular-nums ${
+                          minus
+                            ? "font-semibold text-rose-800"
+                            : rendah
+                              ? "font-semibold text-amber-800"
+                              : "text-slate-900"
+                        }`}
                       >
                         {b.stokSaatIni} {b.satuan}
                       </span>

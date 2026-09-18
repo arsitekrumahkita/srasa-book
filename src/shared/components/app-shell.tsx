@@ -24,7 +24,9 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { signOut } from "firebase/auth";
 import {
+  ArrowLeftRight,
   Bell,
+  Boxes,
   Calculator,
   History,
   Building2,
@@ -104,6 +106,17 @@ const NAV_ITEMS: NavItem[] = [
   },
   { href: "/riwayat", label: "Riwayat", icon: History, peran: ["superadmin", "finance"] },
   {
+    href: "/laporan-persediaan",
+    label: "Laporan Persediaan",
+    icon: Boxes,
+    // Rekap Masuk/Keluar Bahan Baku — dihitung ulang dari kas_belanja +
+    // shift/penjualan + penyesuaian_stok, lihat
+    // src/shared/lib/laporan-persediaan.ts. Owner & Finance saja karena
+    // menggabungkan data shift/penjualan yang tidak bisa dibaca
+    // Purchasing.
+    peran: ["superadmin", "finance"],
+  },
+  {
     href: "/cash-opname",
     label: "Cash Opname",
     icon: Calculator,
@@ -117,6 +130,24 @@ const NAV_ITEMS: NavItem[] = [
     href: "/kelola-jadwal-shift",
     label: "Jadwal Shift",
     icon: CalendarClock,
+    peran: ["superadmin", "finance"],
+  },
+  {
+    href: "/arus-kas",
+    label: "Arus Kas",
+    icon: Repeat,
+    // Laporan/monitoring murni (tidak ada aksi tulis) — tracking harian
+    // Kas Outlet & Saldo Finance, lihat src/app/arus-kas/page.tsx &
+    // src/shared/lib/arus-kas.ts.
+    peran: ["superadmin", "finance"],
+  },
+  {
+    href: "/mutasi-finance",
+    label: "Mutasi Finance",
+    icon: ArrowLeftRight,
+    // Buku besar per-transaksi Saldo Finance (ala mutasi rekening
+    // bank) — lihat src/shared/lib/mutasi-finance.ts. Beda dari Arus
+    // Kas yang agregat harian dua dompet.
     peran: ["superadmin", "finance"],
   },
   {

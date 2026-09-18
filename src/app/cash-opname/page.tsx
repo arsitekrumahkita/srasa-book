@@ -38,7 +38,7 @@
 // ============================================================
 
 import { useEffect, useState } from "react";
-import { collection, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
+import { collection, doc, getDocs, onSnapshot, query, updateDoc, where } from "firebase/firestore";
 import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, XCircle } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
@@ -52,11 +52,11 @@ import { eksporExcel, eksporPdf, type OpsiLaporan, type TabelTambahan } from "@/
 import { rentangPeriodeLaporan, formatTanggalPanjangId, type PeriodeLaporan } from "@/shared/lib/periode-laporan";
 import { PeriodePicker } from "@/shared/components/periode-picker";
 import { ambilResepMenu } from "@/shared/lib/resep";
+import { MODAL_KAS_AWAL_HARIAN } from "@/shared/lib/petty-cash";
 
-/** Sinkron dengan MODAL_KAS_AWAL_HARIAN di src/app/shift/page.tsx —
- *  petty cash flat per shift, atas persetujuan Owner TETAP tinggal di
- *  laci (tidak ikut disetor). */
-const MODAL_KAS_AWAL_HARIAN = 500000;
+// MODAL_KAS_AWAL_HARIAN sekarang diimpor dari src/shared/lib/petty-cash.ts
+// (dulu disalin manual di sini) — petty cash flat per shift yang atas
+// persetujuan Owner TETAP tinggal di laci, tidak ikut disetor.
 const ID_SALDO_FINANCE = "utama";
 
 function tanggalHariIni(): string {
@@ -168,13 +168,12 @@ function CashOpnameIsi() {
     let dibatalkan = false;
     async function muat() {
       setMemuat(true);
-      const [shiftSnap, belanjaSnap, tanggunganSnap, bandingSnap, bahanSnap, saldoSnap, tfSnap] = await Promise.all([
+      const [shiftSnap, belanjaSnap, tanggunganSnap, bandingSnap, bahanSnap, tfSnap] = await Promise.all([
         getDocs(query(collection(db, "outlets", outletId, "shift"), where("tanggal", "==", tanggal))),
         getDocs(query(collection(db, "outlets", outletId, "kas_belanja"), where("tanggal", "==", tanggal))),
         getDocs(query(collection(db, "outlets", outletId, "tanggungan_kasir"), where("tanggal", "==", tanggal))),
         getDocs(query(collection(db, "outlets", outletId, "banding_purchasing"), where("status", "==", "menunggu"))),
         getDocs(collection(db, "outlets", outletId, "bahan_baku")),
-        getDoc(doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE)),
         getDocs(query(collection(db, "outlets", outletId, "transaksi_finance"), where("tanggal", "==", tanggal))),
       ]);
       if (dibatalkan) return;
@@ -322,7 +321,6 @@ function CashOpnameIsi() {
           }))
           .filter((b) => b.stokSaatIni < 0 || (b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok)),
       );
-      setSaldoFinanceSaatIni(saldoSnap.exists() ? (saldoSnap.data().saldo ?? 0) : 0);
       let masuk = 0;
       let keluar = 0;
       for (const d of tfSnap.docs) {
@@ -338,6 +336,21 @@ function CashOpnameIsi() {
       dibatalkan = true;
     };
   }, [outletId, tanggal]);
+
+  // Saldo Finance SENGAJA dipisah dari muat() di atas (yang cuma sekali
+  // jalan per tanggal terpilih) dan dipasang lewat onSnapshot — supaya
+  // kalau Finance mencatat Uang Masuk/Keluar SAAT Owner/Finance sedang
+  // membuka halaman Cash Opname ini, angkanya langsung berubah tanpa
+  // perlu ganti tanggal/reload (laporan lain di halaman ini tetap
+  // snapshot per-tanggal karena memang itu maksudnya — checkpoint hari
+  // itu — tapi Saldo Finance adalah saldo BERJALAN saat ini, bukan
+  // sesuatu yang "milik" tanggal tertentu).
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE), (snap) => {
+      setSaldoFinanceSaatIni(snap.exists() ? (snap.data().saldo ?? 0) : 0);
+    });
+    return unsub;
+  }, [outletId]);
 
   async function tinjauBanding(id: string, disetujui: boolean) {
     setSedangUbahBanding(id);

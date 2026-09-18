@@ -42,19 +42,24 @@ import {
   AlertTriangle,
   Camera,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Download,
   FileSpreadsheet,
   FileText,
+  History,
   Loader2,
   Plus,
   Save,
   ShoppingBasket,
+  Undo2,
 } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
 import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
 import { PeriodePicker } from "@/shared/components/periode-picker";
+import { TrenHargaBahanKartu } from "@/shared/components/tren-harga-bahan-kartu";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
@@ -66,6 +71,11 @@ import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
 import { rentangPeriodeLaporan, formatTanggalPanjangId, type PeriodeLaporan } from "@/shared/lib/periode-laporan";
+import { catatMutasiFinance } from "@/shared/lib/mutasi-finance";
+import { PengajuanDanaKartu } from "@/shared/components/pengajuan-dana-kartu";
+import { BarisItemBelanja } from "@/shared/components/baris-item-belanja";
+import { bacaPermintaan, type PermintaanUbahBelanja } from "@/shared/lib/permintaan-ubah-belanja";
+import { LABEL_PETTY_CASH } from "@/shared/lib/petty-cash";
 import type { SatuanBahan } from "@/shared/types/inventaris";
 
 /** Isi draf otomatis untuk form Tambah Item (lihat TambahItemKartu). */
@@ -89,6 +99,10 @@ interface BahanBaku {
 
 interface ItemBelanja {
   id: string;
+  /** Null untuk item yang dicatat sebelum bahannya terdaftar (atau
+   *  bahan yang sudah dihapus). Dibutuhkan alur Permintaan Ubah untuk
+   *  mengoreksi stok saat Finance menyetujui koreksi. */
+  bahanId: string | null;
   bahanNama: string;
   qty: number;
   satuan: string;
@@ -264,41 +278,62 @@ function BelanjaNotaIsi() {
 
   async function handleMulaiBelanja() {
     if (!user || !profil) return;
+    // MODEL DANA (dikonfirmasi pemilik cafe) — dua sumber, dua perilaku
+    // yang SENGAJA berbeda:
+    //
+    // 1. "Kas Resto / Outlet" = uang tunai FISIK dari laci yang
+    //    diserahkan ke Purchasing sebelum berangkat belanja. Nominalnya
+    //    wajib diisi ("Kas Belanja Diterima"), dan "Sisa Kas" = modal
+    //    dikurangi belanja adalah uang fisik yang harus dikembalikan.
+    //
+    // 2. "Saldo Finance" = TIDAK ADA uang muka. Purchasing belanja, dan
+    //    saldo berkurang SESUAI REALISASI tiap item disimpan (lihat
+    //    handleTambahItem di TambahItemKartu). Dananya sendiri masuk ke
+    //    Saldo Finance lewat Pengajuan Dana yang disetujui Finance.
+    //    Karena itu "Kas Belanja Diterima" tidak berlaku di sini dan
+    //    disimpan sebagai 0 — bukan lagi syarat untuk mulai belanja.
+    //
+    //    (Dulu Saldo Finance dipotong di muka sebesar modalDiberikan;
+    //    kalau Purchasing mengisi Rp0, saldo tidak pernah berkurang
+    //    walau belanja beneran jalan — persis bug yang dilaporkan
+    //    "sudah belanja Kopi dan Gula kenapa masih utuh 1jt". Model
+    //    realisasi di bawah menghapus akar masalahnya, bukan cuma
+    //    menambal validasi.)
+    const modalEfektif = sumberDana === "kas_resto" ? modalDiberikan : 0;
+    if (sumberDana === "kas_resto" && modalDiberikan <= 0) {
+      showToast(
+        "error",
+        "Isi dulu \"Kas Belanja Diterima\" dengan nominal uang tunai yang benar-benar diterima dari laci — tidak boleh Rp0.",
+      );
+      return;
+    }
     // Saldo Finance SENGAJA diizinkan minus (prinsip akuntansi: saldo
     // wajib mencerminkan kondisi nyata walau negatif) — jadi di sini
-    // HANYA memberi peringatan, tidak lagi memblokir Purchasing memulai
-    // belanja. firestore.rules juga sudah tidak lagi mewajibkan saldo
-    // >= 0 untuk Finance/Purchasing (lihat komentar di firestore.rules
+    // HANYA memberi peringatan, tidak memblokir. firestore.rules juga
+    // tidak mewajibkan saldo >= 0 (lihat komentar di firestore.rules
     // bagian saldo_finance).
-    if (sumberDana === "saldo_finance" && modalDiberikan > saldoFinance) {
+    if (sumberDana === "saldo_finance" && saldoFinance <= 0) {
       showToast(
         "warning",
-        `Saldo Finance akan menjadi minus (${formatRupiah(saldoFinance - modalDiberikan)}) setelah belanja ini dimulai.`,
+        `Saldo Finance saat ini ${formatRupiah(saldoFinance)} — tiap item belanja yang disimpan akan langsung memotongnya. Ajukan Pengajuan Dana ke Finance bila perlu.`,
       );
     }
 
     setSedangMulai(true);
     try {
-      // PERBAIKAN BUG: dulu ini 2 tulisan terpisah (addDoc lalu setDoc) —
-      // kalau tulisan kedua (potong Saldo Finance) gagal (mis.
-      // firestore.rules di Firebase Console belum di-deploy ke versi
-      // terbaru), sesi belanja SUDAH terlanjur terbuat tapi Saldo Finance
-      // tidak berkurang sama sekali ("Saldo Finance tidak berkurang saat
-      // Purchasing belanja" — bug dilaporkan user). Sekarang keduanya
-      // digabung jadi satu writeBatch ATOMIK: kalau salah satu gagal
-      // (mis. saldo tidak cukup / rules menolak), TIDAK ADA yang tertulis
-      // sama sekali, jadi sesi belanja tidak akan pernah "nyangkut" tanpa
-      // saldo ikut terpotong.
-      const batch = writeBatch(db);
-      const belanjaRef = doc(collection(db, "outlets", outletId, "kas_belanja"));
-      batch.set(belanjaRef, {
+      // Sesi belanja Saldo Finance TIDAK LAGI memotong saldo di sini —
+      // potongannya terjadi per item saat disimpan (handleTambahItem),
+      // supaya saldo selalu mencerminkan uang yang SUNGGUH terpakai,
+      // bukan tebakan uang muka. Jadi tulisan di sini tinggal satu
+      // dokumen saja.
+      await addDoc(collection(db, "outlets", outletId, "kas_belanja"), {
         tanggal: tanggalHariIni(),
         purchasingUid: user.uid,
         purchasingNama: profil.nama,
-        modalDiberikan,
+        modalDiberikan: modalEfektif,
         sumberDana,
         totalBelanja: 0,
-        sisaKas: modalDiberikan,
+        sisaKas: modalEfektif,
         status: "terbuka",
         // Shift PERTAMA hari ini untuk Purchasing ini — shift berikutnya
         // (kalau ada) menyambung dari sisaKas shift ini lewat
@@ -306,21 +341,11 @@ function BelanjaNotaIsi() {
         nomorShift: 1,
       });
 
-      if (sumberDana === "saldo_finance") {
-        batch.set(
-          doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
-          { saldo: increment(-modalDiberikan) },
-          { merge: true },
-        );
-      }
-
-      await batch.commit();
-
       showToast(
         "success",
-        `Belanja hari ini dimulai dengan kas ${formatRupiah(modalDiberikan)} (${
-          sumberDana === "saldo_finance" ? "Saldo Finance" : "Kas Resto/Outlet"
-        }).`,
+        sumberDana === "saldo_finance"
+          ? `Belanja dimulai memakai Saldo Finance (sisa ${formatRupiah(saldoFinance)}). Saldo berkurang otomatis tiap item disimpan.`
+          : `Belanja hari ini dimulai dengan kas ${formatRupiah(modalEfektif)} (Kas Resto/Outlet).`,
       );
     } catch (error) {
       showToast(
@@ -419,7 +444,9 @@ function BelanjaNotaIsi() {
     if (sesiSelesaiTerakhir) {
       const shiftBerikutnya = sesiSelesaiTerakhir.nomorShift + 1;
       return (
-        <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
+        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 lg:py-12">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-start">
+        <div className="mx-auto w-full max-w-sm lg:mx-0 lg:max-w-none">
           <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-6 shadow-sm">
             <div className="mb-3 flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
@@ -512,31 +539,34 @@ function BelanjaNotaIsi() {
               {sedangMulai ? "Memulai..." : `Mulai Shift ${shiftBerikutnya}`}
             </button>
           </div>
+        </div>
 
-          <div className="mt-6 flex flex-col gap-6">
-            <EksporLaporanPembelianKartu />
-            <BandingPurchasingKartu />
-          </div>
+        <div className="flex flex-col gap-6">
+          <PengajuanDanaKartu />
+          <TrenHargaBahanKartu />
+          <RiwayatBelanjaKartu />
+          <EksporLaporanPembelianKartu />
+          <BandingPurchasingKartu />
+        </div>
+        </div>
         </main>
       );
     }
 
     return (
-      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 lg:py-12">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-start">
+      <div className="mx-auto w-full max-w-sm lg:mx-0 lg:max-w-none">
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <ShoppingBasket className="h-5 w-5 text-emerald-700" aria-hidden="true" />
             <h1 className="text-lg font-bold text-slate-900">Mulai Belanja Hari Ini</h1>
           </div>
-          <NumberField
-            id="modal-diberikan"
-            label="Kas Belanja Diterima"
-            value={modalDiberikan}
-            onChange={setModalDiberikan}
-            prefix="Rp"
-          />
-
-          <div className="mt-4">
+          {/* Sumber Dana ditaruh PALING ATAS karena dialah yang
+              menentukan apakah "Kas Belanja Diterima" di bawah relevan:
+              Kas Resto pakai uang tunai laci (wajib diisi), Saldo
+              Finance tidak pakai uang muka sama sekali. */}
+          <div>
             <span className="block text-sm font-semibold text-slate-800">Sumber Dana</span>
             <div className="mt-1.5 grid grid-cols-1 gap-2">
               <button
@@ -548,7 +578,16 @@ function BelanjaNotaIsi() {
                     : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
                 }`}
               >
-                Kas Resto / Outlet
+                {/* Nominal Petty Cash ditulis PERMANEN di sini (bukan
+                    saldo berjalan) atas permintaan pemilik cafe, supaya
+                    karyawan tidak bingung membandingkannya dengan
+                    "sisa" Saldo Finance di bawahnya: Kas Outlet memang
+                    berpatok pada angka tetap ini, bukan saldo yang
+                    naik-turun. */}
+                Kas Resto / Outlet{" "}
+                <span className="font-normal text-slate-500">
+                  ({LABEL_PETTY_CASH})
+                </span>
               </button>
               <button
                 type="button"
@@ -562,11 +601,39 @@ function BelanjaNotaIsi() {
                 Saldo Finance <span className="font-normal text-slate-500">(sisa {formatRupiah(saldoFinance)})</span>
               </button>
             </div>
-            <p className="mt-1.5 text-xs text-slate-500">
-              Saldo Finance adalah dana khusus dari Owner di luar Omset penjualan — dikelola Finance lewat
-              menu Transaksi Finance.
-            </p>
           </div>
+
+          {sumberDana === "kas_resto" ? (
+            <div className="mt-4">
+              <NumberField
+                id="modal-diberikan"
+                label="Kas Belanja Diterima"
+                value={modalDiberikan}
+                onChange={setModalDiberikan}
+                prefix="Rp"
+              />
+              <p className="mt-1.5 text-xs text-slate-500">
+                Uang tunai fisik yang Anda terima dari laci sebelum berangkat belanja. Sisanya dikembalikan
+                saat belanja ditandai selesai.
+              </p>
+              <p className="mt-1.5 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600">
+                Catatan: laci outlet berpatok <strong className="font-semibold">{LABEL_PETTY_CASH}</strong> —
+                itu modal tetap yang harus selalu tersisa di laci, bukan saldo yang bisa dibelanjakan habis.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <p className="text-xs text-emerald-900">
+                Tidak perlu uang muka. Setiap item belanja yang Anda simpan akan{" "}
+                <strong className="font-semibold">langsung memotong Saldo Finance</strong> sejumlah nilai
+                belanja itu, dan tercatat di menu Mutasi Saldo Finance.
+              </p>
+              <p className="mt-1.5 text-xs text-emerald-800">
+                Saldo kurang? Ajukan lewat kartu <strong className="font-semibold">Pengajuan Dana</strong> di
+                bawah — dana bertambah setelah disetujui Finance.
+              </p>
+            </div>
+          )}
 
           <button
             type="button"
@@ -590,10 +657,15 @@ function BelanjaNotaIsi() {
             {sedangMulai ? "Memulai..." : "Mulai Belanja"}
           </button>
         </div>
+        </div>
 
-        <div className="mt-6 flex flex-col gap-6">
+        <div className="flex flex-col gap-6">
+          <PengajuanDanaKartu />
+          <TrenHargaBahanKartu />
+          <RiwayatBelanjaKartu />
           <EksporLaporanPembelianKartu />
           <BandingPurchasingKartu />
+        </div>
         </div>
       </main>
     );
@@ -625,6 +697,17 @@ function BelanjaBerjalan({
   const [itemBelanja, setItemBelanja] = useState<ItemBelanja[]>([]);
   const [notaList, setNotaList] = useState<NotaItem[]>([]);
   const [sedangSelesai, setSedangSelesai] = useState(false);
+  // Saldo Finance BERJALAN — dipantau real-time supaya angka di pojok
+  // kanan atas ikut turun tiap item disimpan (sumber "Saldo Finance"
+  // memang memotong saldo per item, lihat handleTambahItem).
+  const [saldoFinance, setSaldoFinance] = useState(0);
+  useEffect(() => {
+    if (sumberDana !== "saldo_finance") return;
+    const unsub = onSnapshot(doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE), (snap) => {
+      setSaldoFinance(snap.exists() ? (snap.data().saldo ?? 0) : 0);
+    });
+    return unsub;
+  }, [outletId, sumberDana]);
 
   useEffect(() => {
     const unsubBahan = onSnapshot(collection(db, "outlets", outletId, "bahan_baku"), (snap) => {
@@ -645,6 +728,7 @@ function BelanjaBerjalan({
       setItemBelanja(
         snap.docs.map((d) => ({
           id: d.id,
+          bahanId: d.data().bahanId ?? null,
           bahanNama: d.data().bahanNama ?? "",
           qty: d.data().qty ?? 0,
           satuan: d.data().satuan ?? "pcs",
@@ -693,21 +777,42 @@ function BelanjaBerjalan({
           </p>
         </div>
         <div className="text-right">
-          <p className="text-xs text-slate-500">Sisa Kas</p>
-          <p
-            className={`text-xl font-bold tabular-nums ${sisaKas < 0 ? "text-rose-700" : "text-emerald-700"}`}
-          >
-            {formatRupiah(sisaKas)}
+          {/* Sumber Saldo Finance tidak punya uang muka, jadi "Sisa Kas"
+              tidak bermakna di sana — yang relevan adalah sisa saldo
+              yang memang berkurang tiap item disimpan. */}
+          <p className="text-xs text-slate-500">
+            {sumberDana === "saldo_finance" ? "Sisa Saldo Finance" : "Sisa Kas"}
           </p>
+          <p
+            className={`text-xl font-bold tabular-nums ${
+              (sumberDana === "saldo_finance" ? saldoFinance : sisaKas) < 0
+                ? "text-rose-700"
+                : "text-emerald-700"
+            }`}
+          >
+            {formatRupiah(sumberDana === "saldo_finance" ? saldoFinance : sisaKas)}
+          </p>
+          {sumberDana === "saldo_finance" ? (
+            <p className="text-[11px] text-slate-400">Belanja sesi ini: {formatRupiah(totalBelanja)}</p>
+          ) : null}
         </div>
       </header>
 
       <div className="flex flex-col gap-6">
+        {itemBelanja.length === 0 && notaList.length === 0 ? (
+          <UbahSumberDanaKartu
+            belanjaId={belanjaId}
+            modalDiberikanSaatIni={modalDiberikan}
+            sumberDanaSaatIni={sumberDana}
+          />
+        ) : null}
+
         <TambahItemKartu
           belanjaId={belanjaId}
           daftarBahan={daftarBahan}
           itemBelanja={itemBelanja}
           totalBelanja={totalBelanja}
+          sumberDana={sumberDana}
         />
 
         {/* Dua panel utilitas kecil ini berdampingan di layar lebar —
@@ -728,10 +833,178 @@ function BelanjaBerjalan({
           setSedangSelesai={setSedangSelesai}
         />
 
+        <PengajuanDanaKartu />
+        <TrenHargaBahanKartu />
+        <RiwayatBelanjaKartu />
         <EksporLaporanPembelianKartu />
         <BandingPurchasingKartu />
       </div>
     </main>
+  );
+}
+
+/** "Kembali" untuk memilih ulang Sumber Dana/Kas Belanja Diterima —
+ *  permintaan user: setelah menekan "Mulai Belanja" tidak ada jalan
+ *  balik untuk mengoreksi pilihan Sumber Dana (mis. salah pilih Kas
+ *  Resto padahal maksudnya Saldo Finance, atau lupa isi nominal).
+ *
+ *  SENGAJA berupa UPDATE ke dokumen kas_belanja yang sama (bukan hapus
+ *  lalu buat baru) — firestore.rules TIDAK memberi Purchasing izin
+ *  `delete` pada kas_belanja (hanya Owner/Finance, lihat komentar di
+ *  firestore.rules bagian kas_belanja), tapi Purchasing MEMANG sudah
+ *  diizinkan `update` selama status belum 'terkunci' dan itu
+ *  dokumennya sendiri — jadi cara ini tidak perlu perubahan rules sama
+ *  sekali. HANYA ditampilkan selagi belum ada item/nota tercatat (lihat
+ *  pemanggilan di BelanjaBerjalan) — begitu sudah ada transaksi nyata,
+ *  mengubah modal/Sumber Dana di tengah jalan akan bikin rekonsiliasi
+ *  membingungkan, jadi diblokir sama sekali lewat kondisi render itu. */
+function UbahSumberDanaKartu({
+  belanjaId,
+  modalDiberikanSaatIni,
+  sumberDanaSaatIni,
+}: {
+  belanjaId: string;
+  modalDiberikanSaatIni: number;
+  sumberDanaSaatIni: "kas_resto" | "saldo_finance";
+}) {
+  const outletId = useOutletId();
+  const { showToast } = useToast();
+  const [terbuka, setTerbuka] = useState(false);
+  const [modalBaru, setModalBaru] = useState(modalDiberikanSaatIni);
+  const [sumberDanaBaru, setSumberDanaBaru] = useState(sumberDanaSaatIni);
+  const [sedangSimpan, setSedangSimpan] = useState(false);
+
+  function bukaForm() {
+    setModalBaru(modalDiberikanSaatIni);
+    setSumberDanaBaru(sumberDanaSaatIni);
+    setTerbuka(true);
+  }
+
+  async function handleSimpan() {
+    const modalEfektif = sumberDanaBaru === "kas_resto" ? modalBaru : 0;
+    if (sumberDanaBaru === "kas_resto" && modalBaru <= 0) {
+      showToast("error", "Kas Belanja Diterima tidak boleh Rp0 untuk sumber Kas Resto/Outlet.");
+      return;
+    }
+    if (modalEfektif === modalDiberikanSaatIni && sumberDanaBaru === sumberDanaSaatIni) {
+      setTerbuka(false);
+      return;
+    }
+
+    setSedangSimpan(true);
+    try {
+      // TIDAK ADA penyesuaian saldo_finance di sini lagi: sejak model
+      // "potong sesuai realisasi", Saldo Finance tidak pernah dipotong
+      // di muka saat sesi dimulai — potongannya menempel pada tiap item
+      // belanja (handleTambahItem). Kartu ini pun HANYA muncul selagi
+      // belum ada satu pun item/nota tercatat (lihat pemanggilnya di
+      // BelanjaBerjalan), jadi tidak ada potongan yang perlu dinetralkan.
+      await updateDoc(doc(db, "outlets", outletId, "kas_belanja", belanjaId), {
+        modalDiberikan: modalEfektif,
+        sumberDana: sumberDanaBaru,
+        sisaKas: modalEfektif,
+      });
+      showToast("success", "Sumber Dana & Kas Belanja Diterima berhasil diperbarui.");
+      setTerbuka(false);
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? `Gagal memperbarui: ${error.message}` : "Gagal memperbarui.",
+      );
+    } finally {
+      setSedangSimpan(false);
+    }
+  }
+
+  if (!terbuka) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-white p-3.5 text-sm">
+        <span className="text-slate-600">
+          Salah pilih Sumber Dana atau nominalnya? Belum ada belanja tercatat, masih bisa dikoreksi.
+        </span>
+        <button
+          type="button"
+          onClick={bukaForm}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 motion-safe:transition hover:bg-slate-50 active:scale-[0.98]"
+        >
+          <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+          Ubah Sumber Dana
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-ubah-sumber-dana"
+      className="rounded-xl border border-emerald-300 bg-emerald-50/60 p-5 shadow-sm"
+    >
+      <h2 id="bagian-ubah-sumber-dana" className="text-base font-semibold text-slate-900">
+        Ubah Sumber Dana / Kas Belanja Diterima
+      </h2>
+      <div className="mt-3">
+        <NumberField
+          id="ubah-modal-diberikan"
+          label="Kas Belanja Diterima"
+          value={modalBaru}
+          onChange={setModalBaru}
+          prefix="Rp"
+        />
+      </div>
+      <div className="mt-3">
+        <span className="block text-sm font-semibold text-slate-800">Sumber Dana</span>
+        <div className="mt-1.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setSumberDanaBaru("kas_resto")}
+            className={`min-h-11 rounded-lg border px-3 text-left text-sm font-medium motion-safe:transition active:scale-[0.99] ${
+              sumberDanaBaru === "kas_resto"
+                ? "border-emerald-600 bg-emerald-100 text-emerald-900"
+                : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            Kas Resto / Outlet
+          </button>
+          <button
+            type="button"
+            onClick={() => setSumberDanaBaru("saldo_finance")}
+            className={`min-h-11 rounded-lg border px-3 text-left text-sm font-medium motion-safe:transition active:scale-[0.99] ${
+              sumberDanaBaru === "saldo_finance"
+                ? "border-emerald-600 bg-emerald-100 text-emerald-900"
+                : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            Saldo Finance
+          </button>
+        </div>
+      </div>
+      <div className="mt-4 flex gap-2">
+        <button
+          type="button"
+          onClick={() => setTerbuka(false)}
+          disabled={sedangSimpan}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 motion-safe:transition hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onClick={handleSimpan}
+          disabled={sedangSimpan}
+          aria-busy={sedangSimpan}
+          className={[
+            "inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm",
+            "motion-safe:transition motion-safe:duration-150",
+            sedangSimpan
+              ? "cursor-not-allowed bg-emerald-400"
+              : "bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98]",
+          ].join(" ")}
+        >
+          {sedangSimpan ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
+          {sedangSimpan ? "Menyimpan..." : "Simpan Perubahan"}
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -740,15 +1013,42 @@ function TambahItemKartu({
   daftarBahan,
   itemBelanja,
   totalBelanja,
+  sumberDana,
 }: {
   belanjaId: string;
   daftarBahan: BahanBaku[];
   itemBelanja: ItemBelanja[];
   totalBelanja: number;
+  sumberDana: "kas_resto" | "saldo_finance";
 }) {
   const { showToast } = useToast();
-  const { user } = useAuth();
+  const { user, profil } = useAuth();
   const outletId = useOutletId();
+  // Permintaan koreksi yang masih menunggu Finance, dipetakan per
+  // itemId supaya tiap baris tahu harus menampilkan tombol "Ajukan
+  // koreksi" atau badge "menunggu persetujuan". Satu listener untuk
+  // seluruh sesi (bukan satu per baris) — query equality tunggal,
+  // tidak butuh index gabungan.
+  const [permintaanPerItem, setPermintaanPerItem] = useState<Map<string, PermintaanUbahBelanja>>(
+    new Map(),
+  );
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(
+        collection(db, "outlets", outletId, "permintaan_ubah_belanja"),
+        where("belanjaId", "==", belanjaId),
+      ),
+      (snap) => {
+        const peta = new Map<string, PermintaanUbahBelanja>();
+        for (const d of snap.docs) {
+          const permintaan = bacaPermintaan(d.id, d.data());
+          if (permintaan.status === "menunggu") peta.set(permintaan.itemId, permintaan);
+        }
+        setPermintaanPerItem(peta);
+      },
+    );
+    return unsub;
+  }, [outletId, belanjaId]);
   const [namaBahan, setNamaBahan] = useState("");
   const [qty, setQty] = useState(1);
   const [satuanBahanBaru, setSatuanBahanBaru] = useState<SatuanBahan>("gram");
@@ -815,15 +1115,71 @@ function TambahItemKartu({
       const hargaSatuan = hargaPerSatuanOtomatis;
       const subtotal = totalHarga;
 
-      await addDoc(collection(db, "outlets", outletId, "kas_belanja", belanjaId, "item"), {
-        bahanId: bahanCocok?.id ?? null,
+      // ID bahan disiapkan DULU (bukan sesudah item ditulis), supaya
+      // item belanja SELALU menyimpan bahanId yang benar — termasuk
+      // untuk bahan yang baru pertama kali dibeli. Dulu item bahan baru
+      // menyimpan bahanId: null, dan itu membuat koreksi yang disetujui
+      // Finance tidak bisa menyesuaikan stoknya (tidak tahu bahan mana
+      // yang harus dikoreksi). doc() tanpa data hanya membuat referensi
+      // di sisi klien — belum ada tulisan ke Firestore.
+      const bahanRef = bahanCocok
+        ? doc(db, "outlets", outletId, "bahan_baku", bahanCocok.id)
+        : doc(collection(db, "outlets", outletId, "bahan_baku"));
+
+      // ---- BAGIAN UANG: harus ATOMIK ----
+      // Tiga tulisan ini WAJIB berhasil/gagal bersama, karena bersama-
+      // sama membentuk satu kebenaran: "item tercatat" == "saldo
+      // terpotong" == "mutasi tercatat". Kalau dipisah dan salah satu
+      // gagal, laporan akan bohong (mis. item ada tapi saldo utuh —
+      // persis keluhan "sudah belanja kok Saldo Finance masih 1jt").
+      //
+      // Potongan Saldo Finance SENGAJA terjadi DI SINI (saat item
+      // disimpan), bukan di muka saat "Mulai Belanja" — sesuai model
+      // yang diminta pemilik cafe: dana masuk lewat Pengajuan Dana yang
+      // disetujui Finance, lalu berkurang sesuai realisasi belanja.
+      const batch = writeBatch(db);
+      const itemRef = doc(collection(db, "outlets", outletId, "kas_belanja", belanjaId, "item"));
+      batch.set(itemRef, {
+        bahanId: bahanRef.id,
         bahanNama: namaBahan.trim(),
         qty,
         satuan,
         hargaSatuan,
         subtotal,
+        // Jejak siapa & kapan — dipakai halaman Mutasi dan alur
+        // Permintaan Ubah (approval Finance) untuk audit.
+        dicatatOlehUid: user?.uid ?? "",
+        dicatatOlehNama: profil?.nama ?? "",
+        waktu: serverTimestamp(),
       });
-      await updateDoc(doc(db, "outlets", outletId, "kas_belanja", belanjaId), { totalBelanja: increment(subtotal) });
+      batch.update(doc(db, "outlets", outletId, "kas_belanja", belanjaId), {
+        totalBelanja: increment(subtotal),
+      });
+
+      if (sumberDana === "saldo_finance") {
+        batch.set(
+          doc(db, "outlets", outletId, "saldo_finance", ID_SALDO_FINANCE),
+          { saldo: increment(-subtotal) },
+          { merge: true },
+        );
+        catatMutasiFinance(batch, outletId, {
+          arah: "keluar",
+          nominal: subtotal,
+          sumber: "belanja",
+          keterangan: `Belanja: ${namaBahan.trim()} (${qty} ${satuan})`,
+          refId: itemRef.id,
+          olehUid: user?.uid ?? "",
+          olehNama: profil?.nama ?? "",
+          tanggal: tanggalHariIni(),
+        });
+      }
+
+      await batch.commit();
+      // ---- BAGIAN STOK: di luar batch di atas, disengaja ----
+      // Stok & riwayat harga bukan uang; pola tulisannya sudah
+      // increment-based ("tulis tanpa baca") sehingga aman diulang, dan
+      // memisahkannya menjaga batch uang tetap kecil & pasti lolos
+      // batas 500 operasi per batch.
 
       if (bahanCocok) {
         // Bahan sudah ada -> cek kenaikan harga & catat riwayat, LALU
@@ -848,7 +1204,7 @@ function TambahItemKartu({
             });
           }
         }
-        await updateDoc(doc(db, "outlets", outletId, "bahan_baku", bahanCocok.id), {
+        await updateDoc(bahanRef, {
           hargaSatuanTerakhir: hargaSatuan,
           stokSaatIni: increment(qty),
           updatedAt: serverTimestamp(),
@@ -870,10 +1226,10 @@ function TambahItemKartu({
           aktif: true,
         });
       } else {
-        // Bahan baru -> buat dokumen inventaris, stok awal = qty yang
-        // baru saja dibeli (bukan 0 seperti sebelumnya).
-        const bahanBaruRef = doc(collection(db, "outlets", outletId, "bahan_baku"));
-        await setDoc(bahanBaruRef, {
+        // Bahan baru -> buat dokumen inventaris pada ID yang tadi sudah
+        // ditanam ke item belanja (bahanRef), stok awal = qty yang baru
+        // saja dibeli.
+        await setDoc(bahanRef, {
           nama: namaBahan.trim(),
           kategori: "Umum",
           satuan,
@@ -883,7 +1239,7 @@ function TambahItemKartu({
           aktif: true,
           updatedAt: serverTimestamp(),
         });
-        await setMirrorStokKasir(outletId, bahanBaruRef.id, {
+        await setMirrorStokKasir(outletId, bahanRef.id, {
           nama: namaBahan.trim(),
           kategori: "Umum",
           satuan,
@@ -895,7 +1251,9 @@ function TambahItemKartu({
 
       showToast(
         "success",
-        `${namaBahan.trim()} ditambahkan: ${formatRupiah(subtotal)} (${formatRupiahSatuan(hargaSatuan)}/${satuan}).`,
+        sumberDana === "saldo_finance"
+          ? `${namaBahan.trim()} ditambahkan: ${formatRupiah(subtotal)} — Saldo Finance langsung berkurang sejumlah ini.`
+          : `${namaBahan.trim()} ditambahkan: ${formatRupiah(subtotal)} (${formatRupiahSatuan(hargaSatuan)}/${satuan}).`,
       );
       setNamaBahan("");
       setQty(1);
@@ -927,18 +1285,22 @@ function TambahItemKartu({
       </div>
 
       {itemBelanja.length > 0 ? (
-        <ul className="mt-3 divide-y divide-slate-100">
-          {itemBelanja.map((item) => (
-            <li key={item.id} className="flex items-center justify-between py-1.5 text-sm">
-              <span className="text-slate-700">
-                {item.bahanNama} · {item.qty} {item.satuan} × {formatRupiahSatuan(item.hargaSatuan)}
-              </span>
-              <span className="font-medium tabular-nums text-slate-900">
-                {formatRupiah(item.subtotal)}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="mt-3 divide-y divide-slate-100">
+            {itemBelanja.map((item) => (
+              <BarisItemBelanja
+                key={item.id}
+                belanjaId={belanjaId}
+                item={item}
+                sumberDana={sumberDana}
+                permintaanMenunggu={permintaanPerItem.get(item.id) ?? null}
+              />
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-slate-400">
+            Item yang sudah disimpan terkunci. Perubahan/penghapusan harus lewat persetujuan Finance.
+          </p>
+        </>
       ) : (
         <p className="mt-3 text-sm text-slate-500">Belum ada item dicatat.</p>
       )}
@@ -1575,6 +1937,213 @@ function labelStatusBelanja(status: BarisLaporanPembelian["status"]): string {
   if (status === "selesai") return "Selesai";
   if (status === "terkunci") return "Terkunci";
   return "Terbuka";
+}
+
+/** Riwayat Belanja milik Purchasing yang sedang login, dikelompokkan
+ *  per tanggal — beda dengan EksporLaporanPembelianKartu di bawah
+ *  (yang cuma tombol unduh, tanpa tabel di layar). Query & tipe baris
+ *  sengaja SAMA POLA-nya dengan ambilBaris() di kartu ekspor (kolom
+ *  yang sama, filter purchasingUid == diri sendiri yang sama) supaya
+ *  dua kartu ini selalu konsisten satu sama lain. */
+function RiwayatBelanjaKartu() {
+  const { user } = useAuth();
+  const outletId = useOutletId();
+  const [memuat, setMemuat] = useState(true);
+  const [daftar, setDaftar] = useState<BarisLaporanPembelian[]>([]);
+  const [dariTanggal, setDariTanggal] = useState(() => rentangPeriodeLaporan("bulanan").mulai);
+  const [sampaiTanggal, setSampaiTanggal] = useState(() => rentangPeriodeLaporan("bulanan").selesai);
+  const [tanggalTerbuka, setTanggalTerbuka] = useState<Set<string>>(new Set());
+
+  const periodeAktif =
+    (["harian", "mingguan", "bulanan", "tahunan"] as PeriodeLaporan[]).find((p) => {
+      const r = rentangPeriodeLaporan(p);
+      return r.mulai === dariTanggal && r.selesai === sampaiTanggal;
+    }) ?? null;
+
+  useEffect(() => {
+    if (!user) return;
+    let dibatalkan = false;
+    setMemuat(true);
+    getDocs(
+      query(
+        collection(db, "outlets", outletId, "kas_belanja"),
+        where("purchasingUid", "==", user.uid),
+        where("tanggal", ">=", dariTanggal),
+        where("tanggal", "<=", sampaiTanggal),
+        orderBy("tanggal"),
+      ),
+    )
+      .then((snap) => {
+        if (dibatalkan) return;
+        const baris: BarisLaporanPembelian[] = snap.docs.map((d) => ({
+          tanggal: d.data().tanggal ?? "",
+          purchasingNama: d.data().purchasingNama ?? "",
+          sumberDana: (d.data().sumberDana ?? "kas_resto") as "kas_resto" | "saldo_finance",
+          modalDiberikan: d.data().modalDiberikan ?? 0,
+          totalBelanja: d.data().totalBelanja ?? 0,
+          sisaKas: d.data().sisaKas ?? 0,
+          status: (d.data().status ?? "terbuka") as BarisLaporanPembelian["status"],
+          nomorShift: d.data().nomorShift ?? 1,
+        }));
+        setDaftar(baris);
+        // Tanggal paling baru otomatis terbuka, sisanya tertutup —
+        // supaya kartu tidak langsung panjang sekali kalau periodenya
+        // Bulanan/Tahunan.
+        setTanggalTerbuka(baris.length > 0 ? new Set([baris[baris.length - 1].tanggal]) : new Set());
+        setMemuat(false);
+      })
+      .catch(() => {
+        if (!dibatalkan) setMemuat(false);
+      });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [user, outletId, dariTanggal, sampaiTanggal]);
+
+  const kelompok = useMemo(() => {
+    const perTanggal = new Map<string, BarisLaporanPembelian[]>();
+    for (const b of daftar) {
+      const grup = perTanggal.get(b.tanggal) ?? [];
+      grup.push(b);
+      perTanggal.set(b.tanggal, grup);
+    }
+    return [...perTanggal.entries()]
+      .map(([tanggal, sesi]) => ({
+        tanggal,
+        sesi: [...sesi].sort((a, b) => a.nomorShift - b.nomorShift),
+        totalBelanja: sesi.reduce((t, b) => t + b.totalBelanja, 0),
+      }))
+      .sort((a, b) => (a.tanggal < b.tanggal ? 1 : -1)); // terbaru dulu
+  }, [daftar]);
+
+  function toggleTanggal(tanggal: string) {
+    setTanggalTerbuka((prev) => {
+      const salinan = new Set(prev);
+      if (salinan.has(tanggal)) salinan.delete(tanggal);
+      else salinan.add(tanggal);
+      return salinan;
+    });
+  }
+
+  return (
+    <section
+      aria-labelledby="bagian-riwayat-belanja"
+      className="kartu-interaktif rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
+      <h2
+        id="bagian-riwayat-belanja"
+        className="flex items-center gap-2 text-base font-semibold text-slate-900"
+      >
+        <History className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        Riwayat Belanja
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Sesi belanja milik Anda sendiri, dikelompokkan per tanggal. Klik tanggal untuk buka/tutup rinciannya.
+      </p>
+
+      <div className="mt-4">
+        <PeriodePicker
+          periodeAktif={periodeAktif}
+          onPilih={(r) => {
+            setDariTanggal(r.mulai);
+            setSampaiTanggal(r.selesai);
+          }}
+        />
+      </div>
+
+      {memuat ? (
+        <div className="mt-4 flex items-center justify-center py-6">
+          <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
+        </div>
+      ) : kelompok.length === 0 ? (
+        <p className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+          Belum ada riwayat belanja pada rentang tanggal ini.
+        </p>
+      ) : (
+        <ul className="mt-4 flex flex-col gap-2">
+          {kelompok.map((grup) => {
+            const terbuka = tanggalTerbuka.has(grup.tanggal);
+            return (
+              <li key={grup.tanggal} className="rounded-lg border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => toggleTanggal(grup.tanggal)}
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left motion-safe:transition hover:bg-slate-50"
+                  aria-expanded={terbuka}
+                >
+                  <span className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                    {terbuka ? (
+                      <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                    )}
+                    {formatTanggalPanjangId(grup.tanggal)}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-3 text-xs text-slate-500">
+                    <span>{grup.sesi.length} sesi</span>
+                    <span className="font-semibold tabular-nums text-slate-900">
+                      {formatRupiah(grup.totalBelanja)}
+                    </span>
+                  </span>
+                </button>
+
+                {terbuka ? (
+                  <div className="border-t border-slate-100 px-3 py-2">
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[520px] text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                            <th className="py-1.5 pr-2 font-semibold">Shift</th>
+                            <th className="py-1.5 pr-2 font-semibold">Sumber Dana</th>
+                            <th className="py-1.5 pr-2 font-semibold">Modal</th>
+                            <th className="py-1.5 pr-2 font-semibold">Belanja</th>
+                            <th className="py-1.5 pr-2 font-semibold">Sisa Kas</th>
+                            <th className="py-1.5 font-semibold">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {grup.sesi.map((s, i) => (
+                            <tr key={`${grup.tanggal}-${i}`}>
+                              <td className="py-1.5 pr-2 tabular-nums text-slate-600">#{s.nomorShift}</td>
+                              <td className="py-1.5 pr-2 text-slate-600">
+                                {s.sumberDana === "saldo_finance" ? "Saldo Finance" : "Kas Resto/Outlet"}
+                              </td>
+                              <td className="py-1.5 pr-2 tabular-nums text-slate-600">
+                                {formatRupiah(s.modalDiberikan)}
+                              </td>
+                              <td className="py-1.5 pr-2 tabular-nums font-medium text-slate-900">
+                                {formatRupiah(s.totalBelanja)}
+                              </td>
+                              <td className="py-1.5 pr-2 tabular-nums text-slate-600">
+                                {formatRupiah(s.sisaKas)}
+                              </td>
+                              <td className="py-1.5">
+                                <span
+                                  className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                    s.status === "selesai"
+                                      ? "bg-emerald-50 text-emerald-700"
+                                      : s.status === "terkunci"
+                                        ? "bg-slate-100 text-slate-600"
+                                        : "bg-amber-50 text-amber-700"
+                                  }`}
+                                >
+                                  {labelStatusBelanja(s.status)}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
 }
 
 function EksporLaporanPembelianKartu() {

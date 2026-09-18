@@ -52,6 +52,10 @@ import {
   type DocumentReference,
 } from "firebase/firestore";
 import { db } from "./firebase";
+// Nominal petty cash dipakai bersama halaman Shift & Cash Opname —
+// diimpor dari sumber tunggal supaya data contoh tidak pernah memakai
+// angka yang beda dari data asli.
+import { MODAL_KAS_AWAL_HARIAN } from "./petty-cash";
 
 export const NAMA_OUTLET_DEMO = "🧪 Demo / Beta (Data Dummy)";
 const ALAMAT_OUTLET_DEMO = "Outlet contoh — hasil ujicoba TIDAK memengaruhi data asli manapun";
@@ -190,7 +194,6 @@ const SLOT_SHIFT_DUMMY = [
   { id: "sore", nama: "Shift Sore", jamMulai: "15:00", jamSelesai: "23:00" },
 ];
 
-const MODAL_KAS_AWAL_HARIAN = 500000;
 
 /** Satu baris penjualan sederhana (dipakai buat 2 hari x 2 shift). */
 interface BarisPenjualanDummy {

@@ -319,15 +319,30 @@ service cloud.firestore {
               && resource.data.status != 'terkunci');
         allow delete: if isManagerOutlet(outletId);
 
+        // ITEM BELANJA SEKARANG TERKUNCI SETELAH DISIMPAN.
+        //
+        // Alasannya uang: sejak item belanja memotong saldo_finance
+        // saat disimpan (lihat handleTambahItem di
+        // src/app/belanja-nota/page.tsx), mengizinkan Purchasing
+        // meng-update/menghapus itemnya sendiri sama saja dengan
+        // mengizinkan dia mengubah saldo perusahaan tanpa pengawasan.
+        // Permintaan eksplisit pemilik cafe: "jika ingin edit maka
+        // membutuhkan Approval Akun Finance demi keamanan menghindari
+        // kecurangan".
+        //
+        // Jadi Purchasing hanya boleh CREATE. Koreksi ditempuh lewat
+        // koleksi permintaan_ubah_belanja di bawah, dan yang benar-
+        // benar menuliskan perubahannya adalah Finance/Owner
+        // (isManagerOutlet) lewat setujuiPermintaanUbah().
         match /item/{itemId} {
           allow read: if isManagerOutlet(outletId)
             || (isPurchasingOutlet(outletId)
                 && get(/databases/$(database)/documents/outlets/$(outletId)/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid);
-          allow create, update: if isManagerOutlet(outletId)
+          allow create: if isManagerOutlet(outletId)
             || (isPurchasingOutlet(outletId)
                 && get(/databases/$(database)/documents/outlets/$(outletId)/kas_belanja/$(belanjaId)).data.purchasingUid == request.auth.uid
                 && get(/databases/$(database)/documents/outlets/$(outletId)/kas_belanja/$(belanjaId)).data.status != 'terkunci');
-          allow delete: if isManagerOutlet(outletId);
+          allow update, delete: if isManagerOutlet(outletId);
         }
 
         match /nota/{notaId} {
@@ -505,6 +520,79 @@ service cloud.firestore {
         // koreksi/hapus transaksi Deposito Finance juga "uang masuk/
         // keluar" yang tidak boleh dieksekusi Owner.
         allow update, delete: if isFinanceOutlet(outletId);
+      }
+
+      // --------------------------------------------------------
+      // SECTION: mutasi_finance — BUKU BESAR (ledger) Saldo Finance.
+      //
+      // APPEND-ONLY, TANPA KECUALI: update & delete ditolak untuk
+      // SEMUA peran, termasuk Owner. Ini jejak audit anti-kecurangan
+      // (permintaan pemilik cafe) — jejak yang bisa dihapus bukan
+      // jejak. Koreksi dilakukan dengan MENAMBAH baris lawan, persis
+      // seperti bank, bukan dengan mengubah baris lama.
+      //
+      // create diberikan ke Finance & Purchasing karena keduanya
+      // memang menggerakkan saldo (Finance lewat Transaksi Finance &
+      // persetujuan; Purchasing lewat item belanja). Barisnya selalu
+      // ditulis DALAM BATCH YANG SAMA dengan increment saldo_finance
+      // — lihat src/shared/lib/mutasi-finance.ts.
+      // --------------------------------------------------------
+
+      match /mutasi_finance/{mutasiId} {
+        allow read: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+        allow create: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+        allow update, delete: if false;
+      }
+
+      // --------------------------------------------------------
+      // SECTION: pengajuan_dana — Purchasing meminta dana, Finance
+      // menyetujui (lalu saldo bertambah).
+      //
+      // Purchasing hanya boleh MEMBUAT pengajuan atas namanya sendiri
+      // dan WAJIB berstatus 'menunggu' — mustahil membuat pengajuan
+      // yang langsung 'disetujui'. Hanya Finance yang boleh mengubah
+      // status (menyetujui/menolak); Owner SENGAJA tidak, konsisten
+      // dengan aturan transaksi_finance di atas (Owner memantau, tidak
+      // mengeksekusi uang).
+      // --------------------------------------------------------
+
+      match /pengajuan_dana/{pengajuanId} {
+        allow read: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+        allow create: if isPurchasingOutlet(outletId)
+          && request.resource.data.purchasingUid == request.auth.uid
+          && request.resource.data.status == 'menunggu'
+          && request.resource.data.nominalDisetujui == 0;
+        allow update: if isFinanceOutlet(outletId);
+        // Purchasing boleh membatalkan pengajuannya sendiri selama
+        // belum diputuskan — tidak ada uang yang bergerak di situ.
+        allow delete: if isFinanceOutlet(outletId)
+          || (isPurchasingOutlet(outletId)
+              && resource.data.purchasingUid == request.auth.uid
+              && resource.data.status == 'menunggu');
+      }
+
+      // --------------------------------------------------------
+      // SECTION: permintaan_ubah_belanja — koreksi item belanja yang
+      // sudah tersimpan, WAJIB lewat persetujuan Finance.
+      //
+      // Sama polanya dengan pengajuan_dana: Purchasing hanya bisa
+      // MENGAJUKAN (status 'menunggu', atas namanya sendiri), dan
+      // hanya Finance yang bisa memutuskan. Yang benar-benar menulis
+      // perubahan ke item/stok/saldo adalah batch milik Finance di
+      // setujuiPermintaanUbah() — dokumen ini sendiri cuma
+      // "formulir"-nya.
+      // --------------------------------------------------------
+
+      match /permintaan_ubah_belanja/{permintaanId} {
+        allow read: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
+        allow create: if isPurchasingOutlet(outletId)
+          && request.resource.data.purchasingUid == request.auth.uid
+          && request.resource.data.status == 'menunggu';
+        allow update: if isFinanceOutlet(outletId);
+        allow delete: if isFinanceOutlet(outletId)
+          || (isPurchasingOutlet(outletId)
+              && resource.data.purchasingUid == request.auth.uid
+              && resource.data.status == 'menunggu');
       }
 
       // --------------------------------------------------------

@@ -88,6 +88,7 @@ import { ambilDrafAsync, hapusDraf, useDrafOtomatis } from "@/shared/lib/draf";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
 import { formatTanggalPanjangId } from "@/shared/lib/periode-laporan";
+import { MODAL_KAS_AWAL_HARIAN } from "@/shared/lib/petty-cash";
 import type { ResepItem } from "@/shared/types/inventaris";
 import type { DetailPerusahaan } from "@/shared/types/perusahaan";
 
@@ -227,10 +228,11 @@ function tanggalHariIni(): string {
   ).padStart(2, "0")}`;
 }
 
-/** Modal Kas Awal FLAT — sama setiap hari, tidak lagi diinput manual
- *  oleh Kasir dan TIDAK mewarisi sisa kas hari sebelumnya (reset
- *  harian). Lihat komentar kepala file untuk alasannya. */
-const MODAL_KAS_AWAL_HARIAN = 500_000;
+// Modal Kas Awal FLAT — sama setiap hari, tidak diinput manual oleh
+// Kasir dan TIDAK mewarisi sisa kas hari sebelumnya (reset harian).
+// Nilainya dipusatkan di src/shared/lib/petty-cash.ts karena dipakai
+// juga oleh Cash Opname, Data Dummy, dan label Kas Outlet di halaman
+// Belanja & Nota.
 
 interface DataSlipShift {
   tanggal: string;

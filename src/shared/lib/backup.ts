@@ -46,6 +46,12 @@ const STRUKTUR_KOLEKSI: Record<string, string[]> = {
   nota_refund: [],
   saldo_finance: [],
   transaksi_finance: [],
+  // Buku besar Saldo Finance + dua alur persetujuannya. mutasi_finance
+  // WAJIB ikut dicadangkan: dia satu-satunya jejak rinci ke mana saldo
+  // bergerak (dokumen saldo_finance cuma menyimpan angka akhir).
+  mutasi_finance: [],
+  pengajuan_dana: [],
+  permintaan_ubah_belanja: [],
   slot_shift: [],
   serah_terima_kas: [],
   catatan_owner: [],
