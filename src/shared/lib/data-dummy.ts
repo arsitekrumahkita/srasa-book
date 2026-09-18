@@ -647,13 +647,22 @@ export async function seedDataDummy(): Promise<HasilSeedDummy> {
 // dokumen per dokumen (dibatch).
 // ------------------------------------------------------------
 
+/** `path` bertipe TUPLE (minimal satu segmen), bukan string[] biasa:
+ *  tanda tangan collection()/doc() Firestore adalah
+ *  (db, path: string, ...pathSegments: string[]), jadi menyebar
+ *  string[] polos ditolak TypeScript ("A spread argument must either
+ *  have a tuple type or be passed to a rest parameter") dan overload
+ *  yang tersisa malah mengira argumen pertama sebuah
+ *  CollectionReference. Memecah segmen pertama secara eksplisit
+ *  membuat tipenya cocok tanpa `any` atau kompromi keamanan tipe. */
 async function hapusSemuaDokumenKoleksi(
   kumpulan: KumpulanBatch,
-  path: string[],
+  path: [string, ...string[]],
 ): Promise<void> {
-  const snap = await getDocs(collection(db, ...path));
+  const [segmenPertama, ...sisaSegmen] = path;
+  const snap = await getDocs(collection(db, segmenPertama, ...sisaSegmen));
   for (const d of snap.docs) {
-    kumpulan.hapus(doc(db, ...path, d.id));
+    kumpulan.hapus(doc(db, segmenPertama, ...sisaSegmen, d.id));
   }
 }
 

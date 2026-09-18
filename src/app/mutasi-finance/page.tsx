@@ -226,7 +226,13 @@ function MutasiFinanceIsi() {
             }}
           />
           <div className="w-full sm:max-w-xs">
-            <SearchBar value={pencarian} onChange={setPencarian} placeholder="Cari keterangan / nama..." />
+            <SearchBar
+              id="cari-mutasi-finance"
+              value={pencarian}
+              onChange={setPencarian}
+              placeholder="Cari keterangan / nama..."
+              ariaLabel="Cari keterangan atau nama pada mutasi Saldo Finance"
+            />
           </div>
         </div>
 

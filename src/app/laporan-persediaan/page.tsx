@@ -165,7 +165,13 @@ function LaporanPersediaanIsi() {
             }}
           />
           <div className="w-full sm:max-w-xs">
-            <SearchBar value={pencarian} onChange={setPencarian} placeholder="Cari nama bahan..." />
+            <SearchBar
+              id="cari-bahan-persediaan"
+              value={pencarian}
+              onChange={setPencarian}
+              placeholder="Cari nama bahan..."
+              ariaLabel="Cari nama bahan baku di laporan persediaan"
+            />
           </div>
         </div>
 
