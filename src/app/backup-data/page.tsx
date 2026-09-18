@@ -23,6 +23,8 @@ import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
 import { useOutlet } from "@/shared/lib/outlet-context";
+import { useAuth } from "@/shared/lib/auth-context";
+import { ResetOutletKartu } from "@/shared/components/reset-outlet-kartu";
 import { JUDUL_LENGKAP_BRAND, SLUG_BRAND } from "@/shared/lib/brand";
 import {
   ambilBackupOutlet,
@@ -50,6 +52,7 @@ function tanggalHariIni(): string {
 
 function BackupDataIsi() {
   const { showToast } = useToast();
+  const { profil } = useAuth();
   const { outletId, daftarOutletAktif } = useOutlet();
   const [cakupan, setCakupan] = useState<CakupanBackup>("satu");
   const [outletDipilih, setOutletDipilih] = useState(outletId ?? "");
@@ -205,6 +208,13 @@ function BackupDataIsi() {
           unduhan dimulai.
         </p>
       </section>
+
+      {/* Zona Berbahaya KHUSUS Owner. Finance tetap boleh mengunduh
+          backup di atas, tapi menghapus isi Outlet adalah keputusan
+          pemilik — bukan operasional harian. firestore.rules yang
+          menegakkan sungguhan (sebagian izin `delete` hanya untuk
+          isOwner), ini sekadar tidak menampilkan pintunya. */}
+      {profil?.peran === "superadmin" ? <ResetOutletKartu /> : null}
     </main>
   );
 }

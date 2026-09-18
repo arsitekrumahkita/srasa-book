@@ -29,7 +29,11 @@ import { db } from "./firebase";
  *  beserta daftar sub-koleksi SATU TINGKAT di bawah tiap dokumennya.
  *  `backup_log` SENGAJA tidak diikutkan — itu jejak audit backup itu
  *  sendiri, bukan data yang perlu dicadangkan. */
-const STRUKTUR_KOLEKSI: Record<string, string[]> = {
+// DIEKSPOR karena dipakai juga oleh src/shared/lib/reset-outlet.ts —
+// backup dan reset WAJIB memakai daftar yang sama persis. Kalau
+// daftarnya terpisah, suatu saat ada koleksi baru yang ikut ter-backup
+// tapi tidak ikut ter-reset (atau sebaliknya) tanpa ada yang sadar.
+export const STRUKTUR_KOLEKSI: Record<string, string[]> = {
   bahan_baku: ["riwayat_harga", "penyesuaian_stok"],
   stok_kasir: [],
   menu_harga: ["varian"],
@@ -44,6 +48,9 @@ const STRUKTUR_KOLEKSI: Record<string, string[]> = {
   tanggungan_kasir: [],
   banding_purchasing: [],
   nota_refund: [],
+  // Penghitung qty refund per shift+menu — ikut dicadangkan supaya
+  // pemulihan tidak membuat batas refund ter-reset diam-diam.
+  nota_refund_counter: [],
   saldo_finance: [],
   transaksi_finance: [],
   // Buku besar Saldo Finance + dua alur persetujuannya. mutasi_finance

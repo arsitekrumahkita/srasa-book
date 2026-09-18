@@ -511,25 +511,44 @@ service cloud.firestore {
         allow update: if isOwner()
           || ((isFinanceOutlet(outletId) || isPurchasingOutlet(outletId))
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["saldo"]));
+
+        // Hapus HANYA untuk Owner — dibutuhkan fitur "Reset Data
+        // Outlet" (src/shared/lib/reset-outlet.ts). Tanpa ini dokumen
+        // saldo akan tertinggal setelah reset dan Outlet yang sudah
+        // dikosongkan tetap menampilkan saldo lama. Finance sengaja
+        // TIDAK diberi izin hapus: mengubah saldo memang tugasnya,
+        // menghilangkan dokumennya bukan.
+        allow delete: if isOwner();
       }
 
       match /transaksi_finance/{transaksiId} {
         allow read: if isManagerOutlet(outletId);
         allow create: if isFinanceOutlet(outletId) && request.resource.data.financeUid == request.auth.uid;
         // SENGAJA isFinanceOutlet() saja (bukan isManagerOutlet()) —
-        // koreksi/hapus transaksi Deposito Finance juga "uang masuk/
-        // keluar" yang tidak boleh dieksekusi Owner.
-        allow update, delete: if isFinanceOutlet(outletId);
+        // koreksi transaksi Deposito Finance juga "uang masuk/keluar"
+        // yang tidak boleh dieksekusi Owner.
+        allow update: if isFinanceOutlet(outletId);
+        // Hapus: Finance (koreksi) ATAU Owner (khusus Reset Data
+        // Outlet, lihat src/shared/lib/reset-outlet.ts). Owner tetap
+        // tidak bisa MEMBUAT atau MENGUBAH transaksi — jadi tidak ada
+        // jalan bagi Owner mengarang/memoles angka, hanya mengosongkan
+        // Outlet secara keseluruhan.
+        allow delete: if isFinanceOutlet(outletId) || isOwner();
       }
 
       // --------------------------------------------------------
       // SECTION: mutasi_finance — BUKU BESAR (ledger) Saldo Finance.
       //
-      // APPEND-ONLY, TANPA KECUALI: update & delete ditolak untuk
-      // SEMUA peran, termasuk Owner. Ini jejak audit anti-kecurangan
-      // (permintaan pemilik cafe) — jejak yang bisa dihapus bukan
-      // jejak. Koreksi dilakukan dengan MENAMBAH baris lawan, persis
-      // seperti bank, bukan dengan mengubah baris lama.
+      // TIDAK BISA DIUBAH OLEH SIAPA PUN: `update` ditolak untuk semua
+      // peran, termasuk Owner. Ini jejak audit anti-kecurangan
+      // (permintaan pemilik cafe) — angka yang sudah tercatat tidak
+      // boleh bisa dipoles diam-diam. Koreksi dilakukan dengan
+      // MENAMBAH baris lawan, persis seperti bank.
+      //
+      // `delete` HANYA untuk Owner, semata-mata agar fitur "Reset Data
+      // Outlet" bisa mengosongkan Outlet sepenuhnya. Menghapus beda
+      // sifatnya dari mengubah: barisnya lenyap dan langsung kelihatan
+      // di mutasi, bukan nilai yang berubah tanpa jejak.
       //
       // create diberikan ke Finance & Purchasing karena keduanya
       // memang menggerakkan saldo (Finance lewat Transaksi Finance &
@@ -541,7 +560,17 @@ service cloud.firestore {
       match /mutasi_finance/{mutasiId} {
         allow read: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
         allow create: if isManagerOutlet(outletId) || isPurchasingOutlet(outletId);
-        allow update, delete: if false;
+        // UPDATE tetap ditolak untuk SIAPA PUN — itulah inti jejak
+        // auditnya: nilai sebuah baris mutasi tidak boleh bisa dipoles
+        // diam-diam oleh siapa pun, termasuk Owner.
+        allow update: if false;
+        // DELETE dibuka HANYA untuk Owner, semata-mata supaya "Reset
+        // Data Outlet" bisa mengosongkan Outlet sepenuhnya (lihat
+        // src/shared/lib/reset-outlet.ts). Menghapus baris berbeda
+        // sifatnya dari mengubah: barisnya hilang sama sekali sehingga
+        // langsung kelihatan di mutasi, bukan angka yang diam-diam
+        // berubah. Finance & Purchasing tetap tidak bisa menghapus.
+        allow delete: if isOwner();
       }
 
       // --------------------------------------------------------
@@ -565,7 +594,9 @@ service cloud.firestore {
         allow update: if isFinanceOutlet(outletId);
         // Purchasing boleh membatalkan pengajuannya sendiri selama
         // belum diputuskan — tidak ada uang yang bergerak di situ.
+        // isOwner() ditambahkan untuk Reset Data Outlet.
         allow delete: if isFinanceOutlet(outletId)
+          || isOwner()
           || (isPurchasingOutlet(outletId)
               && resource.data.purchasingUid == request.auth.uid
               && resource.data.status == 'menunggu');
@@ -589,7 +620,9 @@ service cloud.firestore {
           && request.resource.data.purchasingUid == request.auth.uid
           && request.resource.data.status == 'menunggu';
         allow update: if isFinanceOutlet(outletId);
+        // isOwner() ditambahkan untuk Reset Data Outlet.
         allow delete: if isFinanceOutlet(outletId)
+          || isOwner()
           || (isPurchasingOutlet(outletId)
               && resource.data.purchasingUid == request.auth.uid
               && resource.data.status == 'menunggu');
