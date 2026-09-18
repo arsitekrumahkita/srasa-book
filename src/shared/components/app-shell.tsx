@@ -40,6 +40,7 @@ import {
   Package,
   Repeat,
   RotateCcw,
+  Scale,
   ShoppingBasket,
   UserRound,
   Users,
@@ -140,6 +141,16 @@ const NAV_ITEMS: NavItem[] = [
     // Kas Outlet & Saldo Finance, lihat src/app/arus-kas/page.tsx &
     // src/shared/lib/arus-kas.ts.
     peran: ["superadmin", "finance"],
+  },
+  {
+    href: "/neraca",
+    label: "Neraca",
+    icon: Scale,
+    // SENGAJA tanpa "superadmin": permintaan eksplisit pemilik cafe
+    // "Tambah Fitur Neraca Hanya Pada Akun Finance". Ini satu-satunya
+    // halaman yang Owner TIDAK bisa buka sama sekali — lihat komentar
+    // kepala src/app/neraca/page.tsx.
+    peran: ["finance"],
   },
   {
     href: "/mutasi-finance",
