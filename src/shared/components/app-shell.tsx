@@ -52,14 +52,12 @@ import { useAuth, type PeranPengguna } from "@/shared/lib/auth-context";
 import { useOutlet } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { AutoLogout } from "@/shared/components/auto-logout";
+import { NAMA_BRAND, TAGLINE_BRAND } from "@/shared/lib/brand";
 
-/** Nama brand APLIKASI (global, lintas Outlet) — SRASA BOOK sekarang
- *  adalah nama Outlet PERTAMA, bukan lagi nama aplikasi (permintaan
- *  pemilik cafe: Multi-Cabang dengan satu Owner terpusat). Dipakai di
- *  header sidebar/topbar; nama Outlet aktif ditampilkan terpisah di
- *  bawahnya lewat useOutlet(). */
-const NAMA_BRAND = "ARCHIMAX";
-const TAGLINE_BRAND = "Food n Beverages Lifestyle Accounting";
+// Nama & tagline brand dipusatkan di src/shared/lib/brand.ts (dulu
+// dideklarasikan di sini lalu disalin ke 7 file lain). Dipakai di
+// header sidebar/topbar; nama Outlet aktif ditampilkan terpisah di
+// bawahnya lewat useOutlet().
 
 interface NavItem {
   href: string;

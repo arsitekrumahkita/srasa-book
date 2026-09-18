@@ -3,6 +3,7 @@ import "./globals.css";
 import { ToastProvider } from "@/shared/components/toast";
 import { AuthProvider } from "@/shared/lib/auth-context";
 import { OutletProvider } from "@/shared/lib/outlet-context";
+import { JUDUL_LENGKAP_BRAND, NAMA_BRAND } from "@/shared/lib/brand";
 
 // Sengaja memakai font sistem (bukan next/font/google) supaya build
 // tidak bergantung pada koneksi ke Google Fonts sama sekali — lebih
@@ -10,18 +11,19 @@ import { OutletProvider } from "@/shared/lib/outlet-context";
 // dan menghindari satu titik kegagalan eksternal yang tidak perlu.
 
 export const metadata: Metadata = {
-  title: "Archimax — Food n Beverages Lifestyle Accounting",
+  title: JUDUL_LENGKAP_BRAND,
   description:
     "Aplikasi accounting multi-outlet untuk bisnis Food & Beverages — omset, kas, dan HPP dalam satu layar, satu Owner terpusat untuk semua Outlet.",
-  // Supaya kalau Owner/Kasir/Purchasing menambahkan Archimax ke Layar
-  // Utama HP-nya (umum untuk aplikasi internal seperti ini, dipakai
-  // seperti app asli tanpa lewat browser), tampilannya standalone
-  // (tanpa address bar) dengan status bar yang wajar — bukan wajib,
-  // tapi kalau tidak diisi Safari memakai bawaan yang kurang rapi.
+  // Supaya kalau Owner/Kasir/Purchasing menambahkan aplikasi ini ke
+  // Layar Utama HP-nya (umum untuk aplikasi internal seperti ini,
+  // dipakai seperti app asli tanpa lewat browser), tampilannya
+  // standalone (tanpa address bar) dengan status bar yang wajar —
+  // bukan wajib, tapi kalau tidak diisi Safari memakai bawaan yang
+  // kurang rapi.
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Archimax",
+    title: NAMA_BRAND,
   },
 };
 
@@ -32,7 +34,7 @@ export const metadata: Metadata = {
 // layout tidak ketiban notch/pill kamera di HP layar penuh (iPhone dsb).
 //
 // themeColor: warna bar status/tab browser di Android & saat di-Add to
-// Home Screen ikut hijau Archimax, bukan putih/hitam bawaan browser.
+// Home Screen ikut hijau brand, bukan putih/hitam bawaan browser.
 // colorScheme "light": app ini SATU tema saja (belum ada mode gelap) —
 // tanpa ini, HP yang mode gelap sistemnya aktif bisa membuat kontrol
 // bawaan browser (mis. date/time picker bawaan iOS/Android) ikut

@@ -32,6 +32,7 @@ import { RequireAuth } from "@/shared/components/require-auth";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutlet } from "@/shared/lib/outlet-context";
 import { db } from "@/shared/lib/firebase";
+import { JUDUL_LENGKAP_BRAND } from "@/shared/lib/brand";
 
 const ID_OUTLET_PERTAMA = "srasa-book";
 const NAMA_OUTLET_PERTAMA = "SRASA BOOK";
@@ -136,8 +137,8 @@ function PilihOutletIsi() {
   return (
     <main className="mx-auto flex min-h-[80vh] w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
       <header className="mb-6 text-center">
-        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-          ARCHIMAX — Food n Beverages Lifestyle Accounting
+        <p className="text-xs font-semibold tracking-wide text-emerald-700">
+          {JUDUL_LENGKAP_BRAND}
         </p>
         <h1 className="mt-1 text-2xl font-bold text-slate-900">Pilih Outlet</h1>
         <p className="mt-1 text-sm text-slate-500">

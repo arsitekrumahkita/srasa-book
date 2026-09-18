@@ -1,7 +1,8 @@
-# Archimax — Food n Beverages Lifestyle Accounting
+# Jurnal F A T A — Food n Beverages Lifestyle Accounting
 
 Aplikasi accounting pendamping Majoo POS — omset, kas, dan HPP dalam satu
-layar. **Archimax** adalah nama aplikasi/brand globalnya; **SRASA BOOK**
+layar. **Jurnal F A T A** adalah nama aplikasi/brand globalnya (sebelumnya
+"ARCHIMAX", dan sebelum itu "SRASA BOOK"); **SRASA BOOK**
 adalah nama Outlet PERTAMA di dalamnya (lihat bagian Multi-Cabang di
 bawah — aplikasi ini sekarang mendukung banyak Outlet/cabang dalam satu
 akun Owner terpusat). Lihat PRD lengkap untuk konteks bisnis, rumus, dan

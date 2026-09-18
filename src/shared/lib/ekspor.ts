@@ -18,6 +18,9 @@
 // ============================================================
 
 import type { DetailPerusahaan } from "@/shared/types/perusahaan";
+// Nama brand dipakai sebagai cadangan kop surat kalau Detail
+// Perusahaan belum diisi — lihat src/shared/lib/brand.ts.
+import { NAMA_BRAND } from "@/shared/lib/brand";
 
 /** Satu kolom pada tabel laporan. */
 export interface KolomLaporan<T> {
@@ -106,7 +109,7 @@ export async function eksporExcel<T>(opsi: OpsiLaporan<T>): Promise<void> {
   // Metadata dokumen (bukan yang tercetak) — baris baru diratakan jadi
   // spasi di sini saja, kop surat sesungguhnya di bawah TETAP menghormati
   // Enter (webrules-hikimori poin 10: Nama Perusahaan boleh 2-3 baris).
-  wb.creator = (opsi.perusahaan.nama || "Archimax").replace(/\n/g, " ");
+  wb.creator = (opsi.perusahaan.nama || NAMA_BRAND).replace(/\n/g, " ");
   wb.created = new Date();
 
   const ws = wb.addWorksheet("Laporan", {
@@ -135,8 +138,8 @@ export async function eksporExcel<T>(opsi: OpsiLaporan<T>): Promise<void> {
   // Nama Perusahaan boleh 2-3 baris (mis. nama + anak kalimat) — setiap
   // baris yang diketik pakai Enter di Profil Akun dicetak sebagai baris
   // kop TERSENDIRI di sini, bukan digabung jadi satu baris panjang.
-  const barisNama = (opsi.perusahaan.nama || "Archimax").split("\n").filter((b) => b.trim());
-  for (const baris of barisNama.length > 0 ? barisNama : ["Archimax"]) {
+  const barisNama = (opsi.perusahaan.nama || NAMA_BRAND).split("\n").filter((b) => b.trim());
+  for (const baris of barisNama.length > 0 ? barisNama : [NAMA_BRAND]) {
     tambahBarisKop(baris, 16, true);
   }
   for (const teks of barisKop(opsi.perusahaan)) {
@@ -281,8 +284,8 @@ export async function eksporPdf<T>(opsi: OpsiLaporan<T>): Promise<void> {
   // Nama Perusahaan boleh 2-3 baris — setiap baris hasil Enter di Profil
   // Akun dicetak sebagai barisnya sendiri (webrules-hikimori poin 10),
   // bukan dirapatkan jadi satu baris.
-  const barisNama = (opsi.perusahaan.nama || "Archimax").split("\n").filter((b) => b.trim());
-  for (const baris of barisNama.length > 0 ? barisNama : ["Archimax"]) {
+  const barisNama = (opsi.perusahaan.nama || NAMA_BRAND).split("\n").filter((b) => b.trim());
+  for (const baris of barisNama.length > 0 ? barisNama : [NAMA_BRAND]) {
     dok.text(baris, tengah, y, { align: "center" });
     y += 6.5;
   }

@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // ============================================================
-// Firestore Security Rules — ARCHIMAX (Food n Beverages Lifestyle
+// Firestore Security Rules — Jurnal F A T A (Food n Beverages Lifestyle
 // Accounting). Ditulis untuk Spark Plan: TIDAK ada Cloud Functions/
 // custom claims, jadi peran (role) dibaca langsung dari dokumen
 // users/{uid} setiap kali dicek (via get()).

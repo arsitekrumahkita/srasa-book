@@ -23,6 +23,7 @@ import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
 import { useOutlet } from "@/shared/lib/outlet-context";
+import { JUDUL_LENGKAP_BRAND, SLUG_BRAND } from "@/shared/lib/brand";
 import {
   ambilBackupOutlet,
   ambilBackupSemuaOutlet,
@@ -71,23 +72,23 @@ function BackupDataIsi() {
         }
         const payload = {
           jenis: "backup-semua-outlet",
-          aplikasi: "Archimax — Food n Beverages Lifestyle Accounting",
+          aplikasi: JUDUL_LENGKAP_BRAND,
           dibuatPada: new Date().toISOString(),
           jumlahOutlet: daftar.length,
           outlets: await ambilBackupSemuaOutlet(daftar),
         };
-        unduhJson(payload, `backup-archimax-semua-outlet-${tanggalHariIni()}.json`);
+        unduhJson(payload, `backup-${SLUG_BRAND}-semua-outlet-${tanggalHariIni()}.json`);
       } else {
         const namaOutlet = daftarOutletAktif.find((o) => o.id === targetOutlet)?.nama ?? targetOutlet;
         const payload = {
           jenis: "backup-satu-outlet",
-          aplikasi: "Archimax — Food n Beverages Lifestyle Accounting",
+          aplikasi: JUDUL_LENGKAP_BRAND,
           dibuatPada: new Date().toISOString(),
           outletId: targetOutlet,
           outletNama: namaOutlet,
           data: await ambilBackupOutlet(targetOutlet as string),
         };
-        unduhJson(payload, `backup-archimax-${targetOutlet}-${tanggalHariIni()}.json`);
+        unduhJson(payload, `backup-${SLUG_BRAND}-${targetOutlet}-${tanggalHariIni()}.json`);
       }
       showToast("success", "Backup berhasil diunduh — simpan filenya di tempat yang aman.");
     } catch (error) {
