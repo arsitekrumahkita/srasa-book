@@ -34,7 +34,6 @@ import { RequireAuth } from "@/shared/components/require-auth";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
-import { JUDUL_LENGKAP_BRAND } from "@/shared/lib/brand";
 
 interface OutletDaftar {
   id: string;
@@ -79,10 +78,8 @@ function KelolaOutletIsi() {
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        {/* Tanpa `uppercase`: nama brand tampil persis seperti yang
-            ditulis pemilik ("Jurnal F A T A"), bukan versi kapital. */}
-        <p className="text-xs font-semibold tracking-wide text-emerald-700">
-          {JUDUL_LENGKAP_BRAND}
+        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+          ARCHIMAX — Food n Beverages Lifestyle Accounting
         </p>
         <h1 className="text-2xl font-bold text-slate-900">Kelola Outlet</h1>
         <p className="mt-1 text-sm text-slate-500">

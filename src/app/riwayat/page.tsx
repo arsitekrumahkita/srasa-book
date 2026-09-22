@@ -15,7 +15,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  addDoc,
   collection,
   doc,
   getDocs,
@@ -27,6 +26,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import {
   AlertTriangle,
@@ -38,7 +38,6 @@ import {
   FileText,
   Loader2,
   Lock,
-  TrendingDown,
 } from "lucide-react";
 import { SearchBar, cocokDenganPencarian } from "@/shared/components/search-bar";
 import { PeriodePicker } from "@/shared/components/periode-picker";
@@ -52,7 +51,6 @@ import { useToast } from "@/shared/components/toast";
 import { db } from "@/shared/lib/firebase";
 import { formatRupiah } from "@/shared/lib/format";
 import { hitungLabaHarian } from "@/shared/lib/laba-harian";
-import { daftarTanggalAntara } from "@/shared/lib/tren-tanggal";
 import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import { NumberField } from "@/shared/components/number-field";
@@ -134,8 +132,6 @@ function RiwayatIsi() {
           <EksporLaporanKartu daftarShift={daftarShift} />
           <HitungUlangLabaKartu />
         </div>
-
-        <EksporLabaRugiKartu />
       </div>
 
       {daftarShift.length > 0 ? (
@@ -310,7 +306,12 @@ function TutupPaksaShiftKartu({ shift }: { shift: RiwayatShift }) {
     }
     setSedangTutup(true);
     try {
-      await updateDoc(doc(db, "outlets", outletId, "shift", shift.id), {
+      // writeBatch atomik — sama seperti Tutup Shift biasa (lihat
+      // shift/page.tsx), supaya shift tidak sampai terkunci sementara
+      // summary_harian/tanggungan_kasir gagal ter-update.
+      const batch = writeBatch(db);
+
+      batch.update(doc(db, "outlets", outletId, "shift", shift.id), {
         totalOmset,
         omsetTunai: totalOmsetTunai,
         omsetNonTunai: totalOmsetNonTunai,
@@ -325,7 +326,7 @@ function TutupPaksaShiftKartu({ shift }: { shift: RiwayatShift }) {
         ditutupPaksaOlehNama: profil.nama,
       });
 
-      await setDoc(
+      batch.set(
         doc(db, "outlets", outletId, "summary_harian", shift.tanggal),
         {
           totalOmset: increment(totalOmset),
@@ -339,7 +340,7 @@ function TutupPaksaShiftKartu({ shift }: { shift: RiwayatShift }) {
       );
 
       if (selisihKas < 0) {
-        await addDoc(collection(db, "outlets", outletId, "tanggungan_kasir"), {
+        batch.set(doc(collection(db, "outlets", outletId, "tanggungan_kasir")), {
           shiftId: shift.id,
           tanggal: shift.tanggal,
           kasirUid: shift.kasirUid,
@@ -351,6 +352,7 @@ function TutupPaksaShiftKartu({ shift }: { shift: RiwayatShift }) {
         });
       }
 
+      await batch.commit();
       showToast("success", `Shift ${shift.tanggal} (${shift.kasirNama}) berhasil ditutup paksa.`);
     } catch (error) {
       showToast(
@@ -808,354 +810,6 @@ function EksporLaporanKartu({ daftarShift }: { daftarShift: RiwayatShift[] }) {
         </button>
       </div>
     </section>
-  );
-}
-
-/** Kategori "keluar" milik Finance (Gaji Karyawan/Biaya Operasional/
- *  Lainnya, lihat KATEGORI_KELUAR di transaksi-finance/page.tsx) —
- *  disalin nilainya di sini (bukan diimpor) supaya modul laba-rugi ini
- *  tidak perlu mengimpor seluruh page transaksi-finance hanya untuk 3
- *  string konstan. */
-const KATEGORI_KELUAR_FINANCE = ["Gaji Karyawan", "Biaya Operasional", "Lainnya"] as const;
-
-interface RincianHarianLabaRugi {
-  tanggal: string;
-  totalOmset: number;
-  totalHppTerjual: number;
-  totalKasKeluar: number;
-  labaOperasional: number;
-}
-
-interface HasilLabaRugiPeriode {
-  rincian: RincianHarianLabaRugi[];
-  totalOmset: number;
-  totalHpp: number;
-  totalKasKeluarOperasional: number;
-  labaKotorSetelahHpp: number;
-  labaOperasional: number;
-  keluarFinancePerKategori: Record<(typeof KATEGORI_KELUAR_FINANCE)[number], number>;
-  labaBersihFinal: number;
-}
-
-/** Ekspor Laporan Laba/Rugi periode — permintaan pemilik cafe:
- *  laporan Laba/Rugi yang SUDAH di-review & dirangkum, bukan sekadar
- *  rekap shift mentah (beda dengan EksporLaporanKartu di atas).
- *
- *  Menggabungkan DUA sumber yang SENGAJA terpisah secara arsitektur
- *  (lihat komentar kepala src/shared/lib/laba-harian.ts &
- *  src/app/transaksi-finance/page.tsx):
- *  1. hitungLabaHarian() per tanggal dalam periode -> Omset, HPP
- *     Terjual, Kas Keluar operasional harian Kasir (Wifi/Listrik/dst
- *     yang dibayar LANGSUNG dari kas shift) = "Laba Operasional".
- *  2. transaksi_finance arah "keluar" dalam periode yang sama,
- *     dijumlah per kategori (Gaji Karyawan/Biaya Operasional/Lainnya)
- *     -> dikurangkan SEKALI LAGI di lapisan akhir supaya Laba Bersih
- *     Final benar-benar utuh (hitungLabaHarian SENGAJA tidak
- *     memasukkan ini, lihat komentar di file itu).
- *
- *  Tidak mengubah hitungLabaHarian() itu sendiri — laporan ini murni
- *  mengagregasi hasilnya + query tambahan yang terpisah. */
-function EksporLabaRugiKartu() {
-  const outletId = useOutletId();
-  const { showToast } = useToast();
-  const { detail: perusahaan } = useDetailPerusahaan();
-  const [dariTanggal, setDariTanggal] = useState(tanggalAwalBulanISO());
-  const [sampaiTanggal, setSampaiTanggal] = useState(tanggalIniISO());
-  const [sedangHitung, setSedangHitung] = useState(false);
-  const [sedangEkspor, setSedangEkspor] = useState<"excel" | "pdf" | null>(null);
-  const [hasil, setHasil] = useState<HasilLabaRugiPeriode | null>(null);
-
-  const periodeAktif =
-    (["harian", "mingguan", "bulanan", "tahunan"] as const).find((p) => {
-      const r = rentangPeriodeLaporan(p);
-      return r.mulai === dariTanggal && r.selesai === sampaiTanggal;
-    }) ?? null;
-
-  async function handleHitung() {
-    const daftarTanggal = daftarTanggalAntara(dariTanggal, sampaiTanggal);
-    if (daftarTanggal.length === 0) {
-      showToast("error", "Rentang tanggal tidak valid.");
-      return;
-    }
-    if (daftarTanggal.length > 366) {
-      showToast("error", "Rentang tanggal terlalu panjang (maks. 1 tahun sekali hitung).");
-      return;
-    }
-    setSedangHitung(true);
-    setHasil(null);
-    try {
-      const rincian: RincianHarianLabaRugi[] = [];
-      for (const tanggal of daftarTanggal) {
-        const h = await hitungLabaHarian(outletId, tanggal);
-        rincian.push({
-          tanggal,
-          totalOmset: h.totalOmset,
-          totalHppTerjual: h.totalHppTerjual,
-          totalKasKeluar: h.totalKasKeluar,
-          labaOperasional: h.labaBersih,
-        });
-      }
-
-      // SENGAJA tidak menambahkan where("arah","==","keluar") di query —
-      // filter "arah" disaring di memori setelah baca, bukan di query
-      // Firestore, supaya query ini cuma butuh index rentang tanggal
-      // biasa (sama seperti query lain di halaman ini), bukan index
-      // gabungan (equality + range) baru yang belum tentu sudah ada di
-      // project ini (Spark Plan, tidak ada firestore.indexes.json).
-      const transaksiFinanceSnap = await getDocs(
-        query(
-          collection(db, "outlets", outletId, "transaksi_finance"),
-          where("tanggal", ">=", dariTanggal),
-          where("tanggal", "<=", sampaiTanggal),
-        ),
-      );
-      const keluarFinancePerKategori = {
-        "Gaji Karyawan": 0,
-        "Biaya Operasional": 0,
-        Lainnya: 0,
-      } as Record<(typeof KATEGORI_KELUAR_FINANCE)[number], number>;
-      for (const d of transaksiFinanceSnap.docs) {
-        const data = d.data();
-        if (data.arah !== "keluar") continue;
-        const kategori = KATEGORI_KELUAR_FINANCE.includes(data.kategori)
-          ? (data.kategori as (typeof KATEGORI_KELUAR_FINANCE)[number])
-          : "Lainnya";
-        keluarFinancePerKategori[kategori] += data.nominal ?? 0;
-      }
-
-      const totalOmset = rincian.reduce((t, r) => t + r.totalOmset, 0);
-      const totalHpp = rincian.reduce((t, r) => t + r.totalHppTerjual, 0);
-      const totalKasKeluarOperasional = rincian.reduce((t, r) => t + r.totalKasKeluar, 0);
-      const labaOperasional = rincian.reduce((t, r) => t + r.labaOperasional, 0);
-      const totalKeluarFinance =
-        keluarFinancePerKategori["Gaji Karyawan"] +
-        keluarFinancePerKategori["Biaya Operasional"] +
-        keluarFinancePerKategori.Lainnya;
-
-      setHasil({
-        rincian,
-        totalOmset,
-        totalHpp,
-        totalKasKeluarOperasional,
-        labaKotorSetelahHpp: totalOmset - totalHpp,
-        labaOperasional,
-        keluarFinancePerKategori,
-        labaBersihFinal: labaOperasional - totalKeluarFinance,
-      });
-    } catch (error) {
-      showToast(
-        "error",
-        error instanceof Error ? `Gagal menghitung: ${error.message}` : "Gagal menghitung laba/rugi.",
-      );
-    } finally {
-      setSedangHitung(false);
-    }
-  }
-
-  async function handleEkspor(jenis: "excel" | "pdf") {
-    if (!hasil) return;
-    setSedangEkspor(jenis);
-    try {
-      const opsi: OpsiLaporan<RincianHarianLabaRugi> = {
-        judul: "LAPORAN LABA/RUGI",
-        periode: `${formatTanggalPanjang(dariTanggal)} s/d ${formatTanggalPanjang(sampaiTanggal)}`,
-        perusahaan,
-        namaBerkas: `Laporan-Laba-Rugi_${dariTanggal}_sd_${sampaiTanggal}`,
-        kolom: [
-          { judul: "Tanggal", ambil: (r) => r.tanggal, lebar: 14 },
-          { judul: "Omset", ambil: (r) => r.totalOmset, angka: true, lebar: 16 },
-          { judul: "HPP Terjual", ambil: (r) => r.totalHppTerjual, angka: true, lebar: 16 },
-          { judul: "Kas Keluar Operasional", ambil: (r) => r.totalKasKeluar, angka: true, lebar: 18 },
-          { judul: "Laba Operasional", ambil: (r) => r.labaOperasional, angka: true, lebar: 16 },
-        ],
-        baris: hasil.rincian,
-        ringkasan: [
-          { label: "Total Omset", nilai: formatRupiah(hasil.totalOmset) },
-          { label: "Total HPP Terjual", nilai: `− ${formatRupiah(hasil.totalHpp)}` },
-          { label: "Laba Kotor", nilai: formatRupiah(hasil.labaKotorSetelahHpp) },
-          {
-            label: "Total Kas Keluar Operasional (Kasir)",
-            nilai: `− ${formatRupiah(hasil.totalKasKeluarOperasional)}`,
-          },
-          { label: "= Laba Operasional", nilai: formatRupiah(hasil.labaOperasional) },
-          {
-            label: "Gaji Karyawan (Finance)",
-            nilai: `− ${formatRupiah(hasil.keluarFinancePerKategori["Gaji Karyawan"])}`,
-          },
-          {
-            label: "Biaya Operasional (Finance)",
-            nilai: `− ${formatRupiah(hasil.keluarFinancePerKategori["Biaya Operasional"])}`,
-          },
-          { label: "Lainnya (Finance)", nilai: `− ${formatRupiah(hasil.keluarFinancePerKategori.Lainnya)}` },
-          { label: "= LABA BERSIH FINAL", nilai: formatRupiah(hasil.labaBersihFinal) },
-        ],
-      };
-      if (jenis === "excel") await eksporExcel(opsi);
-      else await eksporPdf(opsi);
-      showToast("success", `Laporan ${jenis === "excel" ? "Excel" : "PDF"} berhasil diunduh.`);
-    } catch (error) {
-      showToast(
-        "error",
-        error instanceof Error ? `Gagal mengekspor: ${error.message}` : "Gagal mengekspor.",
-      );
-    } finally {
-      setSedangEkspor(null);
-    }
-  }
-
-  return (
-    <section
-      aria-labelledby="bagian-laba-rugi"
-      className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
-    >
-      <h2 id="bagian-laba-rugi" className="flex items-center gap-2 text-base font-semibold text-slate-900">
-        <TrendingDown className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-        Laporan Laba/Rugi (Direview &amp; Dirangkum)
-      </h2>
-      <p className="mt-1 text-xs text-slate-500">
-        Omset dikurangi HPP Terjual &amp; Kas Keluar operasional Kasir, LALU dikurangi lagi Gaji Karyawan /
-        Biaya Operasional / Lainnya yang dicatat Finance — jadi Laba Bersih Final yang utuh, bukan cuma
-        laba operasional harian.
-      </p>
-
-      <div className="mt-4">
-        <PeriodePicker
-          periodeAktif={periodeAktif}
-          onPilih={(r) => {
-            setDariTanggal(r.mulai);
-            setSampaiTanggal(r.selesai);
-            setHasil(null);
-          }}
-        />
-      </div>
-
-      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div>
-          <label htmlFor="labarugi-dari" className="block text-sm font-semibold text-slate-800">
-            Dari Tanggal
-          </label>
-          <input
-            id="labarugi-dari"
-            type="date"
-            value={dariTanggal}
-            onChange={(event) => {
-              setDariTanggal(event.target.value);
-              setHasil(null);
-            }}
-            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
-          />
-        </div>
-        <div>
-          <label htmlFor="labarugi-sampai" className="block text-sm font-semibold text-slate-800">
-            Sampai Tanggal
-          </label>
-          <input
-            id="labarugi-sampai"
-            type="date"
-            value={sampaiTanggal}
-            onChange={(event) => {
-              setSampaiTanggal(event.target.value);
-              setHasil(null);
-            }}
-            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
-          />
-        </div>
-      </div>
-
-      <button
-        type="button"
-        onClick={handleHitung}
-        disabled={sedangHitung}
-        className="mt-3 inline-flex h-10 items-center gap-2 rounded-lg bg-slate-800 px-4 text-sm font-semibold text-white motion-safe:transition hover:bg-slate-900 disabled:opacity-60"
-      >
-        {sedangHitung ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Calculator className="h-4 w-4" aria-hidden="true" />}
-        {sedangHitung ? "Menghitung..." : "Hitung Laba/Rugi Periode"}
-      </button>
-      <p className="mt-1.5 text-[11px] text-slate-400">
-        Menghitung ulang tiap tanggal dalam rentang (bisa perlu beberapa detik untuk periode panjang).
-      </p>
-
-      {hasil ? (
-        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-          <dl className="flex flex-col gap-1.5 text-sm">
-            <BarisRingkasLabaRugi label="Total Omset" nilai={hasil.totalOmset} />
-            <BarisRingkasLabaRugi label="Total HPP Terjual" nilai={-hasil.totalHpp} />
-            <BarisRingkasLabaRugi label="Laba Kotor" nilai={hasil.labaKotorSetelahHpp} tebal />
-            <BarisRingkasLabaRugi
-              label="Kas Keluar Operasional (Kasir)"
-              nilai={-hasil.totalKasKeluarOperasional}
-            />
-            <BarisRingkasLabaRugi label="Laba Operasional" nilai={hasil.labaOperasional} tebal />
-            <BarisRingkasLabaRugi
-              label="Gaji Karyawan (Finance)"
-              nilai={-hasil.keluarFinancePerKategori["Gaji Karyawan"]}
-            />
-            <BarisRingkasLabaRugi
-              label="Biaya Operasional (Finance)"
-              nilai={-hasil.keluarFinancePerKategori["Biaya Operasional"]}
-            />
-            <BarisRingkasLabaRugi label="Lainnya (Finance)" nilai={-hasil.keluarFinancePerKategori.Lainnya} />
-            <div className="mt-1 border-t border-slate-300 pt-1.5">
-              <BarisRingkasLabaRugi label="LABA BERSIH FINAL" nilai={hasil.labaBersihFinal} tebal besar />
-            </div>
-          </dl>
-
-          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-            <button
-              type="button"
-              onClick={() => handleEkspor("excel")}
-              disabled={sedangEkspor !== null}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm motion-safe:transition hover:bg-emerald-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-emerald-400"
-            >
-              {sedangEkspor === "excel" ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
-              )}
-              {sedangEkspor === "excel" ? "Menyiapkan..." : "Ekspor Excel"}
-            </button>
-            <button
-              type="button"
-              onClick={() => handleEkspor("pdf")}
-              disabled={sedangEkspor !== null}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-600 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-sm motion-safe:transition hover:bg-emerald-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {sedangEkspor === "pdf" ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <FileText className="h-4 w-4" aria-hidden="true" />
-              )}
-              {sedangEkspor === "pdf" ? "Menyiapkan..." : "Ekspor PDF (A4)"}
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function BarisRingkasLabaRugi({
-  label,
-  nilai,
-  tebal,
-  besar,
-}: {
-  label: string;
-  nilai: number;
-  tebal?: boolean;
-  besar?: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <dt className={`text-slate-600 ${tebal ? "font-semibold text-slate-800" : ""}`}>{label}</dt>
-      <dd
-        className={`tabular-nums ${besar ? "text-base" : ""} ${
-          tebal ? "font-semibold" : "font-medium"
-        } ${nilai < 0 ? "text-rose-700" : "text-emerald-800"}`}
-      >
-        {nilai < 0 ? `− ${formatRupiah(Math.abs(nilai))}` : formatRupiah(nilai)}
-      </dd>
-    </div>
   );
 }
 

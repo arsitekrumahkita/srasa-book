@@ -44,7 +44,6 @@ import { LatarInteraktif } from "@/shared/components/interactive-background";
 import { useAuth } from "@/shared/lib/auth-context";
 import { halamanBerandaPeran } from "@/shared/lib/role-home";
 import { useToast } from "@/shared/components/toast";
-import { INISIAL_BRAND, NAMA_BRAND, TAGLINE_BRAND } from "@/shared/lib/brand";
 
 /** Ikon Google resmi (multi-warna) — SATU-SATUNYA pengecualian dari
  *  aturan "tanpa ikon berwarna" (webrules-hikimori poin 3), karena ini
@@ -193,7 +192,7 @@ export default function LoginPage() {
         <LatarInteraktif />
         <p className="text-sm text-slate-700">
           Akun Anda berhasil masuk, tapi profil pengguna belum diaktifkan Owner
-          di {NAMA_BRAND}. Hubungi Owner untuk mengaktifkan akses Anda.
+          di Archimax. Hubungi Owner untuk mengaktifkan akses Anda.
         </p>
         <button
           type="button"
@@ -212,12 +211,12 @@ export default function LoginPage() {
       <div className="rounded-2xl border border-slate-200 bg-white/90 p-5 shadow-lg backdrop-blur-sm sm:p-6">
         <div className="mb-5 text-center">
           <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-700 to-emerald-500 text-base font-bold text-white shadow-sm">
-            {INISIAL_BRAND}
+            A
           </div>
-          {/* Tanpa class `uppercase`: nama brand ditulis persis seperti
-              yang diminta pemilik, termasuk kapitalisasinya. */}
-          <p className="text-xs font-semibold tracking-wide text-emerald-700">{NAMA_BRAND}</p>
-          <p className="text-[11px] text-slate-400">{TAGLINE_BRAND}</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+            ARCHIMAX
+          </p>
+          <p className="text-[11px] text-slate-400">Food n Beverages Lifestyle Accounting</p>
           <h1 className="mt-0.5 text-xl font-bold text-slate-900">Masuk Aplikasi</h1>
         </div>
 

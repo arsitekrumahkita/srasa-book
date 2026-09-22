@@ -24,15 +24,12 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { signOut } from "firebase/auth";
 import {
-  ArrowLeftRight,
   Bell,
-  Boxes,
   Calculator,
   History,
   Building2,
   CalendarClock,
   DatabaseBackup,
-  FlaskConical,
   Landmark,
   LayoutDashboard,
   LogOut,
@@ -40,7 +37,6 @@ import {
   Package,
   Repeat,
   RotateCcw,
-  Scale,
   ShoppingBasket,
   UserRound,
   Users,
@@ -52,12 +48,14 @@ import { useAuth, type PeranPengguna } from "@/shared/lib/auth-context";
 import { useOutlet } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { AutoLogout } from "@/shared/components/auto-logout";
-import { NAMA_BRAND, TAGLINE_BRAND } from "@/shared/lib/brand";
 
-// Nama & tagline brand dipusatkan di src/shared/lib/brand.ts (dulu
-// dideklarasikan di sini lalu disalin ke 7 file lain). Dipakai di
-// header sidebar/topbar; nama Outlet aktif ditampilkan terpisah di
-// bawahnya lewat useOutlet().
+/** Nama brand APLIKASI (global, lintas Outlet) — SRASA BOOK sekarang
+ *  adalah nama Outlet PERTAMA, bukan lagi nama aplikasi (permintaan
+ *  pemilik cafe: Multi-Cabang dengan satu Owner terpusat). Dipakai di
+ *  header sidebar/topbar; nama Outlet aktif ditampilkan terpisah di
+ *  bawahnya lewat useOutlet(). */
+const NAMA_BRAND = "ARCHIMAX";
+const TAGLINE_BRAND = "Food n Beverages Lifestyle Accounting";
 
 interface NavItem {
   href: string;
@@ -105,17 +103,6 @@ const NAV_ITEMS: NavItem[] = [
   },
   { href: "/riwayat", label: "Riwayat", icon: History, peran: ["superadmin", "finance"] },
   {
-    href: "/laporan-persediaan",
-    label: "Laporan Persediaan",
-    icon: Boxes,
-    // Rekap Masuk/Keluar Bahan Baku — dihitung ulang dari kas_belanja +
-    // shift/penjualan + penyesuaian_stok, lihat
-    // src/shared/lib/laporan-persediaan.ts. Owner & Finance saja karena
-    // menggabungkan data shift/penjualan yang tidak bisa dibaca
-    // Purchasing.
-    peran: ["superadmin", "finance"],
-  },
-  {
     href: "/cash-opname",
     label: "Cash Opname",
     icon: Calculator,
@@ -129,34 +116,6 @@ const NAV_ITEMS: NavItem[] = [
     href: "/kelola-jadwal-shift",
     label: "Jadwal Shift",
     icon: CalendarClock,
-    peran: ["superadmin", "finance"],
-  },
-  {
-    href: "/arus-kas",
-    label: "Arus Kas",
-    icon: Repeat,
-    // Laporan/monitoring murni (tidak ada aksi tulis) — tracking harian
-    // Kas Outlet & Saldo Finance, lihat src/app/arus-kas/page.tsx &
-    // src/shared/lib/arus-kas.ts.
-    peran: ["superadmin", "finance"],
-  },
-  {
-    href: "/neraca",
-    label: "Neraca",
-    icon: Scale,
-    // SENGAJA tanpa "superadmin": permintaan eksplisit pemilik cafe
-    // "Tambah Fitur Neraca Hanya Pada Akun Finance". Ini satu-satunya
-    // halaman yang Owner TIDAK bisa buka sama sekali — lihat komentar
-    // kepala src/app/neraca/page.tsx.
-    peran: ["finance"],
-  },
-  {
-    href: "/mutasi-finance",
-    label: "Mutasi Finance",
-    icon: ArrowLeftRight,
-    // Buku besar per-transaksi Saldo Finance (ala mutasi rekening
-    // bank) — lihat src/shared/lib/mutasi-finance.ts. Beda dari Arus
-    // Kas yang agregat harian dua dompet.
     peran: ["superadmin", "finance"],
   },
   {
@@ -183,18 +142,6 @@ const NAV_ITEMS: NavItem[] = [
     // BUKAN Finance. Ini keputusan STRUKTURAL (Outlet apa saja yang
     // ada), beda dari data operasional DI DALAM Outlet yang sudah
     // setara penuh untuk Finance sejak revisi "Finance juga terpusat".
-    peran: ["superadmin"],
-    khususOwnerMurni: true,
-  },
-  {
-    href: "/data-dummy",
-    label: "Data Dummy (Beta)",
-    icon: FlaskConical,
-    // Buat/hapus Outlet Demo berisi data contoh untuk ujicoba fitur
-    // baru TANPA menyentuh data asli (permintaan pemilik cafe) — lihat
-    // src/shared/lib/data-dummy.ts & src/app/data-dummy/page.tsx.
-    // Khusus Owner murni: firestore.rules cuma mengizinkan isOwner()
-    // menulis dokumen outlets/{outletId} itu sendiri.
     peran: ["superadmin"],
     khususOwnerMurni: true,
   },
@@ -230,7 +177,6 @@ const LABEL_PERAN: Record<PeranPengguna, string> = {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [drawerTerbuka, setDrawerTerbuka] = useState(false);
-  const { outletDemo } = useOutlet();
 
   return (
     <div className="min-h-full flex-1 bg-[var(--color-app-bg)]">
@@ -259,23 +205,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <Sidebar drawerTerbuka={drawerTerbuka} onTutupDrawer={() => setDrawerTerbuka(false)} />
 
-      <div className="flex min-h-full flex-1 flex-col md:pl-64">
-        {/* Pita MODE DATA DUMMY — muncul di SEMUA halaman selagi Outlet
-            aktif adalah Outlet Demo/Beta (permintaan pemilik cafe: harus
-            jelas kelihatan supaya tidak pernah keliru sama data asli).
-            sticky supaya tetap kelihatan walau halamannya panjang &
-            di-scroll. */}
-        {outletDemo ? (
-          <div
-            role="status"
-            className="sticky top-0 z-20 flex items-center justify-center gap-1.5 bg-amber-400 px-3 py-1.5 text-center text-xs font-bold uppercase tracking-wide text-amber-950 md:top-0"
-          >
-            <FlaskConical className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            Mode Data Dummy (Beta) — bukan data asli, aman untuk ujicoba
-          </div>
-        ) : null}
-        {children}
-      </div>
+      <div className="flex min-h-full flex-1 flex-col md:pl-64">{children}</div>
 
       {/* Timer idle 60 menit — dipasang di sini supaya berlaku di SEMUA
           halaman terautentikasi sekaligus (setiap halaman memakai
@@ -286,19 +216,12 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 function BrandTopbarMobile() {
-  const { outletNama, outletDemo } = useOutlet();
+  const { outletNama } = useOutlet();
   return (
     <span className="min-w-0 leading-tight">
       <span className="block truncate text-sm font-bold text-emerald-700">{NAMA_BRAND}</span>
       {outletNama ? (
-        <span className="block truncate text-[11px] text-slate-500">
-          {outletNama}
-          {outletDemo ? (
-            <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-800">
-              Demo
-            </span>
-          ) : null}
-        </span>
+        <span className="block truncate text-[11px] text-slate-500">{outletNama}</span>
       ) : null}
     </span>
   );
@@ -314,7 +237,7 @@ function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { profil } = useAuth();
-  const { outletNama, bisaGantiOutlet, gantiOutlet, outletDemo } = useOutlet();
+  const { outletNama, bisaGantiOutlet, gantiOutlet } = useOutlet();
   const { showToast } = useToast();
 
   const items = NAV_ITEMS.filter((item) => profil && item.peran.includes(profil.peran));
@@ -364,19 +287,9 @@ function Sidebar({
       </div>
 
       {outletNama ? (
-        <div
-          className={[
-            "mx-4 mb-4 flex items-center justify-between gap-2 rounded-xl px-3 py-2",
-            outletDemo ? "border border-amber-300 bg-amber-50" : "bg-slate-50",
-          ].join(" ")}
-        >
+        <div className="mx-4 mb-4 flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2">
           <span className="min-w-0">
-            <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-slate-400">
-              Outlet
-              {outletDemo ? (
-                <span className="rounded-full bg-amber-400 px-1.5 py-0.5 font-bold text-amber-950">Demo</span>
-              ) : null}
-            </span>
+            <span className="block text-[10px] uppercase tracking-wide text-slate-400">Outlet</span>
             <span className="block truncate text-sm font-semibold text-slate-800">{outletNama}</span>
           </span>
           {bisaGantiOutlet ? (

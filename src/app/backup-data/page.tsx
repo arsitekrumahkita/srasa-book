@@ -23,9 +23,6 @@ import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { useToast } from "@/shared/components/toast";
 import { useOutlet } from "@/shared/lib/outlet-context";
-import { useAuth } from "@/shared/lib/auth-context";
-import { ResetOutletKartu } from "@/shared/components/reset-outlet-kartu";
-import { JUDUL_LENGKAP_BRAND, SLUG_BRAND } from "@/shared/lib/brand";
 import {
   ambilBackupOutlet,
   ambilBackupSemuaOutlet,
@@ -52,7 +49,6 @@ function tanggalHariIni(): string {
 
 function BackupDataIsi() {
   const { showToast } = useToast();
-  const { profil } = useAuth();
   const { outletId, daftarOutletAktif } = useOutlet();
   const [cakupan, setCakupan] = useState<CakupanBackup>("satu");
   const [outletDipilih, setOutletDipilih] = useState(outletId ?? "");
@@ -75,23 +71,23 @@ function BackupDataIsi() {
         }
         const payload = {
           jenis: "backup-semua-outlet",
-          aplikasi: JUDUL_LENGKAP_BRAND,
+          aplikasi: "Archimax — Food n Beverages Lifestyle Accounting",
           dibuatPada: new Date().toISOString(),
           jumlahOutlet: daftar.length,
           outlets: await ambilBackupSemuaOutlet(daftar),
         };
-        unduhJson(payload, `backup-${SLUG_BRAND}-semua-outlet-${tanggalHariIni()}.json`);
+        unduhJson(payload, `backup-archimax-semua-outlet-${tanggalHariIni()}.json`);
       } else {
         const namaOutlet = daftarOutletAktif.find((o) => o.id === targetOutlet)?.nama ?? targetOutlet;
         const payload = {
           jenis: "backup-satu-outlet",
-          aplikasi: JUDUL_LENGKAP_BRAND,
+          aplikasi: "Archimax — Food n Beverages Lifestyle Accounting",
           dibuatPada: new Date().toISOString(),
           outletId: targetOutlet,
           outletNama: namaOutlet,
           data: await ambilBackupOutlet(targetOutlet as string),
         };
-        unduhJson(payload, `backup-${SLUG_BRAND}-${targetOutlet}-${tanggalHariIni()}.json`);
+        unduhJson(payload, `backup-archimax-${targetOutlet}-${tanggalHariIni()}.json`);
       }
       showToast("success", "Backup berhasil diunduh — simpan filenya di tempat yang aman.");
     } catch (error) {
@@ -171,12 +167,8 @@ function BackupDataIsi() {
           </div>
         ) : (
           <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
-            Mencakup SEMUA Outlet asli yang pernah dibuat (termasuk yang
-            sedang dinonaktifkan) dalam satu file JSON, dikelompokkan per
-            Outlet. Outlet Demo/Beta (Data Dummy) TIDAK ikut tercakup di
-            sini — kalau ingin mencadangkannya juga, pilih cakupan
-            &quot;Satu Outlet saja&quot; lalu pilih Outlet Demo/Beta secara
-            khusus.
+            Mencakup SEMUA Outlet yang pernah dibuat (termasuk yang sedang
+            dinonaktifkan) dalam satu file JSON, dikelompokkan per Outlet.
           </p>
         )}
 
@@ -208,13 +200,6 @@ function BackupDataIsi() {
           unduhan dimulai.
         </p>
       </section>
-
-      {/* Zona Berbahaya KHUSUS Owner. Finance tetap boleh mengunduh
-          backup di atas, tapi menghapus isi Outlet adalah keputusan
-          pemilik — bukan operasional harian. firestore.rules yang
-          menegakkan sungguhan (sebagian izin `delete` hanya untuk
-          isOwner), ini sekadar tidak menampilkan pintunya. */}
-      {profil?.peran === "superadmin" ? <ResetOutletKartu /> : null}
     </main>
   );
 }

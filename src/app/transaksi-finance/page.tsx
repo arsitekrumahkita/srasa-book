@@ -35,6 +35,7 @@ import { KickerOutlet } from "@/shared/components/kicker-outlet";
 import { AppShell } from "@/shared/components/app-shell";
 import { NumberField } from "@/shared/components/number-field";
 import { PeriodePicker } from "@/shared/components/periode-picker";
+import { HutangSupplierKartu } from "@/shared/components/hutang-supplier-kartu";
 import { useAuth } from "@/shared/lib/auth-context";
 import { useOutletId } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
@@ -43,9 +44,6 @@ import { formatRupiah } from "@/shared/lib/format";
 import { useDetailPerusahaan } from "@/shared/lib/perusahaan";
 import { eksporExcel, eksporPdf, type OpsiLaporan } from "@/shared/lib/ekspor";
 import { rentangPeriodeLaporan, formatTanggalPanjangId, type PeriodeLaporan } from "@/shared/lib/periode-laporan";
-import { catatMutasiFinance } from "@/shared/lib/mutasi-finance";
-import { TinjauPengajuanDanaKartu } from "@/shared/components/tinjau-pengajuan-dana-kartu";
-import { TinjauKoreksiBelanjaKartu } from "@/shared/components/tinjau-koreksi-belanja-kartu";
 
 /** Dokumen tunggal — satu-satunya sumber kebenaran saldo Deposito
  *  Finance saat ini, diperbarui lewat increment() tiap transaksi
@@ -165,20 +163,14 @@ function TransaksiFinanceIsi() {
           )}
         </section>
 
-        {/* Pengajuan Dana Purchasing ditaruh PALING ATAS di antara
-            kartu aksi: ini antrean kerja yang menunggu keputusan
-            Finance, sedangkan dua kartu di bawahnya adalah aksi yang
-            Finance mulai sendiri. Owner tetap bisa melihat (memantau),
-            tombolnya saja yang disembunyikan. */}
-        <TinjauPengajuanDanaKartu bisaEksekusi={bisaEksekusi} />
-        <TinjauKoreksiBelanjaKartu bisaEksekusi={bisaEksekusi} />
-
         {bisaEksekusi ? (
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <TambahDanaKartu saldo={saldo} />
             <CatatTransaksiKeluarKartu saldo={saldo} />
           </div>
         ) : null}
+
+        <HutangSupplierKartu outletId={outletId} />
 
         <EksporLaporanFinanceKartu />
 
@@ -455,18 +447,6 @@ function TambahDanaKartu({ saldo }: { saldo: number }) {
         { saldo: increment(nominal) },
         { merge: true },
       );
-      // Baris mutasi WAJIB ikut di batch yang sama — lihat aturan di
-      // kepala src/shared/lib/mutasi-finance.ts.
-      catatMutasiFinance(batch, outletId, {
-        arah: "masuk",
-        nominal,
-        sumber: "transaksi_finance",
-        keterangan: keterangan.trim() ? `Tambah Dana — ${keterangan.trim()}` : "Tambah Dana",
-        refId: transaksiRef.id,
-        olehUid: user.uid,
-        olehNama: profil.nama,
-        tanggal: tanggalHariIni(),
-      });
       await batch.commit();
       showToast("success", `Dana ${formatRupiah(nominal)} berhasil ditambahkan ke Saldo Deposito.`);
       setNominal(0);
@@ -580,16 +560,6 @@ function CatatTransaksiKeluarKartu({ saldo }: { saldo: number }) {
         { saldo: increment(-nominal) },
         { merge: true },
       );
-      catatMutasiFinance(batch, outletId, {
-        arah: "keluar",
-        nominal,
-        sumber: "transaksi_finance",
-        keterangan: subKategori ? `${kategori} — ${subKategori}` : kategori,
-        refId: transaksiRef.id,
-        olehUid: user.uid,
-        olehNama: profil.nama,
-        tanggal: tanggalHariIni(),
-      });
       await batch.commit();
       showToast("success", "Transaksi berhasil dicatat.");
       setNominal(0);

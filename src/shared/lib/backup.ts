@@ -29,11 +29,7 @@ import { db } from "./firebase";
  *  beserta daftar sub-koleksi SATU TINGKAT di bawah tiap dokumennya.
  *  `backup_log` SENGAJA tidak diikutkan — itu jejak audit backup itu
  *  sendiri, bukan data yang perlu dicadangkan. */
-// DIEKSPOR karena dipakai juga oleh src/shared/lib/reset-outlet.ts —
-// backup dan reset WAJIB memakai daftar yang sama persis. Kalau
-// daftarnya terpisah, suatu saat ada koleksi baru yang ikut ter-backup
-// tapi tidak ikut ter-reset (atau sebaliknya) tanpa ada yang sadar.
-export const STRUKTUR_KOLEKSI: Record<string, string[]> = {
+const STRUKTUR_KOLEKSI: Record<string, string[]> = {
   bahan_baku: ["riwayat_harga", "penyesuaian_stok"],
   stok_kasir: [],
   menu_harga: ["varian"],
@@ -47,18 +43,11 @@ export const STRUKTUR_KOLEKSI: Record<string, string[]> = {
   notifikasi: [],
   tanggungan_kasir: [],
   banding_purchasing: [],
+  hutang_supplier: [],
   nota_refund: [],
-  // Penghitung qty refund per shift+menu — ikut dicadangkan supaya
-  // pemulihan tidak membuat batas refund ter-reset diam-diam.
   nota_refund_counter: [],
   saldo_finance: [],
   transaksi_finance: [],
-  // Buku besar Saldo Finance + dua alur persetujuannya. mutasi_finance
-  // WAJIB ikut dicadangkan: dia satu-satunya jejak rinci ke mana saldo
-  // bergerak (dokumen saldo_finance cuma menyimpan angka akhir).
-  mutasi_finance: [],
-  pengajuan_dana: [],
-  permintaan_ubah_belanja: [],
   slot_shift: [],
   serah_terima_kas: [],
   catatan_owner: [],
@@ -117,23 +106,12 @@ export interface RingkasanOutlet {
   nama: string;
 }
 
-/** Daftar SEMUA Outlet ASLI (termasuk yang nonaktif) — dipakai backup
+/** Daftar SEMUA Outlet (termasuk yang nonaktif) — dipakai backup
  *  cakupan "Semua Outlet" supaya tidak ada Outlet yang lolos
- *  tercadangkan hanya karena sedang dinonaktifkan sementara.
- *
- *  Outlet Demo/Beta (`demo: true`, lihat src/shared/lib/data-dummy.ts)
- *  SENGAJA DIKECUALIKAN dari sini — backup "Semua Outlet" dimaksudkan
- *  sebagai cadangan data BISNIS ASLI, jadi data ujicoba/dummy tidak
- *  boleh ikut tercampur ke dalamnya tanpa disadari Owner (permintaan
- *  eksplisit pemilik cafe: aktivitas Data Dummy tidak boleh "bocor" ke
- *  data aktual). Kalau Owner memang ingin mencadangkan Outlet Demo itu
- *  sendiri, tetap bisa lewat cakupan "Satu Outlet" dan memilihnya
- *  langsung dari daftar (namanya sudah ditandai jelas "🧪 Demo/Beta"). */
+ *  tercadangkan hanya karena sedang dinonaktifkan sementara. */
 export async function ambilDaftarSemuaOutlet(): Promise<RingkasanOutlet[]> {
   const snap = await getDocs(collection(db, "outlets"));
-  return snap.docs
-    .filter((d) => d.data().demo !== true)
-    .map((d) => ({ id: d.id, nama: (d.data().nama as string) ?? d.id }));
+  return snap.docs.map((d) => ({ id: d.id, nama: (d.data().nama as string) ?? d.id }));
 }
 
 /** Backup SEMUA Outlet sekaligus, dikelompokkan per outletId. */

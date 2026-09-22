@@ -45,7 +45,6 @@
 
 import { useEffect, useState } from "react";
 import {
-  addDoc,
   collection,
   doc,
   getDocs,
@@ -53,8 +52,8 @@ import {
   query,
   runTransaction,
   serverTimestamp,
-  updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import { Loader2, RotateCcw, Save } from "lucide-react";
 import { RequireAuth } from "@/shared/components/require-auth";
@@ -329,15 +328,24 @@ function RefundIsi() {
               " supaya kas fisik tetap cocok.",
           );
         } else {
-          await addDoc(collection(db, "outlets", outletId, "shift", shiftHariIni.id, "kas_keluar"), {
-            kategori: "Refund Tunai",
-            nominal: totalRefund,
-            keterangan: `Refund "${itemDipilih.menuNama}" x${jumlah} dari transaksi ${shiftDipilih.tanggal}`,
-            waktu: serverTimestamp(),
-          });
-          await updateDoc(doc(db, "outlets", outletId, "shift", shiftHariIni.id), {
+          // writeBatch: catatan Kas Keluar + total shift harus sukses/
+          // gagal bersama — kalau tidak, refund bisa tercatat tapi kas
+          // fisik shift tidak ikut berkurang, jadi kelihatan surplus
+          // palsu saat Tutup Shift nanti.
+          const batchKasKeluar = writeBatch(db);
+          batchKasKeluar.set(
+            doc(collection(db, "outlets", outletId, "shift", shiftHariIni.id, "kas_keluar")),
+            {
+              kategori: "Refund Tunai",
+              nominal: totalRefund,
+              keterangan: `Refund "${itemDipilih.menuNama}" x${jumlah} dari transaksi ${shiftDipilih.tanggal}`,
+              waktu: serverTimestamp(),
+            },
+          );
+          batchKasKeluar.update(doc(db, "outlets", outletId, "shift", shiftHariIni.id), {
             totalKasKeluar: increment(totalRefund),
           });
+          await batchKasKeluar.commit();
         }
       }
 

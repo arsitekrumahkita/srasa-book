@@ -25,7 +25,7 @@
 // ============================================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { collection, doc, onSnapshot, setDoc } from "firebase/firestore";
+import { collection, doc, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -35,6 +35,7 @@ import {
   CalendarRange,
   CreditCard,
   Loader2,
+  Scale,
   TrendingDown,
   TrendingUp,
   TriangleAlert,
@@ -64,7 +65,6 @@ import { useNotifikasiGabungan } from "@/shared/lib/notifikasi";
 import { hitungLabaHarian } from "@/shared/lib/laba-harian";
 import { ambilTren, LABEL_PERIODE_TREN, type PeriodeTren, type TitikTren } from "@/shared/lib/tren";
 import { ambilRingkasanPeriode, type RingkasanPeriode } from "@/shared/lib/produk-terlaris";
-import { TrenHargaBahanKartu } from "@/shared/components/tren-harga-bahan-kartu";
 
 interface SummaryHarian {
   totalOmset?: number;
@@ -126,6 +126,7 @@ function DashboardRouter() {
 
 function DashboardIsi() {
   const outletId = useOutletId();
+  const { profil } = useAuth();
   const [ringkasanHarian, setRingkasanHarian] = useState<SummaryHarian | null>(null);
   const [ringkasanKemarin, setRingkasanKemarin] = useState<SummaryHarian | null>(null);
   const [ringkasanBulanan, setRingkasanBulanan] = useState<SummaryHarian | null>(null);
@@ -233,7 +234,12 @@ function DashboardIsi() {
             satuan: d.data().satuan ?? "gram",
             batasMinimalStok: d.data().batasMinimalStok ?? 0,
           }))
-          .filter((b) => b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok),
+          // Sejalan dengan filter di Cash Opname: bahan yang stoknya
+          // sudah MINUS ikut ditandai walau Batas Minimal Stok belum
+          // diisi (0) — sebelumnya beda definisi antar dua halaman ini,
+          // jadi bahan stok minus tanpa batas minimal bisa lolos tanpa
+          // peringatan di Dashboard walau sudah muncul di Cash Opname.
+          .filter((b) => b.stokSaatIni < 0 || (b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok)),
       );
     });
     return unsub;
@@ -335,6 +341,15 @@ function DashboardIsi() {
         </div>
       ) : (
         <div className="flex flex-col gap-6">
+          {/* Neraca — BAGIAN UTAMA Dashboard, KHUSUS peran Finance (atas
+              permintaan eksplisit pemilik cafe: bukan untuk Owner, jadi
+              dicek profil.peran di sini SEBELUM komponennya pernah
+              dirender, sama seperti pola percabangan peran lain di
+              berkas ini). Ditaruh PALING ATAS (sebelum banner stok
+              menipis) supaya benar-benar jadi hal pertama yang dilihat
+              Finance saat membuka Dashboard. */}
+          {profil?.peran === "finance" ? <NeracaFinanceKartu /> : null}
+
           {bahanMenipis.length > 0 ? (
             <div
               role="alert"
@@ -701,8 +716,6 @@ function DashboardIsi() {
             </section>
           </div>
 
-          <TrenHargaBahanKartu />
-
           {/* --- Bulan Ini + Aktivitas Terbaru --- */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <section className="animasi-masuk kartu-interaktif rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
@@ -841,6 +854,164 @@ function MiniAngka({ label, nilai }: { label: string; nilai: string }) {
 }
 
 // ============================================================
+// SECTION: Neraca (Posisi Keuangan) — permintaan pemilik cafe:
+// ditampilkan sebagai BAGIAN UTAMA Dashboard KHUSUS peran Finance
+// (Owner tetap melihat Dashboard yang sama seperti biasa TANPA kartu
+// ini — dicek di DashboardIsi lewat profil.peran SEBELUM komponen ini
+// pernah dirender, sesuai permintaan eksplisit).
+//
+// CATATAN JUJUR (bukan Neraca akuntansi formal): aplikasi ini belum
+// mencatat Modal Pemilik (setoran awal Owner) sebagai pos tersendiri —
+// menambahkan itu butuh alur input baru yang cukup besar (riwayat
+// setoran modal, dst), dan atas pertanyaan pemilik cafe sendiri
+// ("apakah Neraca tanpa Modal Awal Owner itu biasa?") jawabannya: YA,
+// ini praktik umum untuk laporan "Posisi Kekayaan Usaha" internal yang
+// sederhana (cash-basis) sebelum bisnis punya pembukuan akuntansi
+// penuh. Jadi:
+//   - Total Kewajiban = Hutang Supplier berstatus belum_lunas (lihat
+//     collection hutang_supplier & HutangSupplierKartu) — supplier
+//     yang titip barang dulu, dibayar belakangan/termin.
+//   - Ekuitas dihitung sebagai ANGKA SISA (Total Aset − Total
+//     Kewajiban), BUKAN angka independen dari modal yang pernah
+//     disetor — jadi identitas "Aset = Kewajiban + Ekuitas" otomatis
+//     selalu balance secara matematis, bukan karena dibuktikan lewat
+//     pencatatan modal riil. Kalau nanti Owner mulai mencatat setoran
+//     modal sebagai fitur baru, kartu ini tinggal diperluas (Ekuitas
+//     jadi pos sendiri).
+//
+// Aset yang dihitung — SEMUA data yang SUDAH ADA di sistem, untuk
+// Outlet aktif saat ini (konsisten dengan pola "per Outlet" yang
+// dipakai Cash Opname & laporan lain, BUKAN gabungan semua outlet):
+//   - Saldo Deposito Finance (saldo_finance/utama.saldo).
+//   - Nilai Stok Bahan Baku = Σ (stokSaatIni × hargaSatuanTerakhir)
+//     tiap bahan_baku — nilai gudang saat ini di harga beli terakhir.
+//   - Piutang Kasir = Σ nominal tanggungan_kasir berstatus
+//     belum_lunas — selisih kas kurang yang belum diganti Kasir.
+// Kas tunai FISIK di laci (Modal Kas Awal + omset tunai hari berjalan)
+// SENGAJA TIDAK dihitung — itu petty cash yang terus berputar (dipakai
+// lagi sebagai modal shift besok), bukan aset "diam" yang berarti
+// dijumlah ke kekayaan usaha; dan tetap tercermin lewat Saldo Deposito
+// Finance begitu disetor.
+// ============================================================
+
+function NeracaFinanceKartu() {
+  const outletId = useOutletId();
+  const [saldoFinance, setSaldoFinance] = useState(0);
+  const [nilaiStok, setNilaiStok] = useState(0);
+  const [piutangKasir, setPiutangKasir] = useState(0);
+  const [kewajibanSupplier, setKewajibanSupplier] = useState(0);
+  const [memuat, setMemuat] = useState(true);
+
+  useEffect(() => {
+    const unsubSaldo = onSnapshot(doc(db, "outlets", outletId, "saldo_finance", "utama"), (snap) => {
+      setSaldoFinance(snap.exists() ? (snap.data().saldo ?? 0) : 0);
+    });
+    const unsubBahan = onSnapshot(collection(db, "outlets", outletId, "bahan_baku"), (snap) => {
+      let total = 0;
+      for (const d of snap.docs) {
+        const data = d.data();
+        total += (data.stokSaatIni ?? 0) * (data.hargaSatuanTerakhir ?? 0);
+      }
+      setNilaiStok(total);
+    });
+    const unsubTanggungan = onSnapshot(
+      query(collection(db, "outlets", outletId, "tanggungan_kasir"), where("status", "==", "belum_lunas")),
+      (snap) => {
+        let total = 0;
+        for (const d of snap.docs) total += d.data().nominal ?? 0;
+        setPiutangKasir(total);
+        setMemuat(false);
+      },
+      () => setMemuat(false),
+    );
+    const unsubHutang = onSnapshot(
+      query(collection(db, "outlets", outletId, "hutang_supplier"), where("status", "==", "belum_lunas")),
+      (snap) => {
+        let total = 0;
+        for (const d of snap.docs) total += d.data().nominal ?? 0;
+        setKewajibanSupplier(total);
+      },
+    );
+    return () => {
+      unsubSaldo();
+      unsubBahan();
+      unsubTanggungan();
+      unsubHutang();
+    };
+  }, [outletId]);
+
+  const totalAset = saldoFinance + nilaiStok + piutangKasir;
+  const totalKewajiban = kewajibanSupplier;
+  const totalEkuitas = totalAset - totalKewajiban;
+
+  return (
+    <section
+      aria-labelledby="bagian-neraca"
+      className="animasi-masuk rounded-xl border border-emerald-800 bg-gradient-to-br from-emerald-700 to-emerald-900 p-5 text-white shadow-sm sm:p-6"
+    >
+      <h2 id="bagian-neraca" className="flex items-center gap-2 text-base font-semibold">
+        <Scale className="h-4 w-4" aria-hidden="true" />
+        Neraca — Posisi Keuangan
+      </h2>
+      <p className="mt-1 text-xs text-emerald-100">
+        Per hari ini, Outlet aktif. Aset = Kewajiban + Ekuitas.
+      </p>
+
+      {memuat ? (
+        <div className="mt-4 flex justify-center py-6">
+          <Loader2 className="h-5 w-5 animate-spin text-emerald-100" aria-hidden="true" />
+          <span className="sr-only">Memuat Neraca...</span>
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-lg bg-white/10 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-emerald-100">Total Aset</p>
+              <p className="mt-1 text-xl font-bold tabular-nums">{formatRupiah(totalAset)}</p>
+            </div>
+            <div className="rounded-lg bg-white/10 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-emerald-100">Total Kewajiban</p>
+              <p className="mt-1 text-xl font-bold tabular-nums">{formatRupiah(totalKewajiban)}</p>
+            </div>
+            <div className="rounded-lg bg-white/10 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-emerald-100">
+                Ekuitas (Kekayaan Bersih)
+              </p>
+              <p className="mt-1 text-xl font-bold tabular-nums">{formatRupiah(totalEkuitas)}</p>
+            </div>
+          </div>
+
+          <dl className="mt-4 divide-y divide-white/10 rounded-lg bg-white/10 px-4 text-sm">
+            <div className="flex justify-between py-2">
+              <dt className="text-emerald-100">Saldo Deposito Finance</dt>
+              <dd className="font-medium tabular-nums">{formatRupiah(saldoFinance)}</dd>
+            </div>
+            <div className="flex justify-between py-2">
+              <dt className="text-emerald-100">Nilai Stok Bahan Baku (Gudang)</dt>
+              <dd className="font-medium tabular-nums">{formatRupiah(nilaiStok)}</dd>
+            </div>
+            <div className="flex justify-between py-2">
+              <dt className="text-emerald-100">Piutang Kasir (Tanggungan Belum Lunas)</dt>
+              <dd className="font-medium tabular-nums">{formatRupiah(piutangKasir)}</dd>
+            </div>
+            <div className="flex justify-between py-2">
+              <dt className="text-emerald-100">Hutang Supplier (Belum Lunas)</dt>
+              <dd className="font-medium tabular-nums">{formatRupiah(kewajibanSupplier)}</dd>
+            </div>
+          </dl>
+
+          <p className="mt-3 text-xs text-emerald-100">
+            Belum termasuk kas tunai fisik yang sedang berputar di laci Kasir, dan belum ada pencatatan
+            Modal Pemilik — Ekuitas di atas adalah kekayaan bersih usaha saat ini, bukan Neraca akuntansi
+            formal yang teraudit.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+// ============================================================
 // SECTION: Dashboard Kasir & Purchasing — rincian stok bahan baku
 // (atas permintaan pemilik cafe), SAMA SEKALI TIDAK menampilkan Omset,
 // Laba Bersih, atau Analitik Tren apa pun — itu "zona privasi otoritas
@@ -895,18 +1066,13 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
 
   const [pencarian, setPencarian] = useState("");
 
+  // Sejalan dengan filter Cash Opname (lihat catatan di bagian
+  // bahanMenipis Dashboard utama di atas) — bahan stok minus ikut
+  // ditandai walau Batas Minimal Stok belum diisi.
   const menipis = useMemo(
-    () => daftar.filter((b) => b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok),
+    () => daftar.filter((b) => b.stokSaatIni < 0 || (b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok)),
     [daftar],
   );
-
-  // Stok MINUS (di bawah 0) selalu berarti ada yang tidak beres — takaran
-  // resep kebesaran, pembelian belum dicatat, atau bahan terpakai tanpa
-  // penjualan (lihat catatan yang sama di belanja-nota/page.tsx). Ditandai
-  // TERPISAH dari "menipis" (amber) dengan warna merah supaya jelas ini
-  // BUKAN sekadar "hampir habis", tapi sudah tidak masuk akal secara
-  // akuntansi dan perlu segera ditelusuri.
-  const stokMinus = useMemo(() => daftar.filter((b) => b.stokSaatIni < 0), [daftar]);
 
   const daftarTersaring = useMemo(
     () => daftar.filter((b) => cocokDenganPencarian(pencarian, b.nama, b.kategori)),
@@ -933,41 +1099,12 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
   }
 
   return (
-    <main className="animasi-masuk mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-8 lg:px-10">
+    <main className="animasi-masuk mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-6">
         <KickerOutlet />
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
         <p className="mt-1 text-sm text-slate-600">Rincian stok bahan baku gudang.</p>
       </header>
-
-      {stokMinus.length > 0 ? (
-        <div
-          role="alert"
-          className="mb-4 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900"
-        >
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <div>
-            <p className="font-semibold">
-              Stok MINUS (di bawah 0) — ada yang tidak beres, perlu segera ditelusuri:
-            </p>
-            <ul className="mt-1 flex flex-col gap-0.5">
-              {stokMinus.map((b) => (
-                <li key={b.id}>
-                  {b.nama}: {b.stokSaatIni} {b.satuan}
-                </li>
-              ))}
-            </ul>
-            <p className="mt-1.5 text-xs text-rose-800">
-              Angka minus berarti bahan ini tercatat terpakai LEBIH BANYAK dari yang pernah masuk —
-              kemungkinan takaran resep kebesaran, pembelian yang belum dicatat, atau bahan terpakai
-              tanpa penjualan yang cocok.{" "}
-              {peran === "purchasing"
-                ? "Cek riwayat Belanja & Nota, lalu sesuaikan lewat Penyesuaian Stok kalau perlu."
-                : "Sampaikan ke Purchasing/Owner supaya bisa segera ditelusuri."}
-            </p>
-          </div>
-        </div>
-      ) : null}
 
       {menipis.length > 0 ? (
         <div
@@ -995,7 +1132,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
         </p>
       ) : (
         <>
-          <div className="mb-5 w-full sm:max-w-sm">
+          <div className="mb-5 max-w-sm">
             <SearchBar
               id="cari-stok"
               value={pencarian}
@@ -1009,7 +1146,7 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
               Tidak ada bahan yang cocok dengan pencarian &quot;{pencarian}&quot;.
             </p>
           ) : (
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
           {[...perKategori.entries()].map(([kategori, items]) => (
             <section
               key={kategori}
@@ -1020,29 +1157,14 @@ function DashboardStokIsi({ peran }: { peran: "kasir" | "purchasing" }) {
               </h2>
               <ul className="flex flex-col divide-y divide-slate-100">
                 {items.map((b) => {
-                  const minus = b.stokSaatIni < 0;
-                  const rendah = !minus && b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok;
+                  const rendah = b.stokSaatIni < 0 || (b.batasMinimalStok > 0 && b.stokSaatIni <= b.batasMinimalStok);
                   return (
                     <li key={b.id} className="flex items-center justify-between gap-3 py-2 text-sm">
-                      <span
-                        className={
-                          minus
-                            ? "font-medium text-rose-800"
-                            : rendah
-                              ? "font-medium text-amber-800"
-                              : "text-slate-700"
-                        }
-                      >
+                      <span className={rendah ? "font-medium text-amber-800" : "text-slate-700"}>
                         {b.nama}
                       </span>
                       <span
-                        className={`tabular-nums ${
-                          minus
-                            ? "font-semibold text-rose-800"
-                            : rendah
-                              ? "font-semibold text-amber-800"
-                              : "text-slate-900"
-                        }`}
+                        className={`tabular-nums ${rendah ? "font-semibold text-amber-800" : "text-slate-900"}`}
                       >
                         {b.stokSaatIni} {b.satuan}
                       </span>

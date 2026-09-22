@@ -1,6 +1,6 @@
-# HANDOFF — Jurnal F A T A (dulu "ARCHIMAX", sebelumnya "SRASA BOOK")
+# HANDOFF — Archimax (dulu "SRASA BOOK")
 
-> Dokumen ini ditulis supaya sesi Claude berikutnya bisa langsung paham konteks proyek ini tanpa perlu bertanya ulang ke user. Ditulis pada 2026-09-14, setelah commit `496e802`.
+> Dokumen ini ditulis supaya sesi Claude berikutnya bisa langsung paham konteks proyek ini tanpa perlu bertanya ulang ke user. Ditulis pertama kali 2026-09-14 (setelah commit `496e802`), **diperbarui 2026-09-21** setelah commit `8b72dc7` — baca Bagian 10 di paling bawah untuk apa yang berubah di update ini, termasuk PERINGATAN soal histori git yang tidak lengkap.
 
 ## 1. Siapa User & Bagaimana Cara Berkomunikasi
 
@@ -11,7 +11,7 @@
 - Setiap kali ada pekerjaan besar/ambigu, **gunakan AskUserQuestion** untuk klarifikasi alih-alih menebak — history menunjukkan ini beberapa kali menghindari salah bangun fitur.
 - Setelah audit/analisis terbuka ("ada saran fitur/bug?"), pisahkan jelas: fitur yang **disetujui untuk dibangun sekarang** vs. yang **cuma dijelaskan dulu** untuk direview user. Jangan membangun sesuatu yang belum disetujui.
 
-## 2. Apa Itu Jurnal F A T A
+## 2. Apa Itu Archimax
 
 Aplikasi **akuntansi cafe multi-outlet** (F&B accounting) — mencatat Omset, Kas, HPP (Harga Pokok Penjualan), dan Laba Bersih harian, dengan 4 peran pengguna:
 
@@ -163,3 +163,100 @@ Jangan bangun ini kecuali user secara eksplisit minta. Sudah dijelaskan detail d
 3. Kalau user minta fitur baru: cek dulu apakah salah satu dari 7 saran di bagian 7 sudah mencakupnya sebelum membangun dari nol.
 4. Selalu tutup pekerjaan dengan pipeline verifikasi lengkap (bagian 4) sebelum commit & kirim zip.
 5. Kalau firestore.rules berubah, WAJIB sebutkan eksplisit ke user bahwa perlu di-deploy manual, dan jelaskan secara ringkas apa yang akan gagal kalau tidak.
+
+## 10. Update 2026-09-21 (commit `8b72dc7`) — Baca Ini Dulu Kalau Bingung Soal Histori Git
+
+User pindah akun Claude (sesi baru, tidak ada akses ke percakapan sebelumnya) dan upload ulang `srasa-book.zip` sebagai "update terbaru". Ternyata di antara commit `496e802` (checkpoint terakhir dari sesi saya) dan upload ini, **sesi Claude LAIN** (akun berbeda, percakapannya tidak saya punya) sudah mengerjakan banyak hal. Berikut temuan & yang saya lakukan:
+
+### Temuan #1 — Histori git provider ini SUDAH RUSAK/HILANG sebagian
+Zip yang di-upload user berisi folder `.git` yang HANYA punya 3 commit tertua (`20d14bb`, `f79defc`, `ea295d2` — dari awal sekali, jauh sebelum Multi-Cabang dkk). Puluhan commit yang sudah didokumentasikan di Bagian 5 (termasuk `496e802`) **TIDAK ADA** di histori git zip ini — padahal semua FILE hasil kerja itu tetap ada di working tree (cuma berstatus "belum pernah di-commit" alias `??` di `git status`). Kesimpulan: entah sesi lain ini mulai dari git repo yang salah/lama, atau proses re-zip di suatu titik tidak menyertakan `.git` yang benar. **Saya TIDAK mencoba merekonstruksi histori lama** (terlalu berisiko menebak-nebak urutan commit) — saya hanya membuat SATU commit baru (`8b72dc7`) yang merangkum seluruh state proyek saat ini sebagai checkpoint bersih. Kalau user (atau sesi berikutnya) punya salinan `.git` yang lebih lengkap dari suatu tempat, itu lebih baik dipakai sebagai dasar daripada melanjutkan dari checkpoint tunggal ini.
+
+### Temuan #2 — Ada 3 versi berbeda dari `src/app/shift/page.tsx` tercecer, cuma 1 yang benar-benar terpasang
+Di dalam zip upload ada folder tambahan `Claude outputs/` (jelas bukan bagian aplikasi — sisa file kerja sesi lain yang lupa dibersihkan) berisi 2 file zip lama + 1 file lepas `shift-page.tsx`. Setelah dibandingkan:
+- Versi yang **benar-benar aktif** di `src/app/shift/page.tsx` saat itu = versi PALING LAMA/BELUM LENGKAP (cuma punya fitur dasar + slip cash opname reprint untuk Kasir).
+- Versi di `Claude outputs/shift-page.tsx` (file lepas, timestamp PALING BARU) = versi PALING LENGKAP: menghapus fitur lama "Item Lain (Manual)" (jual barang di luar Kelola Produk — sudah tidak diizinkan lagi sesuai permintaan Owner), menambah pencarian produk, preview "Rekap Produk Terjual" langsung selagi shift berjalan, label tombol dinamis (Pindah Shift Selanjutnya vs Tutup Kasir untuk shift multi-slot), dan penyatuan logika ekspor Slip Cash Opname (otomatis saat tutup + tombol manual + reprint Kasir) lewat satu fungsi `bangunOpsiSlipCashOpname()`.
+- Saya **konfirmasi ke user** lewat AskUserQuestion, dan **user memilih memasang versi paling lengkap ini** — sudah saya lakukan, plus perbaiki 1 bug lint baru yang muncul (`PRIORITAS_KATEGORI`/`prioritasKategori` dipindah ke top-level modul supaya React Compiler bisa mempertahankan memoisasi `menuPerKategori` — sebelumnya didefinisikan ulang tiap render di dalam komponen `ShiftBerjalan`, melanggar semangat webrules-hikimori poin 11 walau bukan komponen React itu sendiri).
+- **Pelajaran untuk ke depan**: kalau suatu saat ketemu file "yatim" seperti ini lagi (di folder aneh, atau disebut user sebagai "hasil kerja sesi lain"), SELALU diff dulu terhadap file yang benar-benar aktif sebelum diasumsikan sama — jangan asumsikan file di `src/` selalu yang terbaru.
+
+### Fitur-fitur BARU yang ternyata sudah dikerjakan sesi lain (sekarang bagian resmi aplikasi, gantikan/tambahkan ke daftar Bagian 5 & 7)
+Semua ini SUDAH ADA di kode saat commit `8b72dc7`, sudah lolos tsc/lint/test/build — bukan usulan lagi:
+
+1. **Cash Opname Akhir Hari** (`src/app/cash-opname/page.tsx`, menu baru di sidebar, Owner/Finance) — rekonsiliasi kas SATU HARI SATU OUTLET, menggabungkan semua shift terkunci + semua sesi belanja Purchasing + Saldo Finance + Tanggungan Kasir + Form Banding Purchasing yang masih pending + bahan baku menipis/negatif. Formula intinya: `Kas Tunai Seharusnya Disetor = Omset Tunai − Total Kas Keluar − Belanja (sumber Kas Resto saja)`, dibandingkan dengan `Kas Tunai Fisik Untuk Disetor = Total Kas Fisik semua shift − (Rp500rb × jumlah shift)` — kalau tidak match, itu jejak insiden yang belum ketahuan. Ini MENJAWAB (bahkan melampaui) saran fitur #7 lama "Log audit override admin" dan sebagian saran #2 "Laporan gabungan" versi per-hari.
+2. **Form Banding Purchasing** (`BandingPurchasingKartu` di `belanja-nota/page.tsx`, koleksi baru `banding_purchasing` di firestore.rules) — Purchasing bisa mengajukan revisi nota/transaksi belum tercatat/insiden lain, Owner/Finance meninjau (setuju/tolak) lewat panel di Cash Opname. Purchasing TIDAK BOLEH mengubah pengajuan sendiri setelah dikirim (harus ajukan baru) — supaya jejak audit tetap utuh.
+3. **Saldo Deposito Finance sekarang BOLEH minus** (untuk Finance & Purchasing, bukan cuma Owner) — perubahan `firestore.rules` (baris `saldo >= 0` dihapus dari kondisi update Finance/Purchasing) + UI di `transaksi-finance/page.tsx` & `belanja-nota/page.tsx` sekarang cuma toast **warning** (bukan blokir keras) kalau saldo akan minus. Alasan bisnis: saldo harus mencerminkan kondisi nyata (dana sudah kepakai duluan sebelum setoran Owner berikutnya masuk) — **PERLU DEPLOY ULANG firestore.rules ke Firebase Console**, kalau lupa maka Finance/Purchasing akan mentok error izin ditolak saat saldo mau minus.
+4. **Pencarian (`SearchBar`, `src/shared/components/search-bar.tsx`, helper `cocokDenganPencarian`)** ditambahkan di: Dashboard (filter bahan baku), Kalkulator HPP (filter menu, hanya muncul kalau >3 menu), Kelola Akun (filter staff), Kelola Outlet (filter outlet), Riwayat (filter shift), dan sekarang juga di Shift Kasir (filter produk saat jualan).
+5. **PeriodePicker** (`src/shared/components/periode-picker.tsx` + `src/shared/lib/periode-laporan.ts`, preset Harian/Mingguan/Bulanan/Tahunan) dipakai untuk ekspor laporan periode baru di Riwayat, Transaksi Finance (`EksporLaporanFinanceKartu`), dan Belanja & Nota (`EksporLaporanPembelianKartu`, dibatasi ke `purchasingUid` milik Purchasing yang login sendiri).
+6. **Penulisan atomik pakai `writeBatch`** — `handleMulaiBelanja` (Belanja & Nota) dan penyimpanan Transaksi Finance sekarang menggabungkan 2 tulisan terpisah (dokumen transaksi + update saldo) jadi SATU `writeBatch`, memperbaiki bug nyata: dulu kalau tulisan kedua gagal (mis. koneksi putus), saldo Finance bisa tidak berkurang padahal sesi belanja/transaksinya sudah tercatat — sekarang keduanya sukses/gagal bersama.
+7. **`NumberField` (`src/shared/components/number-field.tsx`) ditulis ulang** — dari `<input type="number">` native jadi `<input type="text">` dengan format ribuan ala Indonesia LANGSUNG SAAT MENGETIK (titik pemisah ribuan, koma desimal) via helper baru `formatTampilan`/`teksKeAngka`/`saringInput`/`formatSaatMengetik`. API publiknya (`onChange(number)`) TIDAK berubah, jadi seluruh pemanggil lama otomatis kompatibel tanpa perlu disentuh.
+8. **Toast tipe baru `"warning"`** (kuning, ikon `AlertTriangle`, label "Perhatian") di `toast.tsx` — dipakai untuk notifikasi non-blocking seperti saldo akan minus atau ekspor otomatis PDF gagal.
+9. Fitur lama **"Item Lain (Manual)"** di Shift (jual barang di luar Kelola Produk, potong bahan baku manual) **SUDAH DIHAPUS** atas permintaan Owner — Kasir sekarang HANYA boleh menjual dari daftar Kelola Produk. Field `manual`/`bahanDipakai` di `PenjualanItem` dipertahankan HANYA untuk kompatibilitas baca data lama, tidak bisa dibuat lagi.
+
+### Hal lain yang perlu diperhatikan
+- **`.env.local.example` sekarang berisi kredensial Firebase ASLI** (bukan placeholder kosong seperti versi sebelumnya) — sudah saya konfirmasi ke user, **user memilih membiarkan apa adanya** (risikonya memang rendah karena ini Firebase Web API key yang memang didesain publik, keamanan sesungguhnya ada di firestore.rules). Jangan ubah ini lagi kecuali user minta.
+- `.npmrc` (isi: `legacy-peer-deps=true`) sempat hilang dari upload — sudah saya pulihkan.
+- **`package.json`/`package-lock.json` tidak berubah** — semua fitur baru di atas cuma pakai library yang sudah ada sebelumnya (Firebase SDK, lucide-react, `ekspor.ts` lib sendiri).
+- Update Bagian 7 (saran fitur belum dibangun): saran #7 lama ("Log audit override admin") **sudah sebagian terjawab** oleh Cash Opname & Form Banding Purchasing — kalau user minta log audit lagi, cek dulu apakah Cash Opname sudah cukup sebelum membangun dari nol. Saran #1 (notifikasi stok menipis) **masih relevan** — Cash Opname cuma MENAMPILKAN bahan menipis saat dibuka, belum ada notifikasi proaktif/push.
+- Commit `8b72dc7` adalah titik full-diverifikasi (tsc/lint/test/build) untuk state gabungan ini — kalau ada laporan bug baru dari user setelah ini, cek dulu apakah bug itu di fitur LAMA (dokumentasi Bagian 5-6) atau fitur BARU dari update ini (daftar di atas) supaya tahu bagian kode mana yang relevan.
+
+## 11. Update 2026-09-21 (lanjutan, commit `37e009b`) — Fitur Neraca (Posisi Keuangan)
+
+User minta "Fitur Khusus pada Sub-Menu Neraca". Setelah klarifikasi lewat AskUserQuestion (2 putaran, karena jawaban pertama user berupa pertanyaan balik, bukan pilihan langsung — itu wajar, jawab dulu pertanyaannya baru lanjut), disepakati:
+- **Lokasi**: BUKAN menu/submenu terpisah — ditampilkan sebagai **bagian UTAMA paling atas Dashboard**, **KHUSUS peran Finance** (Owner tetap melihat Dashboard yang sama seperti biasa, TANPA kartu ini).
+- **Cakupan Aset**: semua data yang SUDAH ADA di sistem (user sempat tanya "apakah Neraca tanpa Modal Awal Owner itu wajar?" — sudah saya jawab: WAJAR, ini praktik umum untuk laporan "Posisi Kekayaan Usaha" internal sebelum ada pembukuan akuntansi penuh).
+
+**Implementasi** (`NeracaFinanceKartu` di `src/app/dashboard/page.tsx`, dirender di `DashboardIsi` hanya jika `profil?.peran === "finance"`, ditaruh sebelum banner stok menipis):
+- **Total Aset** = Saldo Deposito Finance (`saldo_finance/utama.saldo`) + Nilai Stok Bahan Baku (Σ `stokSaatIni × hargaSatuanTerakhir` semua `bahan_baku`) + Piutang Kasir (Σ `nominal` `tanggungan_kasir` berstatus `belum_lunas`). Semua di-listen live via `onSnapshot`, per Outlet aktif (BUKAN gabungan multi-outlet — konsisten dengan pola Cash Opname & laporan lain).
+- **Total Kewajiban** = selalu Rp0 (aplikasi belum punya pencatatan Hutang).
+- **Ekuitas (Kekayaan Bersih)** = Total Aset − Total Kewajiban (angka SISA, bukan dari pencatatan Modal Pemilik independen) — identitas Aset = Kewajiban + Ekuitas otomatis balance secara matematis.
+- Kas tunai fisik yang sedang berputar di laci Kasir (Modal Kas Awal + omset tunai berjalan) **sengaja tidak dihitung** — itu petty cash yang terus berputar, bukan aset "diam"; sudah dijelaskan di footer teks kecil pada kartu itu sendiri supaya Owner/Finance tidak salah paham ini Neraca akuntansi formal teraudit.
+
+**Kalau user nanti minta diperluas** (Modal Pemilik, Hutang, atau versi gabungan multi-outlet), komponen ini gampang ditambah field baru — struktur `totalAset`/`totalKewajiban`/`totalEkuitas` sudah dipisah jelas, tinggal ganti `totalKewajiban` dari konstanta 0 jadi hasil query koleksi utang baru, dan Ekuitas bisa dipisah jadi pos independen (bukan derivasi) begitu ada pencatatan modal sungguhan.
+
+Diverifikasi: tsc --noEmit, lint, 58 test, build (20 route) semua lolos.
+
+## 12. Update 2026-09-21 (lanjutan, commit `a0e6361`) — Fitur Hutang Supplier (masuk Neraca sebagai Kewajiban)
+
+User bertanya: "piutang supplier gimna? jika ada supplier taruh barang dulu dan bayar di akhir apakah bisa masuk neraca? Dan Tambahkan Fitur itu juga di Akun Purchasing dan Finance". Jawaban saya: BISA, itu namanya Hutang Usaha/Hutang Supplier (bukan piutang — piutang itu uang yang OrangLain berutang ke kita, ini kebalikannya: kita yang berutang ke supplier). Setelah klarifikasi lewat AskUserQuestion, disepakati:
+- **Level pencatatan**: per Nota/kwitansi (bukan per sesi belanja harian) — user pilih "Per Nota/kwitansi (Recommended)".
+- **Pelunasan**: BISA ditandai lunas oleh Finance MAUPUN Purchasing — siapa pun yang lebih dulu tahu pembayaran terjadi, klik "Tandai Lunas", status berubah di semua akun (jawaban user apa adanya).
+
+**Implementasi:**
+- **`firestore.rules`**: koleksi baru `hutang_supplier` (per Outlet). `create` hanya Purchasing outlet tsb (dan `purchasingUid` harus cocok dengan yang login — anti-pemalsuan siapa yang mencatat). `update` boleh Manager (Owner/Finance) ATAU Purchasing outlet tsb, TAPI dibatasi cuma boleh mengubah field `status`, `dilunasiOlehUid`, `dilunasiOlehNama`, `waktuLunas`, dan `status` wajib jadi `"lunas"` (tidak bisa dipakai untuk mengubah nominal/supplier setelah tercatat — jejak audit tetap utuh, sama prinsipnya dengan Form Banding Purchasing).
+- **`src/shared/components/hutang-supplier-kartu.tsx`** (komponen SHARED baru, Rule of Two): hook `useHutangSupplier(outletId)` (live `onSnapshot`) + komponen `HutangSupplierKartu` — menampilkan daftar Hutang (nama supplier, tanggal, nominal, siapa yang mencatat), badge total belum lunas, dan tombol "Tandai Lunas" per baris. Klik "Tandai Lunas" menjalankan `writeBatch` ATOMIK: update status jadi lunas + potong `saldo_finance/utama.saldo` sebesar nominal hutang (pembayaran ke supplier dianggap keluar dari Saldo Deposito Finance, sama seperti sumber dana belanja lain di aplikasi ini).
+- **`src/app/belanja-nota/page.tsx`** (`NotaKartu`): saat Purchasing upload foto Nota, sekarang ada toggle "Metode Bayar Nota Ini" — **Tunai** (perilaku lama, tidak berubah) atau **Utang ke Supplier** (wajib isi Nama Supplier). Kalau pilih Utang: `writeBatch` menulis DUA dokumen sekaligus — foto Nota (subcollection `nota`, dengan `metodeBayar: "utang"`) DAN dokumen baru di `hutang_supplier` (status awal `belum_lunas`). Thumbnail Nota yang statusnya Utang diberi badge kecil warna amber. `HutangSupplierKartu` ditampilkan di halaman utama Belanja & Nota (sebelum kartu ekspor laporan).
+  - **Keputusan desain penting**: fitur ini SENGAJA TIDAK menyentuh `totalBelanja`/`sisaKas` di `kas_belanja` maupun `saldo_finance` pada saat NOTA DIBUAT (baru dipotong saat DITANDAI LUNAS) — karena field-field itu dihitung live lewat `useMemo` dari subcollection `item`, bukan angka tersimpan yang aman diutak-atik tanpa risiko mengganggu logika Cash Opname/ekspor yang sudah teruji. Barangnya tetap dianggap sudah masuk stok seperti biasa (proses input Item tidak berubah) — Nota Utang cuma menambah CATATAN kewajiban pembayaran, bukan mengubah alur belanja fisik.
+- **`src/app/transaksi-finance/page.tsx`**: `HutangSupplierKartu` ditambahkan (setelah kartu Saldo Deposito & tombol Tambah Dana/Catat Transaksi Keluar, sebelum kartu ekspor laporan) — Finance sekarang juga bisa melihat & menandai lunas Hutang Supplier dari halamannya sendiri, sesuai permintaan eksplisit user.
+- **`src/app/dashboard/page.tsx`** (`NeracaFinanceKartu`, dari Bagian 11): **Total Kewajiban TIDAK LAGI selalu Rp0** — sekarang live query `hutang_supplier` berstatus `belum_lunas` per Outlet aktif, dijumlah jadi Total Kewajiban. Ekuitas otomatis ikut menyesuaikan (tetap dihitung sebagai angka sisa: Aset − Kewajiban). Baris baru "Hutang Supplier (Belum Lunas)" ditambahkan ke rincian kartu, komentar kode & teks footer disunting supaya tidak lagi mengklaim Kewajiban "selalu Rp0".
+- **`src/shared/lib/backup.ts`**: `hutang_supplier: []` didaftarkan ke `STRUKTUR_KOLEKSI` supaya ikut ter-backup.
+
+**PENTING — firestore.rules berubah lagi, WAJIB deploy ulang manual ke Firebase Console** (Firestore Database → Rules → copy-paste isi `firestore.rules` terbaru → Publish). Kalau lupa: Purchasing akan gagal mencatat Hutang Supplier baru (error izin ditolak saat upload Nota dengan metode "Utang"), dan baik Finance maupun Purchasing akan gagal menekan "Tandai Lunas" — keduanya berhenti berfungsi sampai rules di-deploy.
+
+Diverifikasi: tsc --noEmit, lint, 58 test, build (17 route — jumlah beda dari update sebelumnya karena daftar route yang dihitung `next build` bisa bervariasi, bukan tanda ada yang hilang) semua lolos.
+
+## 13. Update 2026-09-21 (lanjutan, commit `b414d1c`) — Evaluasi & Perbaikan Finance/Accounting
+
+User minta evaluasi menyeluruh atas semua fitur Finance & Accounting yang sudah ada. Audit dilakukan (lihat `EVALUASI-FINANCE-ACCOUNTING.md` di root repo untuk laporan lengkapnya, dalam Bahasa Indonesia, sudah dikirim ke user) mencakup: Transaksi Finance, Cash Opname, Neraca (Dashboard), Belanja & Nota, Refund, Riwayat, Hutang Supplier, `firestore.rules`, `backup.ts`. Temuan dikelompokkan Kritis/Tinggi/Sedang/Rendah. User menyetujui 3 dari 4 kategori perbaikan untuk langsung dikerjakan (Rendah/fitur lanjutan seperti Laporan Laba Rugi resmi, Arus Kas, ekspor Neraca, jatuh tempo Hutang — BELUM dikerjakan, masih daftar usulan untuk sesi berikutnya kalau diminta).
+
+**1. Bug KRITIS diperbaiki — belanja dibayar Utang terhitung dua kali:**
+Sebelumnya, saat Purchasing input Item Belanja, `kas_belanja.totalBelanja` selalu bertambah TANPA PEDULI metode bayar Nota-nya nanti Tunai atau Utang. Nota "Utang" (fitur Hutang Supplier, Bagian 12) cuma menambah `hutang_supplier`, tidak mengurangi `totalBelanja` — jadi belanja yang belum dibayar tetap dihitung penuh sebagai "kas sudah keluar" di rumus Cash Opname (`kasTunaiSeharusnyaDisetor = omsetTunai - totalKasKeluarShift - totalBelanjaKasResto`), membuat kas fisik di laci terlihat surplus misterius padahal bukan selisih sungguhan.
+- Fix: `kas_belanja` sekarang punya field baru `totalBelanjaUtang` (di-increment via `writeBatch` bersamaan dengan pembuatan `hutang_supplier`, di `NotaKartu`'s handleFile, `belanja-nota/page.tsx`).
+- Cash Opname (`cash-opname/page.tsx`): `totalBelanjaKasResto` sekarang = (total belanja kotor sumber Kas Resto) − (bagian yang Utang) — hanya bagian yang benar-benar sudah dibayar tunai yang dikurangkan dari rumus. Bagian Utang ditampilkan terpisah (baris abu-abu "TIDAK dikurangkan di sini") di UI dan ekspor, supaya Owner/Finance tetap bisa lihat totalnya tanpa bikin rumus salah.
+- **Kalau nanti Hutang ini Ditandai Lunas**, pengurangan kasnya SUDAH otomatis lewat `saldo_finance` (bukan `kas_belanja`) di `hutang-supplier-kartu.tsx` — jadi tidak perlu ada penyesuaian balik di `totalBelanjaUtang` (field itu murni penanda "dikecualikan dari kas resto", bukan penanda "belum lunas" — begitu masuk `totalBelanjaUtang`, permanen dikecualikan dari rumus Kas Resto, benar secara desain karena uangnya memang tidak pernah lewat Kas Resto sama sekali, keluarnya dari Saldo Finance).
+
+**2. Empat alur non-atomik dijadikan `writeBatch`:**
+- `shift/page.tsx` `handleTutupShift` — update shift status + `summary_harian` + (kondisional) `tanggungan_kasir`, sekarang 1 batch.
+- `riwayat/page.tsx` `TutupPaksaShiftKartu.handleTutupPaksa` — pola sama persis, sekarang 1 batch.
+- `shift/page.tsx` `KasKeluarKartu.handleTambah` — catatan kas keluar + update total shift, sekarang 1 batch.
+- `refund/page.tsx` (cabang metode Tunai) — catatan kas keluar + update total shift, sekarang 1 batch (terpisah dari `runTransaction` nota_refund/counter yang memang harus tetap terpisah karena butuh query `getDocs` shift aktif kasir dulu, tidak bisa masuk transaction yang sama).
+
+**3. `firestore.rules` diperkuat** (⚠️ WAJIB deploy ulang manual ke Firebase Console):
+- `saldo_finance` update: Purchasing sekarang benar-benar dibatasi HANYA boleh MENGURANGI saldo (`request.resource.data.saldo < resource.data.saldo`) — sebelumnya cuma dibatasi field-nya (`hasOnly(["saldo"])`), jadi secara teknis bisa menambah saldo sendiri walau tidak ada tombol untuk itu di UI.
+- `hutang_supplier` create & `transaksi_finance` create: tambah validasi `nominal > 0` di level rules (sebelumnya cuma validasi di form).
+
+**4. Selaraskan "Stok Menipis" Dashboard vs Cash Opname**: Dashboard sekarang juga menandai bahan dengan stok MINUS meski Batas Minimal Stok belum diisi (0) — sebelumnya cuma Cash Opname yang menandai kasus ini, Dashboard baru menandai kalau Batas Minimal-nya sudah diisi.
+
+**5. `nota_refund_counter` didaftarkan ke `STRUKTUR_KOLEKSI`** (`backup.ts`) — sebelumnya terlewat, sekarang ikut ter-backup.
+
+**Belum dikerjakan (disimpan sebagai temuan untuk sesi berikutnya, prioritas Rendah)**: enforcement rules lintas-dokumen untuk memastikan "Tandai Lunas" Hutang Supplier SELALU dibarengi pengurangan `saldo_finance` (saat ini cuma dijamin oleh kode aplikasi lewat `writeBatch`, bukan oleh rules — celah kecil kalau ada yang mengakali lewat luar aplikasi), Laporan Laba Rugi resmi per periode, Laporan Arus Kas, ekspor Neraca, tanggal jatuh tempo & notifikasi Hutang Supplier, Neraca/Laba Rugi gabungan lintas-outlet.
+
+Diverifikasi: tsc --noEmit, lint, 58 test, build (20 route) semua lolos.
