@@ -194,6 +194,21 @@ service cloud.firestore {
       allow write: if isOwner();
 
       // --------------------------------------------------------
+      // SECTION: MODE DEMO — Outlet percobaan ber-ID tetap
+      // "demo_archimax" (lihat src/shared/lib/mode-demo.ts). SELURUH
+      // isinya boleh dibaca, ditulis, dan dihapus SEMUA akun aktif
+      // (peran apa pun) — itulah yang membuat Mode Demo "bebas
+      // otak-atik & bebas reset". Aturan Firestore bersifat OR: blok
+      // ini HANYA menambah izin untuk path demo_archimax, dan sama
+      // sekali TIDAK melonggarkan aturan Outlet asli di bawah (kondisi
+      // outletId == 'demo_archimax' tidak pernah benar untuk Outlet
+      // asli, yang ID-nya selalu acak dari addDoc).
+      // --------------------------------------------------------
+      match /{dokumenDemo=**} {
+        allow read, write: if outletId == 'demo_archimax' && isActiveUser();
+      }
+
+      // --------------------------------------------------------
       // SECTION: bahan_baku — inventaris & harga bahan (per Outlet)
       // --------------------------------------------------------
 

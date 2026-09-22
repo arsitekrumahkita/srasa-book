@@ -26,6 +26,17 @@
 //   Shift kalau cuma ada satu pilihan (jawaban eksplisit pemilik
 //   cafe: staff satu Outlet tidak direpotkan layar pilihan).
 //
+// MODE RIIL / MODE DEMO (permintaan pemilik cafe): setiap akun bisa
+// berpindah antara Mode Riil (data asli Outlet) dan Mode Demo (Outlet
+// percobaan berisi data dummy, bebas diotak-atik & di-reset — lihat
+// src/shared/lib/mode-demo.ts). Mode Demo cukup MENGGANTI outletId
+// aktif ke ID_OUTLET_DEMO, jadi semua halaman otomatis bekerja di
+// Outlet Demo tanpa diubah satu per satu, dan data asli tidak mungkin
+// tersentuh. Pilihan mode disimpan per-uid di localStorage — setiap
+// tab/perangkat membawa mode-nya sendiri, jadi Riil & Demo bisa
+// berjalan bersamaan (mis. tab kasir asli tetap Riil sementara Owner
+// mencoba fitur di tab lain dalam Mode Demo).
+//
 // Top-level component, tidak bersarang (webrules-hikimori poin 11).
 // ============================================================
 
@@ -40,6 +51,9 @@ import type { ReactNode } from "react";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "./firebase";
 import { useAuth } from "./auth-context";
+import { ID_OUTLET_DEMO, NAMA_OUTLET_DEMO } from "./mode-demo";
+
+export type ModeAplikasi = "riil" | "demo";
 
 export interface Outlet {
   id: string;
@@ -50,6 +64,10 @@ export interface Outlet {
 
 function kunciOutletTerpilih(uid: string): string {
   return `outletId_terpilih:${uid}`;
+}
+
+function kunciModeAplikasi(uid: string): string {
+  return `mode_aplikasi:${uid}`;
 }
 
 interface OutletContextValue {
@@ -71,6 +89,10 @@ interface OutletContextValue {
   pilihOutlet: (id: string) => void;
   /** Kembali ke layar pilih Outlet (dipakai pengalih Outlet Owner). */
   gantiOutlet: () => void;
+  /** "riil" = data asli Outlet, "demo" = Outlet percobaan (data dummy). */
+  mode: ModeAplikasi;
+  /** Ganti Mode Riil/Demo untuk akun ini (disimpan per-uid). */
+  gantiMode: (mode: ModeAplikasi) => void;
 }
 
 const OutletContext = createContext<OutletContextValue>({
@@ -81,6 +103,8 @@ const OutletContext = createContext<OutletContextValue>({
   bisaGantiOutlet: false,
   pilihOutlet: () => {},
   gantiOutlet: () => {},
+  mode: "riil",
+  gantiMode: () => {},
 });
 
 export function useOutlet(): OutletContextValue {
@@ -112,6 +136,14 @@ export function OutletProvider({ children }: { children: ReactNode }) {
   const [memuatDaftar, setMemuatDaftar] = useState(true);
   // outletId pilihan Owner untuk sesi ini — null berarti "belum pilih".
   const [outletDipilihTerpusat, setOutletDipilihTerpusat] = useState<string | null>(null);
+  // Mode tersimpan DIKAITKAN ke uid pemiliknya — selama mode milik uid
+  // yang sedang login belum terbaca dari localStorage, outletId sengaja
+  // null (memuat). Ini PENTING: kalau sempat jatuh ke default "riil"
+  // sesaat, halaman seperti Shift bisa keburu membuat shift hari ini di
+  // Outlet ASLI padahal akun ini sedang di Mode Demo.
+  const [modeTersimpan, setModeTersimpan] = useState<{ uid: string; mode: ModeAplikasi } | null>(null);
+  const memuatMode = !!user && modeTersimpan?.uid !== user.uid;
+  const mode: ModeAplikasi = user && modeTersimpan?.uid === user.uid ? modeTersimpan.mode : "riil";
 
   // "Terpusat" = Owner ATAU Finance, keduanya mengakses semua Outlet
   // dan memilih Outlet aktifnya sendiri per sesi (lihat komentar kepala
@@ -160,8 +192,39 @@ export function OutletProvider({ children }: { children: ReactNode }) {
     };
   }, [user, bisaGantiOutlet]);
 
+  // Baca Mode Riil/Demo tersimpan — pola microtask yang sama.
+  useEffect(() => {
+    if (!user) return;
+    let dibatalkan = false;
+    Promise.resolve().then(() => {
+      if (dibatalkan) return;
+      let tersimpan: ModeAplikasi = "riil";
+      try {
+        tersimpan = window.localStorage.getItem(kunciModeAplikasi(user.uid)) === "demo" ? "demo" : "riil";
+      } catch {
+        tersimpan = "riil";
+      }
+      setModeTersimpan({ uid: user.uid, mode: tersimpan });
+    });
+    return () => {
+      dibatalkan = true;
+    };
+  }, [user]);
+
+  function gantiMode(modeBaru: ModeAplikasi) {
+    if (!user) return;
+    try {
+      window.localStorage.setItem(kunciModeAplikasi(user.uid), modeBaru);
+    } catch {
+      // Tidak tersimpan lintas sesi, tetap berlaku untuk sesi ini.
+    }
+    setModeTersimpan({ uid: user.uid, mode: modeBaru });
+  }
+
   function pilihOutlet(id: string) {
     if (!user) return;
+    // Memilih Outlet asli dari layar Pilih Outlet = kembali ke Mode Riil.
+    if (mode === "demo") gantiMode("riil");
     try {
       window.localStorage.setItem(kunciOutletTerpilih(user.uid), id);
     } catch {
@@ -184,6 +247,8 @@ export function OutletProvider({ children }: { children: ReactNode }) {
 
   const outletId = useMemo(() => {
     if (!profil) return null;
+    if (memuatMode) return null;
+    if (mode === "demo") return ID_OUTLET_DEMO;
     if (profil.peran === "superadmin" || profil.peran === "finance") {
       // Pilihan tersimpan HARUS masih ada di daftar Outlet aktif —
       // kalau Outlet itu sudah dinonaktifkan sejak pilihan disimpan,
@@ -193,14 +258,17 @@ export function OutletProvider({ children }: { children: ReactNode }) {
       return masihAktif ? outletDipilihTerpusat : null;
     }
     return profil.outletId ?? null;
-  }, [profil, outletDipilihTerpusat, daftarOutletAktif]);
+  }, [profil, outletDipilihTerpusat, daftarOutletAktif, memuatMode, mode]);
 
   const outletNama = useMemo(
-    () => daftarOutletAktif.find((o) => o.id === outletId)?.nama ?? "",
+    () =>
+      outletId === ID_OUTLET_DEMO
+        ? NAMA_OUTLET_DEMO
+        : (daftarOutletAktif.find((o) => o.id === outletId)?.nama ?? ""),
     [daftarOutletAktif, outletId],
   );
 
-  const memuat = !profil || memuatDaftar;
+  const memuat = !profil || memuatDaftar || memuatMode;
 
   const value = useMemo<OutletContextValue>(
     () => ({
@@ -211,9 +279,11 @@ export function OutletProvider({ children }: { children: ReactNode }) {
       bisaGantiOutlet: !!bisaGantiOutlet,
       pilihOutlet,
       gantiOutlet,
+      mode,
+      gantiMode,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pilihOutlet/gantiOutlet dibuat ulang tiap render tapi hanya membaca `user` (lewat closure) yang sudah termasuk transitif lewat outletId/daftarOutletAktif; menaruhnya di deps hanya bikin value ini berubah tiap render tanpa manfaat.
-    [outletId, outletNama, memuat, daftarOutletAktif, bisaGantiOutlet],
+    [outletId, outletNama, memuat, daftarOutletAktif, bisaGantiOutlet, mode],
   );
 
   return <OutletContext.Provider value={value}>{children}</OutletContext.Provider>;

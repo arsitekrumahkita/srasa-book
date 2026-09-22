@@ -260,3 +260,25 @@ Sebelumnya, saat Purchasing input Item Belanja, `kas_belanja.totalBelanja` selal
 **Belum dikerjakan (disimpan sebagai temuan untuk sesi berikutnya, prioritas Rendah)**: enforcement rules lintas-dokumen untuk memastikan "Tandai Lunas" Hutang Supplier SELALU dibarengi pengurangan `saldo_finance` (saat ini cuma dijamin oleh kode aplikasi lewat `writeBatch`, bukan oleh rules — celah kecil kalau ada yang mengakali lewat luar aplikasi), Laporan Laba Rugi resmi per periode, Laporan Arus Kas, ekspor Neraca, tanggal jatuh tempo & notifikasi Hutang Supplier, Neraca/Laba Rugi gabungan lintas-outlet.
 
 Diverifikasi: tsc --noEmit, lint, 58 test, build (20 route) semua lolos.
+
+## 14. Update 2026-09-22 — Mode Riil / Mode Demo (pengganti data dummy lama)
+
+User melapor "Data Dummy error tidak bisa dipakai" dan minta: saklar geser **Ganti Mode** di sidebar, **di atas kartu Profil**, dengan dua pilihan **Mode Riil** (data asli Outlet) dan **Mode Demo** (masa percobaan, data dummy bebas diotak-atik & bebas di-reset), dan keduanya **bisa berjalan bersamaan**.
+
+**Desain (penting dipahami sebelum menyentuh):**
+- Mode Demo = **satu Outlet khusus ber-ID tetap `demo_archimax`** (`src/shared/lib/mode-demo.ts`). `outlet-context.tsx` cukup mengganti `outletId` aktif ke ID itu → SEMUA halaman otomatis bekerja di Outlet Demo tanpa diubah satu per satu, dan data asli mustahil tersentuh karena path-nya lain.
+- Outlet Demo **tidak punya dokumen di koleksi `outlets`** (hanya sub-koleksinya) → tidak pernah muncul di Kelola Outlet / Pilih Outlet / Backup Semua Outlet.
+- **Satu Outlet Demo dipakai bersama semua akun** (bukan per akun), supaya alur lintas peran bisa dicoba (Kasir jualan di Demo → Owner/Finance lihat di Dashboard/Cash Opname Demo, dst).
+- Mode disimpan **per-uid di localStorage** (`mode_aplikasi:{uid}`) → tiap tab/perangkat membawa mode-nya sendiri = "berjalan bersamaan". Selama mode belum terbaca, `outletId` sengaja `null` + `memuat=true` (dan `RequireAuth` sekarang menahan spinner untuk SEMUA peran, bukan cuma Owner/Finance) — supaya halaman Shift tidak keburu membuat shift di Outlet ASLI saat akun sebenarnya di Mode Demo.
+- `AppShell`: isi halaman di-`key={outletId}` (remount saat ganti mode/outlet, mencegah state lama tertulis ke Outlet yang salah), pita kuning "MODE DEMO" di atas konten, badge DEMO di topbar mobile, tombol Ganti Outlet disembunyikan di Demo. **Kelola Akun, Kelola Outlet, Backup Data disembunyikan & diblokir di Mode Demo** (flag `sembunyiDiDemo`) karena mengelola data GLOBAL asli (`users`, `usernames`, `outlets`) yang tidak ikut terpisah ke Outlet Demo.
+- Memilih Outlet di layar Pilih Outlet otomatis mengembalikan ke Mode Riil.
+- Komponen UI: `src/shared/components/mode-aplikasi.tsx` (`ToggleModeAplikasi`, `BannerModeDemo`, `PesanHalamanDiblokirDemo`).
+
+**Data dummy** (`isiDataDummy()`): profil cafe demo, 2 slot shift, 12 bahan baku (+cermin stok_kasir, 2 sengaja di bawah batas minimal), 7 menu + resep/kemasan, 12 shift terkunci (6 hari terakhir × 2 kasir fiktif, TANPA hari ini supaya Kasir mulai dari shift kosong), kas keluar, 1 Tanggungan Kasir (-Rp20.000), 4 sesi belanja (1 bersumber Saldo Finance, 2 dengan nota Utang), 2 Hutang Supplier (1 lunas, 1 belum), 1 Form Banding menunggu, 3 transaksi Finance, saldo Rp2.400.000, dan `summary_harian` dihitung pakai `hitungLabaHarian()` yang sama dengan Riwayat > Hitung Ulang (bukan dikarang). Tanggal selalu relatif terhadap hari ini.
+- Otomatis disiapkan saat pertama kali ada yang pindah ke Mode Demo; dijaga `runTransaction` di `demo_meta/status` supaya dua akun bersamaan tidak mengisi dobel.
+- **Reset** (tombol di bawah saklar, dengan konfirmasi 2 langkah): hapus semua koleksi di `STRUKTUR_KOLEKSI` (sekarang di-`export` dari backup.ts) + `backup_log` di Outlet Demo, lalu isi ulang. Boleh dilakukan akun peran apa pun.
+- Unit test baru `src/shared/lib/mode-demo.test.ts` (Firestore tiruan di memori — emulator Firebase tidak bisa diunduh dari sandbox): cek kelengkapan & konsistensi data, tidak ada `undefined`, tidak dobel, reset bersih, dan data Outlet asli tidak tersentuh. Total test sekarang 62.
+
+**firestore.rules (WAJIB deploy ulang manual)**: blok baru di dalam `match /outlets/{outletId}`: `match /{dokumenDemo=**} { allow read, write: if outletId == 'demo_archimax' && isActiveUser(); }`. Rules bersifat OR, jadi ini hanya menambah izin untuk Outlet Demo, tidak melonggarkan Outlet asli. Kalau lupa di-deploy: pindah ke Mode Demo akan gagal "Missing or insufficient permissions" saat menyiapkan data.
+
+**Kalau ID Outlet Demo diubah**, ubah di DUA tempat: `ID_OUTLET_DEMO` di mode-demo.ts DAN string di firestore.rules.

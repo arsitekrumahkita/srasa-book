@@ -105,6 +105,17 @@ export function RequireAuth({
   }
 
   if (!lewatiGatingOutlet) {
+    // Semua peran: status Outlet/Mode (Riil/Demo) belum selesai dibaca
+    // -> tunggu dulu, supaya Kasir/Purchasing yang sedang di Mode Demo
+    // tidak sempat merender halaman dengan Outlet yang salah.
+    if (memuatOutlet && !outletId) {
+      return (
+        <div className="flex min-h-[50vh] items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
+          <span className="sr-only">Memuat Outlet...</span>
+        </div>
+      );
+    }
     // Akun terpusat (Owner/Finance) belum memilih Outlet -> sedang
     // redirect (efek di atas), ATAU status Outlet masih dimuat ->
     // tampilkan spinner, bukan konten yang butuh outletId, supaya

@@ -48,6 +48,11 @@ import { useAuth, type PeranPengguna } from "@/shared/lib/auth-context";
 import { useOutlet } from "@/shared/lib/outlet-context";
 import { useToast } from "@/shared/components/toast";
 import { AutoLogout } from "@/shared/components/auto-logout";
+import {
+  BannerModeDemo,
+  PesanHalamanDiblokirDemo,
+  ToggleModeAplikasi,
+} from "@/shared/components/mode-aplikasi";
 
 /** Nama brand APLIKASI (global, lintas Outlet) — SRASA BOOK sekarang
  *  adalah nama Outlet PERTAMA, bukan lagi nama aplikasi (permintaan
@@ -66,6 +71,10 @@ interface NavItem {
    *  Kelola Outlet) — mengecualikan "finance" walau finance ada di
    *  daftar peran superadmin+finance yang biasa. */
   khususOwnerMurni?: boolean;
+  /** true untuk halaman yang mengelola data GLOBAL asli (bukan di
+   *  bawah outlets/{outletId}) — disembunyikan & diblokir selama Mode
+   *  Demo, karena tidak ikut terpisah ke Outlet Demo. */
+  sembunyiDiDemo?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -133,6 +142,7 @@ const NAV_ITEMS: NavItem[] = [
     label: "Kelola Akun",
     icon: Users,
     peran: ["superadmin", "finance"],
+    sembunyiDiDemo: true,
   },
   {
     href: "/kelola-outlet",
@@ -144,6 +154,7 @@ const NAV_ITEMS: NavItem[] = [
     // setara penuh untuk Finance sejak revisi "Finance juga terpusat".
     peran: ["superadmin"],
     khususOwnerMurni: true,
+    sembunyiDiDemo: true,
   },
   {
     href: "/backup-data",
@@ -153,6 +164,7 @@ const NAV_ITEMS: NavItem[] = [
     // — Semua Outlet sekaligus, atau satu Outlet saja. Lihat
     // src/app/backup-data/page.tsx & src/shared/lib/backup.ts.
     peran: ["superadmin", "finance"],
+    sembunyiDiDemo: true,
   },
   {
     href: "/notifikasi",
@@ -175,8 +187,14 @@ const LABEL_PERAN: Record<PeranPengguna, string> = {
   purchasing: "Purchasing",
 };
 
+/** Halaman yang diblokir selama Mode Demo (lihat NavItem.sembunyiDiDemo). */
+const HALAMAN_DIBLOKIR_DEMO = new Set(NAV_ITEMS.filter((i) => i.sembunyiDiDemo).map((i) => i.href));
+
 export function AppShell({ children }: { children: ReactNode }) {
   const [drawerTerbuka, setDrawerTerbuka] = useState(false);
+  const pathname = usePathname();
+  const { mode, outletId } = useOutlet();
+  const demo = mode === "demo";
 
   return (
     <div className="min-h-full flex-1 bg-[var(--color-app-bg)]">
@@ -205,7 +223,14 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <Sidebar drawerTerbuka={drawerTerbuka} onTutupDrawer={() => setDrawerTerbuka(false)} />
 
-      <div className="flex min-h-full flex-1 flex-col md:pl-64">{children}</div>
+      {/* key={outletId}: ganti Mode Riil/Demo (atau Outlet) me-mount
+          ulang isi halaman, supaya tidak ada state lama (mis. id shift/
+          sesi belanja dari Outlet sebelumnya) yang terbawa ke Outlet
+          baru dan tertulis ke tempat yang salah. */}
+      <div key={outletId ?? "memuat"} className="flex min-h-full flex-1 flex-col md:pl-64">
+        {demo ? <BannerModeDemo /> : null}
+        {demo && HALAMAN_DIBLOKIR_DEMO.has(pathname) ? <PesanHalamanDiblokirDemo /> : children}
+      </div>
 
       {/* Timer idle 60 menit — dipasang di sini supaya berlaku di SEMUA
           halaman terautentikasi sekaligus (setiap halaman memakai
@@ -216,10 +241,15 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 function BrandTopbarMobile() {
-  const { outletNama } = useOutlet();
+  const { outletNama, mode } = useOutlet();
   return (
     <span className="min-w-0 leading-tight">
-      <span className="block truncate text-sm font-bold text-emerald-700">{NAMA_BRAND}</span>
+      <span className="flex items-center gap-1.5 truncate text-sm font-bold text-emerald-700">
+        {NAMA_BRAND}
+        {mode === "demo" ? (
+          <span className="rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">DEMO</span>
+        ) : null}
+      </span>
       {outletNama ? (
         <span className="block truncate text-[11px] text-slate-500">{outletNama}</span>
       ) : null}
@@ -237,10 +267,13 @@ function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { profil } = useAuth();
-  const { outletNama, bisaGantiOutlet, gantiOutlet } = useOutlet();
+  const { outletNama, bisaGantiOutlet, gantiOutlet, mode } = useOutlet();
   const { showToast } = useToast();
+  const demo = mode === "demo";
 
-  const items = NAV_ITEMS.filter((item) => profil && item.peran.includes(profil.peran));
+  const items = NAV_ITEMS.filter(
+    (item) => profil && item.peran.includes(profil.peran) && !(demo && item.sembunyiDiDemo),
+  );
   const inisial = (profil?.nama ?? "?").trim().charAt(0).toUpperCase() || "?";
 
   function handleGantiOutlet() {
@@ -287,12 +320,17 @@ function Sidebar({
       </div>
 
       {outletNama ? (
-        <div className="mx-4 mb-4 flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2">
+        <div
+          className={[
+            "mx-4 mb-3 flex items-center justify-between gap-2 rounded-xl px-3 py-2",
+            demo ? "bg-amber-50" : "bg-slate-50",
+          ].join(" ")}
+        >
           <span className="min-w-0">
             <span className="block text-[10px] uppercase tracking-wide text-slate-400">Outlet</span>
             <span className="block truncate text-sm font-semibold text-slate-800">{outletNama}</span>
           </span>
-          {bisaGantiOutlet ? (
+          {bisaGantiOutlet && !demo ? (
             <button
               type="button"
               onClick={handleGantiOutlet}
@@ -305,6 +343,9 @@ function Sidebar({
           ) : null}
         </div>
       ) : null}
+
+      {/* Saklar Mode Riil / Mode Demo — di atas kartu Profil. */}
+      {profil ? <ToggleModeAplikasi /> : null}
 
       {profil ? (
         <Link

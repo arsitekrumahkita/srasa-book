@@ -29,7 +29,7 @@ import { db } from "./firebase";
  *  beserta daftar sub-koleksi SATU TINGKAT di bawah tiap dokumennya.
  *  `backup_log` SENGAJA tidak diikutkan — itu jejak audit backup itu
  *  sendiri, bukan data yang perlu dicadangkan. */
-const STRUKTUR_KOLEKSI: Record<string, string[]> = {
+export const STRUKTUR_KOLEKSI: Record<string, string[]> = {
   bahan_baku: ["riwayat_harga", "penyesuaian_stok"],
   stok_kasir: [],
   menu_harga: ["varian"],
